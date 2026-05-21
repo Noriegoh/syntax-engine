@@ -2,7 +2,9 @@
 
 An interactive developer environment and debugger for designing **scannerless, error-resilient parsers** with a code-first, fluent JavaScript/TypeScript API. 
 
-The **SyntaxEngine Workbench** empowers language and tool creators to rapidly prototype, visualize, and debug complex context-free grammars (such as Unity ShaderLab and HLSL program structures) without compiling traditional compiler front-ends up front. 
+The **SyntaxEngine Workbench** empowers language and tool creators to rapidly prototype, visualize, and debug complex context-free grammars without compiling traditional compiler front-ends up front. 
+
+Live Link : https://syntaxengine-workbench-301154961695.europe-west2.run.app/
 
 ---
 
@@ -51,7 +53,7 @@ SyntaxEngine structures parsing chains with a human-scannable fluent builder int
 
 | Builder Method | Description |
 | :--- | :--- |
-| `Expects(pattern)` | Match a static string literal, regular expression `/regex/`, or nested `SyntaxElement` sub-rule. |
+| `Expects(pattern)` | Match a static `string` literal, regular expression `/regex/`, or nested `SyntaxElement` sub-rule. |
 | `ExpectsOneOf(...patterns)` | Evaluates a non-blocking choice tree branch. Resolves to the branch with the highest precedence or longest consumed string match. |
 | `Optional(pattern)` | Match `pattern` zero or one times without causing a thread fail. |
 | `ZeroOrMore(pattern)` | Match a repeating sequence of matching structures (0 to N). |
