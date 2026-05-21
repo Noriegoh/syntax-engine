@@ -215,9 +215,15 @@ const builder = new ScopeBuilder();
 function extractId(n) {
   if (!n) return "untitled";
   if (typeof n === 'string') return n;
-  if (n.type === 'id') return n.value;
-  if (n.value && n.value.value) return n.value.value;
-  if (n.value && typeof n.value === 'string') return n.value;
+  if (Array.isArray(n)) {
+    for (const item of n) {
+      const res = extractId(item);
+      if (res !== "untitled") return res;
+    }
+    return "untitled";
+  }
+  if (n.type === 'id' && typeof n.value === 'string') return n.value;
+  if (n.value) return extractId(n.value);
   return "untitled";
 }
 
@@ -2469,8 +2475,8 @@ export default function App() {
                                 const renderScope = (scope: LexicalScope, depth: number = 0): React.ReactNode => {
                                   const isSelected = selectedScope?.id === scope.id || (!selectedScope && scope.id === 'global');
                                   const symbolMatchCount = scope.symbols.filter(s => 
-                                    s.name.toLowerCase().includes(scopeSearchQuery.toLowerCase()) ||
-                                    s.datatype.toLowerCase().includes(scopeSearchQuery.toLowerCase())
+                                    (s.name || "").toString().toLowerCase().includes(scopeSearchQuery.toLowerCase()) ||
+                                    (s.datatype || "").toString().toLowerCase().includes(scopeSearchQuery.toLowerCase())
                                   ).length;
 
                                   const showMatchBadge = scopeSearchQuery.length > 0 && symbolMatchCount > 0;
@@ -2530,8 +2536,8 @@ export default function App() {
                             const currentScope = selectedScope || scopeChain || { name: 'None', symbols: [], references: [], type: 'global', id: 'global' };
                             
                             const filteredSymbols = currentScope.symbols.filter(s => 
-                              s.name.toLowerCase().includes(scopeSearchQuery.toLowerCase()) ||
-                              s.datatype.toLowerCase().includes(scopeSearchQuery.toLowerCase())
+                              (s.name || "").toString().toLowerCase().includes(scopeSearchQuery.toLowerCase()) ||
+                              (s.datatype || "").toString().toLowerCase().includes(scopeSearchQuery.toLowerCase())
                             );
 
                             return (
