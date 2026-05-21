@@ -1,0 +1,8 @@
+{
+  "name": "SyntaxEngine Workbench",
+  "description": "An interactive designer for building scannerless parsers with a fluent API and cross-language generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
