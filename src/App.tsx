@@ -43,7 +43,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, buildScopeChainAndSymbols, LexicalScope, SymbolDefinition } from './lib/engine';
+import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, buildScopeChainAndSymbols, LexicalScope, SymbolDefinition, generateFullCSharp } from './lib/engine';
 import { cn } from './lib/utils';
 
 interface SavedProject {
@@ -878,7 +878,7 @@ export default function App() {
 
   const generateCSharp = () => {
     if (!rootElement) return "";
-    const code = SyntaxElement.generateFullCSharp(rootElement);
+    const code = generateFullCSharp(rootElement);
     console.log(code);
     alert("C# Parser Generated! The complete code has been logged to the browser console. \n\nYou can copy it from there and paste it into a file in Unity.");
     return code;
