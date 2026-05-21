@@ -43,7 +43,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, buildScopeChainAndSymbols, LexicalScope, SymbolDefinition, generateFullCSharp } from './lib/engine';
+import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, generateFullCSharp } from './lib/engine';
 import { cn } from './lib/utils';
 
 interface SavedProject {
@@ -51,6 +51,7 @@ interface SavedProject {
   name: string;
   grammar: string;
   input: string;
+  scopeResolver?: string;
   updatedAt: number;
 }
 
@@ -204,6 +205,56 @@ const root = new SyntaxElement("_root")
   .Optional(s).Expects(shaderBlock).Optional(s).ExpectsEOF()
   .SelfHeals();`;
 
+const DEFAULT_SCOPE_RESOLVER_CODE = `// --- Custom Lexical Scope Resolver ---
+// Define semantic scopes and symbol bindings using the intuitive ScopeBuilder API.
+// Use CST queries to easily map AST nodes to lexical constructs!
+
+const builder = new ScopeBuilder();
+
+// Helper to extract nested identifier strings safely
+function extractId(n) {
+  if (!n) return "untitled";
+  if (typeof n === 'string') return n;
+  if (n.type === 'id') return n.value;
+  if (n.value && n.value.value) return n.value.value;
+  if (n.value && typeof n.value === 'string') return n.value;
+  return "untitled";
+}
+
+// 1. Define Lexical Scopes (containers that hold symbols)
+builder.defineScope("struct", "(struct (id) @name)", (match) => "struct " + extractId(match.name));
+builder.defineScope("function", "(function (id) @name)", (match) => "func " + extractId(match.name));
+builder.defineScope("block", "(code_block @node)", (match) => "Local Block");
+
+// 2. Define Symbol Declarations (variables, parameters, members)
+// Query captures give you direct access to matched AST nodes
+builder.defineSymbol(
+  "(variable (id) @name)", 
+  (match) => extractId(match.name),               // Name
+  (match) => "variable",                          // Kind
+  (match) => match.node ? extractId(match.node.value?.[0]) : "auto" // Datatype
+);
+
+builder.defineSymbol(
+  "(param (id) @name)", 
+  (match) => extractId(match.name),         
+  (match) => "parameter",               
+  (match) => match.node ? extractId(match.node.value?.[0]) : "auto"                    
+);
+
+builder.defineSymbol(
+  "(struct_member (id) @name)", 
+  (match) => extractId(match.name),         
+  (match) => "member",               
+  (match) => match.node ? extractId(match.node.value?.[0]) : "auto"                    
+);
+
+// 3. Define Symbol References (connects identifiers back to their declarations)
+builder.defineReference("(id) @name", (match) => extractId(match.name));
+
+return builder.build(ast, fullText);
+`;
+
 export default function App() {
   const [grammarCode, setGrammarCode] = useState(DEFAULT_CODE);
   const [testInput, setTestInput] = useState<string>([
@@ -272,16 +323,33 @@ export default function App() {
   const [hoveredSymbol, setHoveredSymbol] = useState<SymbolDefinition | null>(null);
   const [selectedScope, setSelectedScope] = useState<LexicalScope | null>(null);
   const [scopeSearchQuery, setScopeSearchQuery] = useState<string>("");
+  const [scopeResolverCode, setScopeResolverCode] = useState<string>(DEFAULT_SCOPE_RESOLVER_CODE);
+  const [scopeError, setScopeError] = useState<string | null>(null);
+  const [designerEditorTab, setDesignerEditorTab] = useState<'grammar' | 'scope'>('grammar');
+
+  // Debounced scope resolver code to avoid high execution cost on every keystroke
+  const [debouncedScopeResolverCode, setDebouncedScopeResolverCode] = useState<string>(DEFAULT_SCOPE_RESOLVER_CODE);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedScopeResolverCode(scopeResolverCode);
+    }, 400); // 400ms debounce for complex script parsing
+    return () => clearTimeout(handler);
+  }, [scopeResolverCode]);
 
   const scopeChain = useMemo(() => {
     if (!parseResult) return null;
     try {
-      return buildScopeChainAndSymbols(parseResult, testInput);
-    } catch (e) {
+      setScopeError(null);
+      const customBuildScopeChain = new Function('ast', 'fullText', 'ScopeBuilder', debouncedScopeResolverCode);
+      const res = customBuildScopeChain(parseResult, testInput, ScopeBuilder);
+      return res;
+    } catch (e: any) {
       console.error(e);
+      setScopeError(e.message || "Error resolving scope chain");
       return null;
     }
-  }, [parseResult, testInput]);
+  }, [parseResult, testInput, debouncedScopeResolverCode]);
 
   const [queryText, setQueryText] = useState<string>('(struct_decl (identifier) @struct_name)');
   const [hoveredQueryNode, setHoveredQueryNode] = useState<any | null>(null);
@@ -447,6 +515,7 @@ export default function App() {
       name,
       grammar: grammarCode,
       input: testInput,
+      scopeResolver: scopeResolverCode,
       updatedAt: Date.now()
     };
     
@@ -462,6 +531,7 @@ export default function App() {
   const loadProject = (project: SavedProject) => {
     setGrammarCode(project.grammar);
     setTestInput(project.input);
+    setScopeResolverCode(project.scopeResolver || DEFAULT_SCOPE_RESOLVER_CODE);
     setProjectName(project.name);
     setShowLibrary(false);
   };
@@ -475,6 +545,7 @@ export default function App() {
     if (confirm("Clear current grammar and start fresh?")) {
       setGrammarCode("");
       setTestInput("");
+      setScopeResolverCode(DEFAULT_SCOPE_RESOLVER_CODE);
       setProjectName("Untitled Project");
     }
   };
@@ -1248,17 +1319,54 @@ export default function App() {
                       <Terminal className="w-3.5 h-3.5 text-indigo-400" />
                       <span className="text-[10px] font-bold text-slate-200 uppercase tracking-widest">{projectName}</span>
                     </div>
-                    {codeError && (
+                    {designerEditorTab === 'grammar' && codeError && (
                       <div className="flex items-center gap-1.5 text-rose-400 text-[10px] font-bold animate-pulse">
-                        <AlertCircle className="w-3 h-3" /> Syntax Error
+                        <AlertCircle className="w-3 h-3" /> Grammar Error
                       </div>
                     )}
+                    {designerEditorTab === 'scope' && scopeError && (
+                      <div className="flex items-center gap-1.5 text-rose-400 text-[10px] font-bold animate-pulse">
+                        <AlertCircle className="w-3 h-3" /> Scope Error
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Sub Tab Selection bar inside Editor Column */}
+                  <div className="flex border-b border-white/5 bg-slate-900/40 p-1.5 gap-1.5 shrink-0">
+                    <button
+                      onClick={() => setDesignerEditorTab('grammar')}
+                      className={cn(
+                        "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
+                        designerEditorTab === 'grammar'
+                          ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
+                          : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
+                      )}
+                    >
+                      <FileCode className="w-3.5 h-3.5 text-indigo-400" /> Grammar Rules
+                    </button>
+                    <button
+                      onClick={() => setDesignerEditorTab('scope')}
+                      className={cn(
+                        "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
+                        designerEditorTab === 'scope'
+                          ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
+                          : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
+                      )}
+                    >
+                      <GitBranch className="w-3.5 h-3.5 text-indigo-400" /> Scope Resolver
+                    </button>
                   </div>
                   
                   <div className="flex-1 overflow-auto custom-scrollbar bg-[#1a1a1a]/50 relative">
                     <Editor
-                      value={grammarCode}
-                      onValueChange={code => setGrammarCode(code)}
+                      value={designerEditorTab === 'grammar' ? grammarCode : scopeResolverCode}
+                      onValueChange={code => {
+                        if (designerEditorTab === 'grammar') {
+                          setGrammarCode(code);
+                        } else {
+                          setScopeResolverCode(code);
+                        }
+                      }}
                       highlight={code => Prism.highlight(code, Prism.languages.javascript, 'javascript')}
                       padding={20}
                       style={{
@@ -1270,10 +1378,17 @@ export default function App() {
                     />
                   </div>
 
-                  {codeError && (
+                  {designerEditorTab === 'grammar' && codeError && (
                     <div className="p-4 bg-rose-500/10 border-t border-rose-500/20 text-rose-300 text-xs font-mono">
-                      <p className="font-bold opacity-70 mb-1">RUNTIME_ERROR:</p>
+                      <p className="font-bold opacity-70 mb-1">GRAMMAR_RUNTIME_ERROR:</p>
                       {codeError}
+                    </div>
+                  )}
+
+                  {designerEditorTab === 'scope' && scopeError && (
+                    <div className="p-4 bg-rose-500/10 border-t border-rose-500/20 text-rose-300 text-xs font-mono">
+                      <p className="font-bold opacity-70 mb-1">SCOPE_RESOLVER_ERROR:</p>
+                      {scopeError}
                     </div>
                   )}
                 </aside>
@@ -2337,7 +2452,19 @@ export default function App() {
                           </div>
 
                           <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-                            {scopeChain ? (
+                            {scopeError ? (
+                              <div className="p-4 m-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 font-mono text-center">
+                                <div className="flex items-center justify-center gap-1.5 text-[10px] font-black uppercase text-rose-400 mb-1.5 animate-pulse">
+                                  <AlertCircle className="w-3.5 h-3.5" /> Resolver Error
+                                </div>
+                                <div className="text-[11px] text-left leading-relaxed max-h-[300px] overflow-auto custom-scrollbar font-normal p-1 bg-black/30 rounded border border-white/5 select-text">
+                                  {scopeError}
+                                </div>
+                                <div className="mt-3 text-[9px] text-slate-400">
+                                  Please check the custom code under <strong className="text-indigo-400">Designer &gt; Scope Resolver</strong> to fix this error.
+                                </div>
+                              </div>
+                            ) : scopeChain ? (
                               (() => {
                                 const renderScope = (scope: LexicalScope, depth: number = 0): React.ReactNode => {
                                   const isSelected = selectedScope?.id === scope.id || (!selectedScope && scope.id === 'global');

@@ -1,7 +1,9 @@
+import { CSTQuery, getStructuralNodes } from './query';
+
 export interface SymbolDefinition {
   id: string;
   name: string;
-  kind: 'variable' | 'parameter' | 'function' | 'struct' | 'member' | 'other';
+  kind: 'variable' | 'parameter' | 'function' | 'struct' | 'member' | 'other' | string;
   datatype: string;
   start: number;
   end: number;
@@ -23,7 +25,7 @@ export interface SymbolReference {
 export interface LexicalScope {
   id: string;
   name: string;
-  type: 'global' | 'function' | 'struct' | 'block';
+  type: 'global' | 'function' | 'struct' | 'block' | string;
   start: number;
   end: number;
   node: any;
@@ -33,305 +35,200 @@ export interface LexicalScope {
   references: SymbolReference[];
 }
 
-function findFirstIdString(node: any): string | null {
-  if (!node) return null;
-  if (typeof node === 'string') return node;
-  if (node.type === 'id' && typeof node.value === 'string') return node.value;
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      const res = findFirstIdString(item);
-      if (res) return res;
-    }
-  } else if (typeof node === 'object') {
-    if (node.value !== undefined) {
-      return findFirstIdString(node.value);
-    }
-    for (const key of Object.keys(node)) {
-      if (key !== 'parent' && key !== 'ruleId') {
-        const res = findFirstIdString(node[key]);
-        if (res) return res;
-      }
-    }
+export class ScopeBuilder {
+  private scopeRules: { type: string; query: CSTQuery; nameFn: (match: Record<string, any>) => string }[] = [];
+  private symbolRules: { query: CSTQuery; nameFn: (match: Record<string, any>) => string; kindFn: (match: Record<string, any>) => string; datatypeFn: (match: Record<string, any>) => string }[] = [];
+  private referenceRules: { query: CSTQuery; nameFn: (match: Record<string, any>) => string }[] = [];
+
+  defineScope(type: string, queryStr: string, nameFn: (match: Record<string, any>) => string) {
+    this.scopeRules.push({ type, query: new CSTQuery(queryStr), nameFn });
+    return this;
   }
-  return null;
-}
 
-function findTypeAndIdOfDecl(node: any): { dataType: string; idNode: any | null } {
-  let dataType = "auto";
-  let idNode: any | null = null;
-  
-  function scan(n: any) {
-    if (!n || typeof n !== 'object') return;
-    if (n.type === 'hlsl_type' || n.type === 'type') {
-      if (typeof n.value === 'string') dataType = n.value;
-      else if (n.value && typeof n.value.value === 'string') dataType = n.value.value;
-      else {
-        const childId = findFirstIdString(n);
-        if (childId) dataType = childId;
-      }
-    }
-    if (n.type === 'id') {
-      idNode = n;
-      return;
-    }
-    if (Array.isArray(n)) {
-      for (const item of n) {
-        scan(item);
-        if (idNode && dataType !== "auto") break;
-      }
-    } else if (n.value !== undefined) {
-      scan(n.value);
-    }
+  defineSymbol(queryStr: string, nameFn: (match: Record<string, any>) => string, kindFn: (match: Record<string, any>) => string, datatypeFn: (match: Record<string, any>) => string) {
+    this.symbolRules.push({ query: new CSTQuery(queryStr), nameFn, kindFn, datatypeFn });
+    return this;
   }
-  scan(node);
-  return { dataType, idNode };
-}
 
-export function buildScopeChainAndSymbols(ast: any, fullText: string): LexicalScope {
-  const globalScope: LexicalScope = {
-    id: "global",
-    name: "Global Scope",
-    type: 'global',
-    start: 0,
-    end: fullText.length,
-    node: ast,
-    parentId: null,
-    children: [],
-    symbols: [],
-    references: []
-  };
+  defineReference(queryStr: string, nameFn: (match: Record<string, any>) => string) {
+    this.referenceRules.push({ query: new CSTQuery(queryStr), nameFn });
+    return this;
+  }
 
-  const allScopes = new Map<string, LexicalScope>();
-  allScopes.set("global", globalScope);
-
-  let scopeCounter = 0;
-  function createScope(name: string, type: 'struct' | 'function' | 'block', start: number, end: number, node: any, parentId: string): LexicalScope {
-    const id = `scope-${type}-${++scopeCounter}`;
-    const scope: LexicalScope = {
-      id,
-      name,
-      type,
-      start,
-      end,
-      node,
-      parentId,
+  build(ast: any, fullText: string): LexicalScope {
+    const globalScope: LexicalScope = {
+      id: "global",
+      name: "Global Scope",
+      type: 'global',
+      start: 0,
+      end: fullText.length,
+      node: ast,
+      parentId: null,
       children: [],
       symbols: [],
       references: []
     };
-    allScopes.set(id, scope);
-    return scope;
-  }
 
-  let symbolCounter = 0;
-  
-  function traverse(node: any, currentScope: LexicalScope) {
-    if (!node || typeof node !== 'object') return;
+    let scopeCounter = 0;
+    let symbolCounter = 0;
+    let refCounter = 0;
 
-    if (Array.isArray(node)) {
-      for (const child of node) {
-        traverse(child, currentScope);
-      }
-      return;
-    }
-
-    const type = node.type;
-    const start = node.start ?? 0;
-    const end = node.end ?? 0;
-
-    let activeScope = currentScope;
-
-    if (type === 'struct') {
-      const idStr = findFirstIdString(node) || "AnonymousStruct";
-      const newScope = createScope(`struct ${idStr}`, 'struct', start, end, node, currentScope.id);
-      currentScope.children.push(newScope);
-      activeScope = newScope;
-
-      const symId = `sym-${++symbolCounter}`;
-      currentScope.symbols.push({
-        id: symId,
-        name: idStr,
-        kind: 'struct',
-        datatype: 'struct',
-        start,
-        end,
-        node,
-        scopeId: currentScope.id,
-        references: []
-      });
-    } 
-    else if (type === 'function') {
-      const idStr = findFirstIdString(node) || "AnonymousFunc";
-      const { dataType } = findTypeAndIdOfDecl(node);
-      const newScope = createScope(`func ${idStr}: ${dataType}`, 'function', start, end, node, currentScope.id);
-      currentScope.children.push(newScope);
-      activeScope = newScope;
-
-      const symId = `sym-${++symbolCounter}`;
-      currentScope.symbols.push({
-        id: symId,
-        name: idStr,
-        kind: 'function',
-        datatype: dataType,
-        start,
-        end,
-        node,
-        scopeId: currentScope.id,
-        references: []
-      });
-    }
-    else if (type === 'code_block') {
-      let label = "Local Block";
-      if (currentScope.type === 'function') {
-        const funcId = currentScope.name.replace("func ", "");
-        label = `Block in ${funcId}`;
-      }
-      const newScope = createScope(label, 'block', start, end, node, currentScope.id);
-      currentScope.children.push(newScope);
-      activeScope = newScope;
-    }
-
-    if (type === 'variable' || type === 'struct_member') {
-      const { dataType, idNode } = findTypeAndIdOfDecl(node);
-      if (idNode) {
-        const name = findFirstIdString(idNode) || "unnamed";
-        const symId = `sym-${++symbolCounter}`;
+    // 1. Find all scopes
+    const scopes: LexicalScope[] = [];
+    for (const rule of this.scopeRules) {
+      const matches = rule.query.run(ast);
+      for (const match of matches) {
+        const captures = Object.fromEntries(match.captures.map(c => [c.name, c.node]));
+        const targetNode = captures['node'] || match.captures[0]?.node;
+        if (!targetNode) continue;
         
-        let kind: 'member' | 'variable' = 'variable';
-        if (activeScope.type === 'struct') {
-          kind = 'member';
-        }
-
-        activeScope.symbols.push({
-          id: symId,
-          name,
-          kind,
-          datatype: dataType,
-          start: idNode.start ?? start,
-          end: idNode.end ?? end,
-          node: idNode,
-          scopeId: activeScope.id,
+        scopes.push({
+          id: `scope-${rule.type}-${++scopeCounter}`,
+          name: rule.nameFn(captures),
+          type: rule.type,
+          start: targetNode.start ?? 0,
+          end: targetNode.end ?? 0,
+          node: targetNode,
+          parentId: null,
+          children: [],
+          symbols: [],
           references: []
         });
       }
-    } 
-    else if (type === 'param') {
-      const { dataType, idNode } = findTypeAndIdOfDecl(node);
-      if (idNode) {
-        const name = findFirstIdString(idNode) || "unnamed";
+    }
+
+    // Sort scopes by length (larger scopes first), then start position
+    // This makes child scopes fall entirely within parent scopes
+    scopes.sort((a, b) => {
+      const lenA = a.end - a.start;
+      const lenB = b.end - b.start;
+      if (lenA !== lenB) return lenB - lenA;
+      return a.start - b.start;
+    });
+
+    const allScopes = [globalScope, ...scopes];
+    const scopeMap = new Map<string, LexicalScope>(allScopes.map(s => [s.id, s]));
+
+    // Build scope tree
+    for (const scope of scopes) {
+      // Find the smallest scope that contains this scope
+      let parent = globalScope;
+      for (const possibleParent of allScopes) {
+        if (possibleParent === scope) continue;
+        if (possibleParent.start <= scope.start && possibleParent.end >= scope.end) {
+          if (possibleParent.end - possibleParent.start < parent.end - parent.start) {
+            parent = possibleParent;
+          }
+        }
+      }
+      scope.parentId = parent.id;
+      parent.children.push(scope);
+    }
+
+    // 2. Find all symbols
+    const mainDeclOffsets = new Set<number>();
+    
+    for (const rule of this.symbolRules) {
+      const matches = rule.query.run(ast);
+      for (const match of matches) {
+        const captures = Object.fromEntries(match.captures.map(c => [c.name, c.node]));
+        const targetNode = captures['node'] || match.captures[0]?.node;
+        if (!targetNode) continue;
+        
+        const start = targetNode.start ?? 0;
+        const end = targetNode.end ?? 0;
+
+        let parentScope = globalScope;
+        for (const scope of allScopes) {
+          if (scope.start <= start && scope.end >= end) {
+            if (scope.end - scope.start < parentScope.end - parentScope.start) {
+              parentScope = scope;
+            }
+          }
+        }
+
         const symId = `sym-${++symbolCounter}`;
-
-        activeScope.symbols.push({
+        parentScope.symbols.push({
           id: symId,
-          name,
-          kind: 'parameter',
-          datatype: dataType,
-          start: idNode.start ?? start,
-          end: idNode.end ?? end,
-          node: idNode,
-          scopeId: activeScope.id,
+          name: rule.nameFn(captures),
+          kind: rule.kindFn(captures),
+          datatype: rule.datatypeFn(captures),
+          start,
+          end,
+          node: targetNode,
+          scopeId: parentScope.id,
           references: []
+        });
+        
+        mainDeclOffsets.add(start);
+      }
+    }
+
+    // 3. Find all references
+    for (const rule of this.referenceRules) {
+      const matches = rule.query.run(ast);
+      for (const match of matches) {
+        const captures = Object.fromEntries(match.captures.map(c => [c.name, c.node]));
+        const targetNode = captures['node'] || match.captures[0]?.node;
+        if (!targetNode) continue;
+        
+        const start = targetNode.start ?? 0;
+        const end = targetNode.end ?? 0;
+        
+        // Don't add a reference if there's a declaration at the exact same offset
+        if (mainDeclOffsets.has(start)) continue;
+
+        let parentScope = globalScope;
+        for (const scope of allScopes) {
+          if (scope.start <= start && scope.end >= end) {
+            if (scope.end - scope.start < parentScope.end - parentScope.start) {
+              parentScope = scope;
+            }
+          }
+        }
+
+        parentScope.references.push({
+          id: `ref-${++refCounter}`,
+          name: rule.nameFn(captures),
+          start,
+          end,
+          node: targetNode,
+          scopeId: parentScope.id
         });
       }
     }
 
-    if (node.value !== undefined) {
-      traverse(node.value, activeScope);
-    }
-  }
-
-  traverse(ast, globalScope);
-
-  const mainDeclOffsets = new Set<number>();
-  const allSymbols: SymbolDefinition[] = [];
-  
-  function collectSymbols(scope: LexicalScope) {
-    for (const sym of scope.symbols) {
-      mainDeclOffsets.add(sym.start);
-      allSymbols.push(sym);
-    }
-    for (const child of scope.children) {
-      collectSymbols(child);
-    }
-  }
-  collectSymbols(globalScope);
-
-  let refCounter = 0;
-  function findReferences(node: any, currentScope: LexicalScope) {
-    if (!node || typeof node !== 'object') return;
-
-    if (Array.isArray(node)) {
-      for (const child of node) {
-        findReferences(child, currentScope);
+    // 4. Resolve references
+    function resolveRef(ref: SymbolReference, scopeId: string): SymbolDefinition | null {
+      let currentId: string | null = scopeId;
+      while (currentId !== null) {
+        const scope = scopeMap.get(currentId);
+        if (!scope) break;
+        
+        const matchedSym = scope.symbols.find(s => s.name === ref.name);
+        if (matchedSym) return matchedSym;
+        
+        currentId = scope.parentId;
       }
-      return;
+      return null;
     }
 
-    const type = node.type;
-    const start = node.start ?? 0;
-    const end = node.end ?? 0;
-
-    let activeScope = currentScope;
-    if (type === 'struct' || type === 'function' || type === 'code_block') {
-      const childScope = currentScope.children.find(c => c.node === node);
-      if (childScope) {
-        activeScope = childScope;
-      }
-    }
-
-    if (type === 'id') {
-      if (!mainDeclOffsets.has(start)) {
-        const idStr = findFirstIdString(node);
-        if (idStr) {
-          activeScope.references.push({
-            id: `ref-${++refCounter}`,
-            name: idStr,
-            start,
-            end,
-            node,
-            scopeId: activeScope.id
-          });
+    function resolveAllScopeReferences(scope: LexicalScope) {
+      for (const ref of scope.references) {
+        const resolvedSym = resolveRef(ref, scope.id);
+        if (resolvedSym) {
+          ref.resolvedSymbolId = resolvedSym.id;
+          resolvedSym.references.push(ref);
         }
       }
-    }
-
-    if (node.value !== undefined) {
-      findReferences(node.value, activeScope);
-    }
-  }
-
-  findReferences(ast, globalScope);
-
-  function resolveRef(ref: SymbolReference, scopeId: string): SymbolDefinition | null {
-    let currentId: string | null = scopeId;
-    while (currentId !== null) {
-      const scope = allScopes.get(currentId);
-      if (!scope) break;
-      
-      const matchedSym = scope.symbols.find(s => s.name === ref.name);
-      if (matchedSym) {
-        return matchedSym;
-      }
-      
-      currentId = scope.parentId;
-    }
-    return null;
-  }
-
-  function resolveAllScopeReferences(scope: LexicalScope) {
-    for (const ref of scope.references) {
-      const resolvedSym = resolveRef(ref, scope.id);
-      if (resolvedSym) {
-        ref.resolvedSymbolId = resolvedSym.id;
-        resolvedSym.references.push(ref);
+      for (const child of scope.children) {
+        resolveAllScopeReferences(child);
       }
     }
-    for (const child of scope.children) {
-      resolveAllScopeReferences(child);
-    }
+
+    resolveAllScopeReferences(globalScope);
+
+    return globalScope;
   }
-
-  resolveAllScopeReferences(globalScope);
-
-  return globalScope;
 }
+
