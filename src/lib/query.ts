@@ -174,7 +174,7 @@ export function executePatternMatch(node: any, pat: QueryPattern, captures: Quer
   }
   
   if (pat.children && pat.children.length > 0) {
-    const childrenNodes = getStructuralNodes(node.value);
+    const childrenNodes = getStructuralNodes(node.children !== undefined ? node.children : node.value);
     const childMatchCaptures = matchChildren(childrenNodes, pat.children, 0, []);
     if (childMatchCaptures === null) {
       return false;
@@ -219,8 +219,9 @@ export class CSTQuery {
         }
       }
       
-      if (node.value !== undefined) {
-        traverse(node.value);
+      const childrenToTraverse = node.children !== undefined ? node.children : node.value;
+      if (childrenToTraverse !== undefined) {
+        traverse(childrenToTraverse);
       }
     };
     

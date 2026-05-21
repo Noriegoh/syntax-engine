@@ -52,6 +52,7 @@ interface SavedProject {
   grammar: string;
   input: string;
   scopeResolver?: string;
+  ast?: string;
   updatedAt: number;
 }
 
@@ -205,9 +206,67 @@ const root = new SyntaxElement("_root")
   .Optional(s).Expects(shaderBlock).Optional(s).ExpectsEOF()
   .SelfHeals();`;
 
+const DEFAULT_AST_CODE = `// --- Optional AST Transformer ---
+// Map the raw Concrete Syntax Tree (CST) into a clean, custom Abstract Syntax Tree (AST).
+// If left as-is or returning null (or if deleted completely), ScopeBuilder, Query, and CodeGen
+// will automatically fall back to using the CST directly.
+
+function transform(node) {
+  if (!node || typeof node !== 'object') return node;
+
+  // If node is an array, map its items
+  if (Array.isArray(node)) {
+    return node.map(transform).filter(Boolean);
+  }
+
+  // Handle zeroOrMore/oneOrMore/choice wrappers by returning their values
+  if (node.type === 'zeroOrMore' || node.type === 'oneOrMore') {
+    return transform(node.value);
+  }
+
+  // Build a custom clean AST Node
+  const cleanNode = {
+    type: node.type,
+    start: node.start,
+    end: node.end
+  };
+
+  // Process sub-values recursively
+  if (node.value !== undefined) {
+    const transformedValue = transform(node.value);
+    
+    // Flatten children list if it contains elements
+    if (Array.isArray(transformedValue)) {
+      if (transformedValue.length > 0) {
+        cleanNode.children = transformedValue;
+      }
+    } else if (transformedValue && typeof transformedValue === 'object') {
+      cleanNode.data = transformedValue;
+    } else if (transformedValue !== null && transformedValue !== undefined) {
+      cleanNode.value = transformedValue;
+    }
+  }
+
+  // If the node ended up with no children, no data, and no value, prune it
+  // unless it has a specific type we want to retain (like identifier/id/literals)
+  if (
+    cleanNode.children === undefined && 
+    cleanNode.data === undefined && 
+    cleanNode.value === undefined
+  ) {
+    return null;
+  }
+
+  return cleanNode;
+}
+
+// Transform the entire Concrete Syntax Tree (CST) 
+return transform(cst);
+`;
+
 const DEFAULT_SCOPE_RESOLVER_CODE = `// --- Custom Lexical Scope Resolver ---
 // Define semantic scopes and symbol bindings using the intuitive ScopeBuilder API.
-// Use CST queries to easily map AST nodes to lexical constructs!
+// Use AST queries to easily map AST nodes to lexical constructs!
 
 const builder = new ScopeBuilder();
 
@@ -223,40 +282,62 @@ function extractId(n) {
     return "untitled";
   }
   if (n.type === 'id' && typeof n.value === 'string') return n.value;
-  if (n.value) return extractId(n.value);
+  
+  const next = n.value !== undefined ? n.value : n.children;
+  if (next !== undefined) {
+    return extractId(next);
+  }
   return "untitled";
 }
 
+// Helper to extract datatype from symbol nodes (e.g. variable, parameter, member)
+function extractType(n) {
+  if (!n) return "auto";
+  if (n.type === 'hlsl_type' || n.type === 'type') {
+    return extractId(n);
+  }
+  const children = n.children !== undefined ? n.children : n.value;
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      const t = extractType(child);
+      if (t !== "auto") return t;
+    }
+  } else if (children && typeof children === 'object') {
+    return extractType(children);
+  }
+  return "auto";
+}
+
 // 1. Define Lexical Scopes (containers that hold symbols)
-builder.defineScope("struct", "(struct (id) @name)", (match) => "struct " + extractId(match.name));
-builder.defineScope("function", "(function (id) @name)", (match) => "func " + extractId(match.name));
+builder.defineScope("struct", "(struct (id @name)) @node", (match) => "struct " + extractId(match.name));
+builder.defineScope("function", "(function (id @name)) @node", (match) => "func " + extractId(match.name));
 builder.defineScope("block", "(code_block @node)", (match) => "Local Block");
 
 // 2. Define Symbol Declarations (variables, parameters, members)
 // Query captures give you direct access to matched AST nodes
 builder.defineSymbol(
-  "(variable (id) @name)", 
+  "(variable (id @name)) @node", 
   (match) => extractId(match.name),               // Name
   (match) => "variable",                          // Kind
-  (match) => match.node ? extractId(match.node.value?.[0]) : "auto" // Datatype
+  (match) => extractType(match.node)              // Datatype
 );
 
 builder.defineSymbol(
-  "(param (id) @name)", 
+  "(param (id @name)) @node", 
   (match) => extractId(match.name),         
   (match) => "parameter",               
-  (match) => match.node ? extractId(match.node.value?.[0]) : "auto"                    
+  (match) => extractType(match.node)                    
 );
 
 builder.defineSymbol(
-  "(struct_member (id) @name)", 
+  "(struct_member (id @name)) @node", 
   (match) => extractId(match.name),         
   (match) => "member",               
-  (match) => match.node ? extractId(match.node.value?.[0]) : "auto"                    
+  (match) => extractType(match.node)                    
 );
 
 // 3. Define Symbol References (connects identifiers back to their declarations)
-builder.defineReference("(id) @name", (match) => extractId(match.name));
+builder.defineReference("(id @name)", (match) => extractId(match.name));
 
 return builder.build(ast, fullText);
 `;
@@ -325,13 +406,25 @@ export default function App() {
   const [showLibrary, setShowLibrary] = useState(false);
   const [activeTab, setActiveTab] = useState<'designer' | 'playground'>('designer');
   const [cstViewMode, setCstViewMode] = useState<'json' | 'visual' | 'query' | 'scopes'>('json');
+  const [visualizeMode, setVisualizeMode] = useState<'cst' | 'ast'>('cst');
   const [selectedSymbol, setSelectedSymbol] = useState<SymbolDefinition | null>(null);
   const [hoveredSymbol, setHoveredSymbol] = useState<SymbolDefinition | null>(null);
   const [selectedScope, setSelectedScope] = useState<LexicalScope | null>(null);
   const [scopeSearchQuery, setScopeSearchQuery] = useState<string>("");
   const [scopeResolverCode, setScopeResolverCode] = useState<string>(DEFAULT_SCOPE_RESOLVER_CODE);
   const [scopeError, setScopeError] = useState<string | null>(null);
-  const [designerEditorTab, setDesignerEditorTab] = useState<'grammar' | 'scope'>('grammar');
+  const [designerEditorTab, setDesignerEditorTab] = useState<'grammar' | 'ast' | 'scope'>('grammar');
+
+  const [astCode, setAstCode] = useState<string>(DEFAULT_AST_CODE);
+  const [debouncedAstCode, setDebouncedAstCode] = useState<string>(DEFAULT_AST_CODE);
+  const [astError, setAstError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedAstCode(astCode);
+    }, 400);
+    return () => clearTimeout(handler);
+  }, [astCode]);
 
   // Debounced scope resolver code to avoid high execution cost on every keystroke
   const [debouncedScopeResolverCode, setDebouncedScopeResolverCode] = useState<string>(DEFAULT_SCOPE_RESOLVER_CODE);
@@ -343,19 +436,36 @@ export default function App() {
     return () => clearTimeout(handler);
   }, [scopeResolverCode]);
 
-  const scopeChain = useMemo(() => {
+  const astResult = useMemo(() => {
     if (!parseResult) return null;
+    try {
+      setAstError(null);
+      if (!debouncedAstCode || !debouncedAstCode.trim()) {
+        return parseResult;
+      }
+      const customTransform = new Function('cst', 'fullText', debouncedAstCode);
+      const res = customTransform(parseResult, testInput);
+      return res || parseResult;
+    } catch (e: any) {
+      console.error(e);
+      setAstError(e.message || "Error transforming CST to AST");
+      return parseResult; // Fallback to raw CST on error so development flow isn't crashed
+    }
+  }, [parseResult, testInput, debouncedAstCode]);
+
+  const scopeChain = useMemo(() => {
+    if (!astResult) return null;
     try {
       setScopeError(null);
       const customBuildScopeChain = new Function('ast', 'fullText', 'ScopeBuilder', debouncedScopeResolverCode);
-      const res = customBuildScopeChain(parseResult, testInput, ScopeBuilder);
+      const res = customBuildScopeChain(astResult, testInput, ScopeBuilder);
       return res;
     } catch (e: any) {
       console.error(e);
       setScopeError(e.message || "Error resolving scope chain");
       return null;
     }
-  }, [parseResult, testInput, debouncedScopeResolverCode]);
+  }, [astResult, testInput, debouncedScopeResolverCode]);
 
   const [queryText, setQueryText] = useState<string>('(struct_decl (identifier) @struct_name)');
   const [hoveredQueryNode, setHoveredQueryNode] = useState<any | null>(null);
@@ -522,6 +632,7 @@ export default function App() {
       grammar: grammarCode,
       input: testInput,
       scopeResolver: scopeResolverCode,
+      ast: astCode,
       updatedAt: Date.now()
     };
     
@@ -537,6 +648,7 @@ export default function App() {
   const loadProject = (project: SavedProject) => {
     setGrammarCode(project.grammar);
     setTestInput(project.input);
+    setAstCode(project.ast || DEFAULT_AST_CODE);
     setScopeResolverCode(project.scopeResolver || DEFAULT_SCOPE_RESOLVER_CODE);
     setProjectName(project.name);
     setShowLibrary(false);
@@ -551,6 +663,7 @@ export default function App() {
     if (confirm("Clear current grammar and start fresh?")) {
       setGrammarCode("");
       setTestInput("");
+      setAstCode(DEFAULT_AST_CODE);
       setScopeResolverCode(DEFAULT_SCOPE_RESOLVER_CODE);
       setProjectName("Untitled Project");
     }
@@ -975,6 +1088,11 @@ export default function App() {
 
     let type = node.type;
     let value = node.value;
+    if (value === undefined && node.children !== undefined) {
+      value = node.children;
+    } else if (value === undefined && node.data !== undefined) {
+      value = node.data;
+    }
     
     if (!type && !value) {
       const keys = Object.keys(node).filter(k => k !== 'ruleId');
@@ -1351,6 +1469,17 @@ export default function App() {
                       <FileCode className="w-3.5 h-3.5 text-indigo-400" /> Grammar Rules
                     </button>
                     <button
+                      onClick={() => setDesignerEditorTab('ast')}
+                      className={cn(
+                        "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
+                        designerEditorTab === 'ast'
+                          ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
+                          : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
+                      )}
+                    >
+                      <Layers className="w-3.5 h-3.5 text-indigo-400" /> AST Gen
+                    </button>
+                    <button
                       onClick={() => setDesignerEditorTab('scope')}
                       className={cn(
                         "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
@@ -1362,13 +1491,20 @@ export default function App() {
                       <GitBranch className="w-3.5 h-3.5 text-indigo-400" /> Scope Resolver
                     </button>
                   </div>
-                  
-                  <div className="flex-1 overflow-auto custom-scrollbar bg-[#1a1a1a]/50 relative">
+                           <div className="flex-1 overflow-auto custom-scrollbar bg-[#1a1a1a]/50 relative">
                     <Editor
-                      value={designerEditorTab === 'grammar' ? grammarCode : scopeResolverCode}
+                      value={
+                        designerEditorTab === 'grammar' 
+                          ? grammarCode 
+                          : designerEditorTab === 'ast'
+                          ? astCode
+                          : scopeResolverCode
+                      }
                       onValueChange={code => {
                         if (designerEditorTab === 'grammar') {
                           setGrammarCode(code);
+                        } else if (designerEditorTab === 'ast') {
+                          setAstCode(code);
                         } else {
                           setScopeResolverCode(code);
                         }
@@ -1388,6 +1524,13 @@ export default function App() {
                     <div className="p-4 bg-rose-500/10 border-t border-rose-500/20 text-rose-300 text-xs font-mono">
                       <p className="font-bold opacity-70 mb-1">GRAMMAR_RUNTIME_ERROR:</p>
                       {codeError}
+                    </div>
+                  )}
+
+                  {designerEditorTab === 'ast' && astError && (
+                    <div className="p-4 bg-rose-500/10 border-t border-rose-500/20 text-rose-300 text-xs font-mono">
+                      <p className="font-bold opacity-70 mb-1">AST_GENERATION_ERROR:</p>
+                      {astError}
                     </div>
                   )}
 
@@ -2121,9 +2264,30 @@ export default function App() {
                       >
                         <PanelRightClose className="w-4 h-4 text-indigo-400" />
                       </button>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
-                        <FileCode className="w-3.5 h-3.5" /> Concrete Syntax Tree (CST)
-                      </span>
+                      <div className="flex bg-white/5 rounded-md border border-white/10 p-0.5 font-mono">
+                        <button
+                          onClick={() => setVisualizeMode('cst')}
+                          className={cn(
+                            "px-2 py-0.5 text-[8px] font-bold transition-all rounded uppercase flex items-center gap-1 border",
+                            visualizeMode === 'cst' 
+                              ? "bg-indigo-600/20 border-indigo-500/30 text-indigo-300 font-extrabold"
+                              : "bg-transparent border-transparent text-slate-500 hover:text-slate-300"
+                          )}
+                        >
+                          <FileCode className="w-3 h-3" /> CST
+                        </button>
+                        <button
+                          onClick={() => setVisualizeMode('ast')}
+                          className={cn(
+                            "px-2 py-0.5 text-[8px] font-bold transition-all rounded uppercase flex items-center gap-1 border",
+                            visualizeMode === 'ast' 
+                              ? "bg-indigo-600/20 border-indigo-500/30 text-indigo-300 font-extrabold"
+                              : "bg-transparent border-transparent text-slate-500 hover:text-slate-300"
+                          )}
+                        >
+                          <Layers className="w-3 h-3" /> AST
+                        </button>
+                      </div>
                     
                     <div className="flex bg-white/5 rounded-md border border-white/10 p-0.5 font-mono">
                       <button 
@@ -2168,8 +2332,9 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <button 
                       onClick={() => {
-                        navigator.clipboard.writeText(JSON.stringify(parseResult, null, 2));
-                        alert("CST JSON copied!");
+                        const targetData = visualizeMode === 'ast' ? astResult : parseResult;
+                        navigator.clipboard.writeText(JSON.stringify(targetData, null, 2));
+                        alert(`${visualizeMode.toUpperCase()} JSON copied!`);
                       }}
                       className="text-[9px] font-bold p-1.5 hover:bg-white/5 rounded border border-white/10 text-indigo-400 hover:text-white transition-all uppercase tracking-widest flex items-center gap-1.5 shadow-sm"
                     >
@@ -2182,7 +2347,7 @@ export default function App() {
                     cstViewMode === 'json' ? (
                       <div className="ast-view-container font-mono text-[12px] h-full overflow-auto p-6 custom-scrollbar">
                         <ReactJson 
-                          src={parseResult} 
+                          src={visualizeMode === 'ast' ? astResult : parseResult} 
                           theme="ocean" 
                           style={{ background: 'transparent', fontSize: '11px' }}
                           displayDataTypes={false}
@@ -2245,7 +2410,7 @@ export default function App() {
                                 contentStyle={{ width: '100%', height: '100%' }}
                               >
                                 <div className="p-12 min-h-full min-w-full">
-                                  {renderCSTVisualNode(parseResult)}
+                                  {renderCSTVisualNode(visualizeMode === 'ast' ? astResult : parseResult)}
                                 </div>
                               </TransformComponent>
                             </>
@@ -2356,7 +2521,7 @@ export default function App() {
                           {(() => {
                             try {
                               const query = new CSTQuery(queryText);
-                              const matches = query.run(parseResult);
+                              const matches = query.run(visualizeMode === 'ast' ? astResult : parseResult);
                               
                               if (matches.length === 0) {
                                 return (
