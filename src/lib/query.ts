@@ -13,6 +13,7 @@ export interface QueryCapture {
 export interface QueryMatch {
   patternIndex: number;
   captures: QueryCapture[];
+  node?: any;
 }
 
 export function getStructuralNodes(node: any): any[] {
@@ -94,9 +95,21 @@ export function parseQuery(queryStr: string): QueryPattern[] {
     }
     const type = queryStr.substring(start, offset) || '_';
     
+    let capture: string | undefined;
     const children: QueryPattern[] = [];
     skipWhitespace();
     while (offset < queryStr.length && queryStr[offset] !== ')') {
+      if (queryStr[offset] === '@') {
+        const capStart = offset;
+        offset++;
+        while (offset < queryStr.length && /[a-zA-Z0-9_]/.test(queryStr[offset])) {
+          offset++;
+        }
+        capture = queryStr.substring(capStart + 1, offset);
+        skipWhitespace();
+        continue;
+      }
+      
       const child = parsePattern();
       if (!child) break;
       children.push(child);
@@ -108,7 +121,6 @@ export function parseQuery(queryStr: string): QueryPattern[] {
     }
     
     skipWhitespace();
-    let capture: string | undefined;
     if (queryStr[offset] === '@') {
       const capStart = offset;
       offset++;
@@ -214,7 +226,8 @@ export class CSTQuery {
         if (executePatternMatch(node, pat, captures)) {
           matches.push({
             patternIndex: i,
-            captures
+            captures,
+            node
           });
         }
       }

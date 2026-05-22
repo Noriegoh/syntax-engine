@@ -2,9 +2,7 @@
 
 An interactive developer environment and debugger for designing **scannerless, error-resilient parsers** with a code-first, fluent JavaScript/TypeScript API. 
 
-The **SyntaxEngine Workbench** empowers language and tool creators to rapidly prototype, visualize, and debug complex context-free grammars without compiling traditional compiler front-ends up front. 
-
-Live test link : https://syntaxengine-workbench-301154961695.europe-west2.run.app
+The **SyntaxEngine Workbench** empowers language and tool creators to rapidly prototype, visualize, and debug complex context-free grammars (such as Unity ShaderLab and HLSL program structures) without compiling traditional compiler front-ends up front. 
 
 ---
 

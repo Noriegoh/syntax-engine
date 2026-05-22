@@ -33,7 +33,10 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
-  ChevronsLeftRight
+  ChevronsLeftRight,
+  MapPin,
+  Check,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactJson from 'react-json-view';
@@ -43,7 +46,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, generateFullCSharp } from './lib/engine';
+import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp } from './lib/engine';
 import { cn } from './lib/utils';
 
 interface SavedProject {
@@ -54,6 +57,8 @@ interface SavedProject {
   scopeResolver?: string;
   ast?: string;
   updatedAt: number;
+  workspaceFiles?: Record<string, string>;
+  activeFileName?: string;
 }
 
 const DEFAULT_CODE = `// Unity ShaderLab & HLSL Parser
@@ -344,56 +349,136 @@ return builder.build(ast, fullText);
 
 export default function App() {
   const [grammarCode, setGrammarCode] = useState(DEFAULT_CODE);
-  const [testInput, setTestInput] = useState<string>([
-    "Shader \"Custom/MyAwesomeShader\" {",
-    "    Properties {",
-    "        _Color (\"Main Color\", Color) = (1,1,1,1)",
-    "        _MainTex (\"Texture\", 2D) = \"white\" {}",
-    "        [HDR] _Emission (\"Emission\", Color) = (0,0,0,1)",
-    "    }",
-    "    SubShader {",
-    "        Tags { \"RenderType\"=\"Opaque\" \"Queue\"=\"Geometry\" }",
-    "        LOD 100",
-    "        ",
-    "        Pass {",
-    "            ZWrite On",
-    "            Blend SrcAlpha OneMinusSrcAlpha",
-    "            Cull Back",
-    "",
-    "            CGPROGRAM",
-    "            #pragma vertex vert",
-    "            #pragma fragment frag",
-    "            #include \"UnityCG.cginc\"",
-    "",
-    "            struct appdata {",
-    "                float4 vertex : POSITION;",
-    "                float2 uv : TEXCOORD0;",
-    "            };",
-    "",
-    "            struct v2f {",
-    "                float2 uv : TEXCOORD0;",
-    "                float4 vertex : SV_POSITION;",
-    "            };",
-    "",
-    "            sampler2D _MainTex;",
-    "            float4 _Color;",
-    "",
-    "            v2f vert (appdata v) {",
-    "                v2f o;",
-    "                o.vertex = UnityObjectToClipPos(v.vertex);",
-    "                o.uv = v.uv;",
-    "                return o;",
-    "            }",
-    "",
-    "            fixed4 frag (v2f i) : SV_Target {",
-    "                fixed4 col = tex2D(_MainTex, i.uv) * _Color;",
-    "                return col;",
-    "            }",
-    "            ENDCG",
-    "        }",
-    "    }",
-    "}"
-  ].join("\n"));
+  const [workspaceFiles, setWorkspaceFiles] = useState<Record<string, string>>(() => {
+    return {
+      "main.hlsl": [
+        "Shader \"Custom/MyAwesomeShader\" {",
+        "    Properties {",
+        "        _Color (\"Main Color\", Color) = (1,1,1,1)",
+        "        _MainTex (\"Texture\", 2D) = \"white\" {}",
+        "        [HDR] _Emission (\"Emission\", Color) = (0,0,0,1)",
+        "    }",
+        "    SubShader {",
+        "        Tags { \"RenderType\"=\"Opaque\" \"Queue\"=\"Geometry\" }",
+        "        LOD 100",
+        "        ",
+        "        Pass {",
+        "            ZWrite On",
+        "            Blend SrcAlpha OneMinusSrcAlpha",
+        "            Cull Back",
+        "",
+        "            CGPROGRAM",
+        "            #pragma vertex vert",
+        "            #pragma fragment frag",
+        "            #include \"UnityCG.cginc\"",
+        "",
+        "            struct appdata {",
+        "                float4 vertex : POSITION;",
+        "                float2 uv : TEXCOORD0;",
+        "            };",
+        "",
+        "            struct v2f {",
+        "                float2 uv : TEXCOORD0;",
+        "                float4 vertex : SV_POSITION;",
+        "            };",
+        "",
+        "            sampler2D _MainTex;",
+        "            float4 _Color;",
+        "",
+        "            v2f vert (appdata v) {",
+        "                v2f o;",
+        "                o.vertex = UnityObjectToClipPos(v.vertex);",
+        "                o.uv = v.uv;",
+        "                return o;",
+        "            }",
+        "",
+        "            fixed4 frag (v2f i) : SV_Target {",
+        "                fixed4 col = tex2D(_MainTex, i.uv) * _Color;",
+        "                return col;",
+        "            }",
+        "            ENDCG",
+        "        }",
+        "    }",
+        "}"
+      ].join("\n"),
+      "UnityCG.cginc": [
+        "// UnityCG.cginc - Common Unity Shader Helper Functions",
+        "",
+        "float4 UnityObjectToClipPos(float4 pos) {",
+        "    // Model-view-projection transform helper",
+        "    return mul(UNITY_MATRIX_MVP, pos);",
+        "}",
+        "",
+        "fixed4 tex2D(sampler2D s, float2 uv) {",
+        "    // Texture lookup helper",
+        "    return fixed4(1, 1, 1, 1);",
+        "}"
+      ].join("\n")
+    };
+  });
+  const [activeFileName, setActiveFileName] = useState<string>("main.hlsl");
+
+  const [testInput, setTestInput] = useState<string>(() => {
+    const initialFiles = {
+      "main.hlsl": [
+        "Shader \"Custom/MyAwesomeShader\" {",
+        "    Properties {",
+        "        _Color (\"Main Color\", Color) = (1,1,1,1)",
+        "        _MainTex (\"Texture\", 2D) = \"white\" {}",
+        "        [HDR] _Emission (\"Emission\", Color) = (0,0,0,1)",
+        "    }",
+        "    SubShader {",
+        "        Tags { \"RenderType\"=\"Opaque\" \"Queue\"=\"Geometry\" }",
+        "        LOD 100",
+        "        ",
+        "        Pass {",
+        "            ZWrite On",
+        "            Blend SrcAlpha OneMinusSrcAlpha",
+        "            Cull Back",
+        "",
+        "            CGPROGRAM",
+        "            #pragma vertex vert",
+        "            #pragma fragment frag",
+        "            #include \"UnityCG.cginc\"",
+        "",
+        "            struct appdata {",
+        "                float4 vertex : POSITION;",
+        "                float2 uv : TEXCOORD0;",
+        "            };",
+        "",
+        "            struct v2f {",
+        "                float2 uv : TEXCOORD0;",
+        "                float4 vertex : SV_POSITION;",
+        "            };",
+        "",
+        "            sampler2D _MainTex;",
+        "            float4 _Color;",
+        "",
+        "            v2f vert (appdata v) {",
+        "                v2f o;",
+        "                o.vertex = UnityObjectToClipPos(v.vertex);",
+        "                o.uv = v.uv;",
+        "                return o;",
+        "            }",
+        "",
+        "            fixed4 frag (v2f i) : SV_Target {",
+        "                fixed4 col = tex2D(_MainTex, i.uv) * _Color;",
+        "                return col;",
+        "            }",
+        "            ENDCG",
+        "        }",
+        "    }",
+        "}"
+      ].join("\n")
+    };
+    return initialFiles["main.hlsl"];
+  });
+
+  const [isAddingFile, setIsAddingFile] = useState(false);
+  const [newFileNameInput, setNewFileNameInput] = useState("");
+  const [renamingFileName, setRenamingFileName] = useState<string | null>(null);
+  const [renameInput, setRenameInput] = useState("");
+
   const [rootElement, setRootElement] = useState<SyntaxElement | null>(null);
   const [hierarchy, setHierarchy] = useState<any>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
@@ -409,7 +494,10 @@ export default function App() {
   const [visualizeMode, setVisualizeMode] = useState<'cst' | 'ast'>('cst');
   const [selectedSymbol, setSelectedSymbol] = useState<SymbolDefinition | null>(null);
   const [hoveredSymbol, setHoveredSymbol] = useState<SymbolDefinition | null>(null);
+  const [selectedReference, setSelectedReference] = useState<SymbolReference | null>(null);
+  const [hoveredReference, setHoveredReference] = useState<SymbolReference | null>(null);
   const [selectedScope, setSelectedScope] = useState<LexicalScope | null>(null);
+  const [hoveredScope, setHoveredScope] = useState<LexicalScope | null>(null);
   const [scopeSearchQuery, setScopeSearchQuery] = useState<string>("");
   const [scopeResolverCode, setScopeResolverCode] = useState<string>(DEFAULT_SCOPE_RESOLVER_CODE);
   const [scopeError, setScopeError] = useState<string | null>(null);
@@ -453,24 +541,250 @@ export default function App() {
     }
   }, [parseResult, testInput, debouncedAstCode]);
 
-  const scopeChain = useMemo(() => {
-    if (!astResult) return null;
-    try {
-      setScopeError(null);
-      const customBuildScopeChain = new Function('ast', 'fullText', 'ScopeBuilder', debouncedScopeResolverCode);
-      const res = customBuildScopeChain(astResult, testInput, ScopeBuilder);
-      return res;
-    } catch (e: any) {
-      console.error(e);
-      setScopeError(e.message || "Error resolving scope chain");
-      return null;
+  // Helper to find includes from a given document text
+  const getIncludesFromText = (content: string): string[] => {
+    const includes: string[] = [];
+    const regex = /^\s*#include\s+["<]([^">]+)[">]/gm;
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      includes.push(match[1]);
     }
-  }, [astResult, testInput, debouncedScopeResolverCode]);
+    return includes;
+  };
+
+  // Build ASTs for all workspace files. Reuses the active file's compile result directly
+  const computedWorkspaceASTs = useMemo(() => {
+    const asts: Record<string, any> = {};
+    if (!rootElement) return asts;
+    
+    for (const [filename, content] of Object.entries(workspaceFiles)) {
+      if (filename === activeFileName) {
+        asts[filename] = astResult;
+        continue;
+      }
+      
+      const context = {
+        cacheHits: 0,
+        cacheMisses: 0,
+        maxError: null as any,
+        expectedPaths: [] as string[],
+        recoveredErrors: [] as { message: string; offset: number }[]
+      };
+      
+      try {
+        const result = rootElement.parse(content, 0, new Map(), context);
+        if (result && !result.error) {
+          let ast = result.ast;
+          if (debouncedAstCode && debouncedAstCode.trim()) {
+            const customTransform = new Function('cst', 'fullText', debouncedAstCode);
+            ast = customTransform(result.ast, content) || result.ast;
+          }
+          asts[filename] = ast;
+        } else {
+          asts[filename] = null;
+        }
+      } catch (e) {
+        console.error(`Error parsing background file ${filename}:`, e);
+        asts[filename] = null;
+      }
+    }
+    return asts;
+  }, [workspaceFiles, activeFileName, astResult, rootElement, debouncedAstCode]);
+
+  const [resolverErrorMsg, setResolverErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setScopeError(resolverErrorMsg);
+  }, [resolverErrorMsg]);
+
+  // Build local scopes and resolve cross-file references on top of workspace ASTs
+  const resolvedWorkspaceScopes = useMemo(() => {
+    const scopes: Record<string, LexicalScope> = {};
+    if (!debouncedScopeResolverCode || !rootElement) return scopes;
+
+    try {
+      setResolverErrorMsg(null);
+      const customBuildScopeChain = new Function('ast', 'fullText', 'ScopeBuilder', debouncedScopeResolverCode);
+      
+      // 1. Build local scope tree for each file & annotate fileNames
+      for (const [filename, ast] of Object.entries(computedWorkspaceASTs)) {
+        if (!ast) continue;
+        const content = workspaceFiles[filename] || "";
+        try {
+          const res = customBuildScopeChain(ast, content, ScopeBuilder);
+          if (res) {
+            res.name = filename; // Label global scope
+            
+            // Annotate scope trees recursively with filename context for navigation/scoping
+            const annotateFile = (scope: LexicalScope) => {
+              scope.fileName = filename;
+              if (scope.symbols) {
+                for (const sym of scope.symbols) {
+                  sym.fileName = filename;
+                }
+              }
+              if (scope.references) {
+                for (const ref of scope.references) {
+                  ref.fileName = filename;
+                }
+              }
+              if (scope.children) {
+                for (const child of scope.children) {
+                  annotateFile(child);
+                }
+              }
+            };
+            annotateFile(res);
+            scopes[filename] = res;
+          }
+        } catch (e: any) {
+          console.error(`Error building local scope for ${filename}:`, e);
+          if (filename === activeFileName) {
+            setResolverErrorMsg(e.message || `Error building local scope for ${filename}`);
+          }
+        }
+      }
+
+      // Collect helper
+      const collectFromScope = (scope: LexicalScope, syms: SymbolDefinition[], refs: SymbolReference[]) => {
+        if (scope.symbols) syms.push(...scope.symbols);
+        if (scope.references) refs.push(...scope.references);
+        if (scope.children) {
+          for (const child of scope.children) {
+            collectFromScope(child, syms, refs);
+          }
+        }
+      };
+
+      // Helper to search in recursively included files
+      const findSymbolInIncludes = (fileName: string, name: string, visited = new Set<string>()): SymbolDefinition | null => {
+        if (visited.has(fileName)) return null;
+        visited.add(fileName);
+
+        const content = workspaceFiles[fileName] || "";
+        const includes = getIncludesFromText(content);
+
+        // Search direct includes
+        for (const include of includes) {
+          const targetScope = scopes[include];
+          if (targetScope && targetScope.symbols) {
+            const found = targetScope.symbols.find(s => s.name === name);
+            if (found) return found;
+          }
+        }
+
+        // Search transitively
+        for (const include of includes) {
+          const found = findSymbolInIncludes(include, name, visited);
+          if (found) return found;
+        }
+
+        return null;
+      };
+
+      // 2. Perform cross-document resolution
+      for (const [filename, fileScope] of Object.entries(scopes)) {
+        const syms: SymbolDefinition[] = [];
+        const refs: SymbolReference[] = [];
+        collectFromScope(fileScope, syms, refs);
+
+        // Remove duplicates and cross-file leftovers to prevent bloating
+        for (const sym of syms) {
+          if (sym.references) {
+            sym.references = sym.references.filter(r => r.scopeId && r.scopeId.startsWith(fileScope.id));
+          }
+        }
+
+        for (const ref of refs) {
+          if (!ref.resolvedSymbolId) {
+            const resolvedSym = findSymbolInIncludes(filename, ref.name);
+            if (resolvedSym) {
+              ref.resolvedSymbolId = resolvedSym.id;
+              if (!resolvedSym.references) {
+                resolvedSym.references = [];
+              }
+              resolvedSym.references.push(ref);
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error("Error inside cross-document scope resolution:", e);
+      setResolverErrorMsg(e.message || "Error during cross-document scope resolution");
+    }
+
+    return scopes;
+  }, [computedWorkspaceASTs, workspaceFiles, debouncedScopeResolverCode, rootElement, activeFileName]);
+
+  const scopeChain = useMemo(() => {
+    return resolvedWorkspaceScopes[activeFileName] || null;
+  }, [resolvedWorkspaceScopes, activeFileName]);
 
   const [queryText, setQueryText] = useState<string>('(struct_decl (identifier) @struct_name)');
   const [hoveredQueryNode, setHoveredQueryNode] = useState<any | null>(null);
+  const [copiedMap, setCopiedMap] = useState<Record<string, boolean>>({});
   const [cursorPosition, setCursorPosition] = useState({ line: 1, col: 1 });
   const transformComponentRef = useRef<any>(null);
+  const editorScrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const doCopy = (key: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedMap(prev => ({ ...prev, [key]: true }));
+    setTimeout(() => {
+      setCopiedMap(prev => ({ ...prev, [key]: false }));
+    }, 1500);
+  };
+
+  const scrollToNode = (node: any) => {
+    if (!node || typeof node.start !== 'number' || typeof node.end !== 'number') return;
+    
+    // Focus the editor's textarea
+    const textarea = editorScrollContainerRef.current?.querySelector('textarea');
+    if (textarea) {
+      textarea.focus();
+      textarea.setSelectionRange(node.start, node.end);
+    }
+    
+    // Smooth scroll inside parent container
+    const textBefore = testInput.substring(0, node.start);
+    const linesBefore = textBefore.split('\n');
+    const line = linesBefore.length;
+    const col = linesBefore[linesBefore.length - 1].length + 1;
+    
+    setCursorPosition({ line, col });
+
+    if (editorScrollContainerRef.current) {
+      const container = editorScrollContainerRef.current;
+      const targetScrollTop = (line - 1) * 20 - container.clientHeight / 3;
+      container.scrollTo({
+        top: Math.max(0, targetScrollTop),
+        behavior: 'smooth'
+      });
+    }
+
+    setSelectedCstNode(node);
+  };
+
+  const findSymbolById = (symId: string): SymbolDefinition | null => {
+    const searchScope = (scope: LexicalScope): SymbolDefinition | null => {
+      for (const sym of scope.symbols) {
+        if (sym.id === symId) return sym;
+      }
+      for (const child of scope.children) {
+        const found = searchScope(child);
+        if (found) return found;
+      }
+      return null;
+    };
+
+    for (const scope of Object.values(resolvedWorkspaceScopes) as LexicalScope[]) {
+      if (scope) {
+        const found = searchScope(scope);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
 
   const [useIncremental, setUseIncremental] = useState<boolean>(true);
   const [cacheStats, setCacheStats] = useState<{ hits: number; misses: number; size: number } | null>(null);
@@ -633,7 +947,9 @@ export default function App() {
       input: testInput,
       scopeResolver: scopeResolverCode,
       ast: astCode,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      workspaceFiles: workspaceFiles,
+      activeFileName: activeFileName
     };
     
     setSavedProjects(prev => {
@@ -647,7 +963,32 @@ export default function App() {
 
   const loadProject = (project: SavedProject) => {
     setGrammarCode(project.grammar);
-    setTestInput(project.input);
+    if (project.workspaceFiles) {
+      setWorkspaceFiles(project.workspaceFiles);
+      const active = project.activeFileName || Object.keys(project.workspaceFiles)[0] || "main.hlsl";
+      setActiveFileName(active);
+      setTestInput(project.workspaceFiles[active] || "");
+    } else {
+      const defaultWorkspace = {
+        "main.hlsl": project.input,
+        "UnityCG.cginc": [
+          "// UnityCG.cginc - Common Unity Shader Helper Functions",
+          "",
+          "float4 UnityObjectToClipPos(float4 pos) {",
+          "    // Model-view-projection transform helper",
+          "    return mul(UNITY_MATRIX_MVP, pos);",
+          "}",
+          "",
+          "fixed4 tex2D(sampler2D s, float2 uv) {",
+          "    // Texture lookup helper",
+          "    return fixed4(1, 1, 1, 1);",
+          "}"
+        ].join("\n")
+      };
+      setWorkspaceFiles(defaultWorkspace);
+      setActiveFileName("main.hlsl");
+      setTestInput(project.input);
+    }
     setAstCode(project.ast || DEFAULT_AST_CODE);
     setScopeResolverCode(project.scopeResolver || DEFAULT_SCOPE_RESOLVER_CODE);
     setProjectName(project.name);
@@ -662,6 +1003,24 @@ export default function App() {
   const newProject = () => {
     if (confirm("Clear current grammar and start fresh?")) {
       setGrammarCode("");
+      const defaultWorkspace = {
+        "main.hlsl": "",
+        "UnityCG.cginc": [
+          "// UnityCG.cginc - Common Unity Shader Helper Functions",
+          "",
+          "float4 UnityObjectToClipPos(float4 pos) {",
+          "    // Model-view-projection transform helper",
+          "    return mul(UNITY_MATRIX_MVP, pos);",
+          "}",
+          "",
+          "fixed4 tex2D(sampler2D s, float2 uv) {",
+          "    // Texture lookup helper",
+          "    return fixed4(1, 1, 1, 1);",
+          "}"
+        ].join("\n")
+      };
+      setWorkspaceFiles(defaultWorkspace);
+      setActiveFileName("main.hlsl");
       setTestInput("");
       setAstCode(DEFAULT_AST_CODE);
       setScopeResolverCode(DEFAULT_SCOPE_RESOLVER_CODE);
@@ -950,20 +1309,41 @@ export default function App() {
       walk(ast);
     }
 
+    const activeBlock = hoveredScope || selectedScope;
+    if (activeBlock && activeBlock.type !== 'global' && (!activeBlock.fileName || activeBlock.fileName === activeFileName)) {
+      for (let i = activeBlock.start; i < activeBlock.end; i++) {
+        if (i >= 0 && i < charStyles.length) {
+          if (!charStyles[i]) {
+            charStyles[i] = { styleName: 'plain' };
+          }
+          charStyles[i].isInActiveBlock = true;
+        }
+      }
+    }
+
     const activeSym = selectedSymbol || hoveredSymbol;
     if (activeSym) {
       for (let i = activeSym.start; i < activeSym.end; i++) {
         if (i >= 0 && i < charStyles.length) {
-          charStyles[i] = { styleName: 'active-symbol-declaration' };
+          charStyles[i] = { ...charStyles[i], styleName: 'active-symbol-declaration' };
         }
       }
       if (activeSym.references) {
         for (const ref of activeSym.references) {
           for (let i = ref.start; i < ref.end; i++) {
             if (i >= 0 && i < charStyles.length) {
-              charStyles[i] = { styleName: 'active-symbol-reference' };
+              charStyles[i] = { ...charStyles[i], styleName: 'active-symbol-reference' };
             }
           }
+        }
+      }
+    }
+
+    const activeRef = selectedReference || hoveredReference;
+    if (activeRef && (!activeRef.fileName || activeRef.fileName === activeFileName)) {
+      for (let i = activeRef.start; i < activeRef.end; i++) {
+        if (i >= 0 && i < charStyles.length) {
+          charStyles[i] = { ...charStyles[i], styleName: 'active-reference-direct' };
         }
       }
     }
@@ -985,54 +1365,48 @@ export default function App() {
       if (!style) return "plain-code text-slate-300";
       
       const name = (style.styleName || "").toLowerCase();
+      let cls = "";
       
       if (name === 'active-symbol-declaration') {
-        return "bg-indigo-500/40 text-indigo-200 font-extrabold ring-1 ring-indigo-400 px-0.5 rounded shadow-[0_0_12px_rgba(99,102,241,0.6)]";
+        cls = "bg-indigo-500/40 text-indigo-200 font-extrabold ring-1 ring-indigo-400 px-0.5 rounded shadow-[0_0_12px_rgba(99,102,241,0.6)]";
+      } else if (name === 'active-symbol-reference') {
+        cls = "bg-emerald-500/35 text-emerald-200 font-bold border-b-2 border-dashed border-emerald-400/80 px-0.5 rounded";
+      } else if (name === 'active-reference-direct') {
+        cls = "bg-sky-500/40 text-sky-200 font-extrabold ring-1 ring-sky-400 px-0.5 rounded shadow-[0_0_12px_rgba(14,165,233,0.6)]";
+      } else if (name.includes("keyword") || name === "kw" || name === "key" || name === "modifier") {
+        cls = "text-pink-400 font-bold";
+      } else if (name.includes("comment") || name === "noise") {
+        cls = "text-slate-500/80 italic";
+      } else if (name.includes("string") || name === "str" || name === "char") {
+        cls = "text-amber-300";
+      } else if (name.includes("number") || name === "num" || name === "float" || name === "int" || name === "digit" || name === "val" || name === "value") {
+        cls = "text-cyan-400";
+      } else if (name.includes("id") || name === "identifier") {
+        cls = "text-sky-300";
+      } else if (name.includes("type") || name === "typename" || name === "decl_type" || name === "structname") {
+        cls = "text-teal-300 font-medium";
+      } else if (name.includes("func") || name === "fn" || name === "method" || name === "call" || name === "vert" || name === "frag") {
+        cls = "text-emerald-400 font-semibold";
+      } else if (name.includes("operator") || name === "op" || name === "punctuation" || name === "equals" || name === "plus" || name === "minus" || name === "mul" || name === "div") {
+        cls = "text-indigo-300";
+      } else if (name === "error_node" || name.includes("error")) {
+        cls = "text-rose-400 bg-rose-500/10 underline decoration-rose-500/80 decoration-wavy";
+      } else if (name.includes("whitespace") || name === "ws") {
+        cls = "text-slate-500/30";
+      } else if (name.includes("struct") || name.includes("class") || name.includes("interface") || name.includes("cbuffer")) {
+        cls = "text-violet-400 font-bold";
+      } else if (name.includes("semantics") || name === "semantic" || name.includes("colon")) {
+        cls = "text-purple-400";
+      } else {
+        cls = "text-indigo-200/90";
       }
-      if (name === 'active-symbol-reference') {
-        return "bg-emerald-500/35 text-emerald-200 font-bold border-b-2 border-dashed border-emerald-400/80 px-0.5 rounded";
+
+      if (style.isInActiveBlock) {
+        // Overlay block highlighting styling beautifully
+        cls += " bg-indigo-950/40 text-indigo-100 ring-1 ring-indigo-500/15 rounded-sm";
       }
-      
-      if (name.includes("keyword") || name === "kw" || name === "key" || name === "modifier") {
-        return "text-pink-400 font-bold";
-      }
-      if (name.includes("comment") || name === "noise") {
-        return "text-slate-500/80 italic";
-      }
-      if (name.includes("string") || name === "str" || name === "char") {
-        return "text-amber-300";
-      }
-      if (name.includes("number") || name === "num" || name === "float" || name === "int" || name === "digit" || name === "val" || name === "value") {
-        return "text-cyan-400";
-      }
-      if (name.includes("id") || name === "identifier") {
-        return "text-sky-300";
-      }
-      if (name.includes("type") || name === "typename" || name === "decl_type" || name === "structname") {
-        return "text-teal-300 font-medium";
-      }
-      if (name.includes("func") || name === "fn" || name === "method" || name === "call" || name === "vert" || name === "frag") {
-        return "text-emerald-400 font-semibold";
-      }
-      if (name.includes("operator") || name === "op" || name === "punctuation" || name === "equals" || name === "plus" || name === "minus" || name === "mul" || name === "div") {
-        return "text-indigo-300";
-      }
-      if (name === "error_node" || name.includes("error")) {
-        return "text-rose-400 bg-rose-500/10 underline decoration-rose-500/80 decoration-wavy";
-      }
-      if (name.includes("whitespace") || name === "ws") {
-        return "text-slate-500/30";
-      }
-      
-      // Secondary highlights
-      if (name.includes("struct") || name.includes("class") || name.includes("interface") || name.includes("cbuffer")) {
-        return "text-violet-400 font-bold";
-      }
-      if (name.includes("semantics") || name === "semantic" || name.includes("colon")) {
-        return "text-purple-400";
-      }
-      
-      return "text-indigo-200/90";
+
+      return cls;
     };
 
     for (let i = 0; i < code.length; i++) {
@@ -1042,7 +1416,8 @@ export default function App() {
       const isSameStyle = currentStyle && style && 
         currentStyle.styleName === style.styleName && 
         currentStyle.type === style.type && 
-        currentStyle.ruleId === style.ruleId;
+        currentStyle.ruleId === style.ruleId &&
+        currentStyle.isInActiveBlock === style.isInActiveBlock;
         
       const isBothUnstyled = !currentStyle && !style;
 
@@ -2068,7 +2443,193 @@ export default function App() {
                     </span>
                   </div>
                 </div>
-                <div className="flex-1 overflow-auto custom-scrollbar bg-[#161618] relative flex flex-row">
+                {/* Workspace Files Tabs Bar */}
+                <div className="bg-[#121214] border-b border-white/5 flex items-center justify-between px-4 py-1.5 shrink-0 select-none">
+                  <div className="flex items-center gap-2 overflow-x-auto scrollbar-none flex-1">
+                    <div className="flex items-center gap-1.5 text-slate-500 text-[9px] font-black uppercase tracking-wider border-r border-white/5 pr-3 shrink-0">
+                      <FolderOpen className="w-3.5 h-3.5 text-indigo-400/80" />
+                      <span>Workspace</span>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      {Object.keys(workspaceFiles).map(filename => {
+                        const isActive = filename === activeFileName;
+                        const isRenaming = renamingFileName === filename;
+
+                        return (
+                          <div
+                            key={filename}
+                            className={cn(
+                              "group flex items-center gap-2 px-3 py-1 text-[11px] font-mono rounded-md border border-transparent transition-all cursor-pointer relative",
+                              isActive
+                                ? "bg-white/5 text-indigo-300 border-indigo-500/30 shadow-[0_0_12px_rgba(99,102,241,0.05)] font-semibold"
+                                : "text-slate-400 hover:text-white hover:bg-white/[0.02]"
+                            )}
+                            onClick={() => {
+                              if (!isRenaming) {
+                                setWorkspaceFiles(prev => ({ ...prev, [activeFileName]: testInput }));
+                                setActiveFileName(filename);
+                                setTestInput(workspaceFiles[filename] || "");
+                              }
+                            }}
+                            onDoubleClick={() => {
+                              setRenamingFileName(filename);
+                              setRenameInput(filename);
+                            }}
+                            title="Double-click to rename"
+                          >
+                            <FileCode className={cn(
+                              "w-3.5 h-3.5",
+                              isActive ? "text-indigo-400" : "text-slate-500 group-hover:text-slate-300"
+                            )} />
+
+                            {isRenaming ? (
+                              <input
+                                type="text"
+                                autoFocus
+                                value={renameInput}
+                                onChange={e => setRenameInput(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') {
+                                    const newName = renameInput.trim();
+                                    if (!newName || newName === filename) {
+                                      setRenamingFileName(null);
+                                      return;
+                                    }
+                                    if (workspaceFiles[newName] !== undefined) {
+                                      alert("A file with this name already exists!");
+                                      setRenamingFileName(null);
+                                      return;
+                                    }
+                                    setWorkspaceFiles(prev => {
+                                      const copy = { ...prev };
+                                      const content = copy[filename];
+                                      delete copy[filename];
+                                      copy[newName] = content;
+                                      return copy;
+                                    });
+                                    if (activeFileName === filename) {
+                                      setActiveFileName(newName);
+                                    }
+                                    setRenamingFileName(null);
+                                  } else if (e.key === 'Escape') {
+                                    setRenamingFileName(null);
+                                  }
+                                }}
+                                onBlur={() => {
+                                  const newName = renameInput.trim();
+                                  if (!newName || newName === filename) {
+                                    setRenamingFileName(null);
+                                    return;
+                                  }
+                                  if (workspaceFiles[newName] !== undefined) {
+                                    alert("A file with this name already exists!");
+                                    setRenamingFileName(null);
+                                    return;
+                                  }
+                                  setWorkspaceFiles(prev => {
+                                    const copy = { ...prev };
+                                    const content = copy[filename];
+                                    delete copy[filename];
+                                    copy[newName] = content;
+                                    return copy;
+                                  });
+                                  if (activeFileName === filename) {
+                                    setActiveFileName(newName);
+                                  }
+                                  setRenamingFileName(null);
+                                }}
+                                className="bg-[#18181b] border border-indigo-500/40 rounded px-1.5 py-0.5 text-[10px] text-white focus:outline-none font-sans font-normal"
+                                onClick={e => e.stopPropagation()}
+                              />
+                            ) : (
+                              <span>{filename}</span>
+                            )}
+
+                            {filename !== "main.hlsl" && !isRenaming && (
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  if (confirm(`Delete ${filename}?`)) {
+                                    setWorkspaceFiles(prev => {
+                                      const copy = { ...prev };
+                                      delete copy[filename];
+                                      return copy;
+                                    });
+                                    if (activeFileName === filename) {
+                                      setActiveFileName("main.hlsl");
+                                      setTestInput(workspaceFiles["main.hlsl"] || "");
+                                    }
+                                  }
+                                }}
+                                className="ml-1 text-slate-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:bg-rose-500/10 rounded"
+                                title="Delete file"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {isAddingFile ? (
+                        <div className="flex items-center gap-1.5 px-2 bg-white/5 rounded-md border border-indigo-500/30">
+                          <input
+                            type="text"
+                            autoFocus
+                            placeholder="filename.hlsl"
+                            value={newFileNameInput}
+                            onChange={e => setNewFileNameInput(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                const name = newFileNameInput.trim();
+                                if (!name) {
+                                  setIsAddingFile(false);
+                                  return;
+                                }
+                                if (workspaceFiles[name] !== undefined) {
+                                  alert("A file with this name already exists!");
+                                  return;
+                                }
+                                setWorkspaceFiles(prev => ({ ...prev, [name]: `// ${name}\n` }));
+                                setActiveFileName(name);
+                                setTestInput(`// ${name}\n`);
+                                setIsAddingFile(false);
+                                setNewFileNameInput("");
+                              } else if (e.key === 'Escape') {
+                                setIsAddingFile(false);
+                                setNewFileNameInput("");
+                              }
+                            }}
+                            onBlur={() => {
+                              const name = newFileNameInput.trim();
+                              if (name && workspaceFiles[name] === undefined) {
+                                setWorkspaceFiles(prev => ({ ...prev, [name]: `// ${name}\n` }));
+                                setActiveFileName(name);
+                                setTestInput(`// ${name}\n`);
+                              }
+                              setIsAddingFile(false);
+                              setNewFileNameInput("");
+                            }}
+                            className="bg-transparent text-[11px] font-mono text-white placeholder-slate-500 focus:outline-none py-0.5 w-24"
+                          />
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setIsAddingFile(true);
+                            setNewFileNameInput("");
+                          }}
+                          className="p-1 hover:bg-white/5 rounded text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
+                          title="Create new file"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div ref={editorScrollContainerRef} className="flex-1 overflow-auto custom-scrollbar bg-[#161618] relative flex flex-row">
                   {/* Line Numbers Gutter */}
                   <div className="sticky left-0 self-start select-none text-right pr-2 pl-3 pt-[20px] pb-[20px] bg-[#121214] border-r border-white/5 pointer-events-none z-10 flex flex-col items-end leading-[20px]">
                     {testInput.split('\n').map((_, index) => {
@@ -2114,6 +2675,7 @@ export default function App() {
                       value={testInput}
                       onValueChange={code => {
                         setTestInput(code);
+                        setWorkspaceFiles(prev => ({ ...prev, [activeFileName]: code }));
                         // Update cursor position directly when text changes to capture accurate cursor line metrics
                         const activeEl = document.activeElement;
                         if (activeEl && activeEl.tagName === 'TEXTAREA') {
@@ -2523,6 +3085,109 @@ export default function App() {
                               const query = new CSTQuery(queryText);
                               const matches = query.run(visualizeMode === 'ast' ? astResult : parseResult);
                               
+                              const getNodeText = (node: any): string => {
+                                if (!node) return "";
+                                if (typeof node.start === 'number' && typeof node.end === 'number') {
+                                  return testInput.substring(node.start, node.end);
+                                }
+                                if (Array.isArray(node)) {
+                                  return node.map(getNodeText).join("");
+                                }
+                                if (node.value !== undefined) {
+                                  if (typeof node.value === 'string') return node.value;
+                                  if (Array.isArray(node.value)) return node.value.map(getNodeText).join("");
+                                  return getNodeText(node.value);
+                                }
+                                if (node.children !== undefined) {
+                                  return getNodeText(node.children);
+                                }
+                                return String(node);
+                              };
+
+                              const renderNodeCard = (node: any, titleStr: string, badgeColor: string, copyKey: string) => {
+                                if (!node) return null;
+                                const matchedText = getNodeText(node);
+                                const startCoords = typeof node.start === 'number' ? getLineAndCol(testInput, node.start) : { line: 1, col: 1 };
+                                const endCoords = typeof node.end === 'number' ? getLineAndCol(testInput, node.end) : { line: 1, col: 1 };
+                                const isCopied = copiedMap[copyKey];
+
+                                return (
+                                  <div 
+                                    className={cn(
+                                      "flex flex-col gap-2 p-3.5 rounded-xl border transition-all text-slate-300 relative select-text",
+                                      hoveredQueryNode === node 
+                                        ? "bg-indigo-500/15 border-indigo-500/40 shadow-[0_4px_16px_rgba(99,102,241,0.15)]" 
+                                        : "bg-black/40 border-white/5 hover:border-white/10"
+                                    )}
+                                    onMouseEnter={() => {
+                                      setHoveredQueryNode(node);
+                                      setHoveredCstNode(node);
+                                    }}
+                                    onMouseLeave={() => {
+                                      setHoveredQueryNode(null);
+                                      setHoveredCstNode(null);
+                                    }}
+                                    onClick={() => {
+                                      setSelectedCstNode(node);
+                                    }}
+                                    onDoubleClick={(e) => {
+                                      e.stopPropagation();
+                                      scrollToNode(node);
+                                    }}
+                                    title="Double-click to navigate inside the editor"
+                                  >
+                                    <div className="flex items-center justify-between select-none">
+                                      <div className="flex items-center gap-1.5 overflow-hidden">
+                                        <span className={cn("text-[8px] font-extrabold uppercase tracking-tighter px-2 py-0.5 rounded border antialiased shrink-0", badgeColor)}>
+                                          {titleStr}
+                                        </span>
+                                        <span className="text-[9px] font-mono text-slate-400 bg-white/5 px-1.5 py-0.5 rounded border border-white/5 truncate max-w-[150px]">
+                                          {node.type || 'Rule'}
+                                        </span>
+                                      </div>
+                                      
+                                      <div className="flex items-center gap-1 shrink-0">
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            scrollToNode(node);
+                                          }}
+                                          title="Locate details in editor (Double-click card)"
+                                          className="p-1 rounded text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 transition-all active:scale-95"
+                                        >
+                                          <MapPin className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            doCopy(copyKey, matchedText);
+                                          }}
+                                          title="Copy matched text"
+                                          className="p-1 rounded text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all active:scale-95"
+                                        >
+                                          {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                                        </button>
+                                      </div>
+                                    </div>
+                                    
+                                    <pre className="text-[11px] font-mono text-emerald-300 bg-[#0c0c0e] p-2.5 rounded-lg border border-white/5 overflow-x-auto whitespace-pre-wrap leading-relaxed max-h-52 overflow-y-auto custom-scrollbar select-text selection:bg-indigo-500/30">
+                                      {matchedText || <span className="text-slate-600 italic">Empty match</span>}
+                                    </pre>
+                                    
+                                    <div className="flex flex-wrap items-center justify-between text-[8px] font-bold text-slate-500 bg-white/[0.01] px-2 py-1 rounded border border-white/[0.02] select-none">
+                                      <span className="text-slate-400 flex items-center gap-1">
+                                        <span className="text-[10px] text-indigo-400/50">📍</span>
+                                        Ln {startCoords.line}, Col {startCoords.col} &rarr; Ln {endCoords.line}, Col {endCoords.col}
+                                      </span>
+                                      <div className="flex gap-2">
+                                        <span>LEN: {typeof node.end === 'number' && typeof node.start === 'number' ? (node.end - node.start) : matchedText.length} chars</span>
+                                        {typeof node.start === 'number' && <span>OFFSET: {node.start}-{node.end}</span>}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              };
+
                               if (matches.length === 0) {
                                 return (
                                   <div className="flex flex-col items-center justify-center p-12 text-slate-600 opacity-40 text-center gap-2">
@@ -2535,54 +3200,53 @@ export default function App() {
 
                               return (
                                 <div className="divide-y divide-white/5">
-                                  <div className="px-4 py-2 bg-indigo-500/5 border-b border-white/5">
+                                  <div className="px-4 py-2.5 bg-indigo-500/5 border-b border-white/5 flex items-center justify-between">
                                     <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest">{matches.length} matches found</span>
+                                    <span className="text-[8px] font-semibold text-slate-500 uppercase tracking-tight">Double-click match to locate</span>
                                   </div>
                                   {matches.map((match, mIdx) => (
-                                    <div key={mIdx} className="p-4 hover:bg-white/[0.02] transition-colors group">
-                                      <div className="flex items-center justify-between mb-3">
+                                    <div key={mIdx} className="p-4 hover:bg-white/[0.01] transition-colors group">
+                                      <div className="flex items-center justify-between mb-3 select-none">
                                         <div className="flex items-center gap-2">
-                                          <div className="w-5 h-5 rounded bg-indigo-500/20 flex items-center justify-center text-[10px] font-bold text-indigo-400 border border-indigo-500/30">
+                                          <div className="w-5 h-5 rounded bg-indigo-500/15 flex items-center justify-center text-[10px] font-extrabold text-indigo-400 border border-indigo-500/25">
                                             {mIdx + 1}
                                           </div>
-                                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Match</span>
+                                          <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Match</span>
                                         </div>
                                       </div>
                                       
-                                      <div className="space-y-2">
-                                        {match.captures.map((cap, cIdx) => (
-                                          <motion.div 
-                                            key={cIdx}
-                                            initial={{ opacity: 0, x: -5 }}
-                                            animate={{ opacity: 1, x: 0 }}
-                                            transition={{ delay: cIdx * 0.05 }}
-                                            className={cn(
-                                              "flex flex-col gap-1.5 p-2 rounded-lg border transition-all cursor-crosshair",
-                                              hoveredQueryNode === cap.node 
-                                                ? "bg-indigo-500/20 border-indigo-500/50 shadow-[0_0_15px_rgba(99,102,241,0.2)]" 
-                                                : "bg-black/40 border-white/5 hover:border-white/10"
-                                            )}
-                                            onMouseEnter={() => setHoveredQueryNode(cap.node)}
-                                            onMouseLeave={() => setHoveredQueryNode(null)}
-                                            onClick={() => {
-                                              // Highlight in editor if we had a reference
-                                            }}
-                                          >
-                                            <div className="flex items-center justify-between">
-                                              <span className="text-[10px] font-black text-indigo-400 uppercase tracking-tighter">@{cap.name}</span>
-                                              <span className="text-[9px] font-mono text-slate-500">{cap.node.type}</span>
+                                      <div className="space-y-3">
+                                        {/* Render matched root node */}
+                                        {match.node && renderNodeCard(
+                                          match.node,
+                                          "Whole Match",
+                                          "bg-indigo-500/10 border-indigo-500/20 text-indigo-400",
+                                          `root-${mIdx}`
+                                        )}
+                                        
+                                        {/* Render Named Captures if they exist */}
+                                        {match.captures && match.captures.length > 0 ? (
+                                          <div className="pt-1.5 space-y-2">
+                                            <div className="px-1 text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5 select-none">
+                                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/60" />
+                                              Captures ({match.captures.length})
                                             </div>
-                                            <div className="text-[11px] font-mono text-slate-300 break-all bg-black/40 p-1.5 rounded border border-white/5 group-hover:border-white/10 transition-colors">
-                                              {typeof cap.node.value === 'string' 
-                                                ? cap.node.value 
-                                                : (cap.node.text ? cap.node.text : JSON.stringify(cap.node.value).slice(0, 50) + '...')}
-                                            </div>
-                                            <div className="flex items-center gap-3 text-[8px] font-bold text-slate-600 uppercase tracking-widest mt-0.5">
-                                              <span>Offset: {cap.node.start}-{cap.node.end}</span>
-                                              <span>Len: {cap.node.end - cap.node.start}</span>
-                                            </div>
-                                          </motion.div>
-                                        ))}
+                                            {match.captures.map((cap, cIdx) => (
+                                              <div key={cIdx}>
+                                                {renderNodeCard(
+                                                  cap.node,
+                                                  `@${cap.name}`,
+                                                  "bg-emerald-500/10 border-emerald-500/20 text-emerald-400",
+                                                  `cap-${mIdx}-${cIdx}`
+                                                )}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        ) : (
+                                          <div className="text-[8px] font-semibold text-slate-500 italic px-1 pt-1 select-none">
+                                            No named captures in query. Displaying root matched node above.
+                                          </div>
+                                        )}
                                       </div>
                                     </div>
                                   ))}
@@ -2652,6 +3316,12 @@ export default function App() {
                                         onClick={() => {
                                           setSelectedScope(scope);
                                           setSelectedSymbol(null);
+                                        }}
+                                        onMouseEnter={() => {
+                                          setHoveredScope(scope);
+                                        }}
+                                        onMouseLeave={() => {
+                                          setHoveredScope(null);
                                         }}
                                         className={cn(
                                           "flex items-center justify-between p-2 rounded-lg cursor-pointer transition-all border",
@@ -2809,11 +3479,11 @@ export default function App() {
                                               <span>Scope: {selectedSymbol.scopeId} ({currentScope.type})</span>
                                             </div>
                                             <div className="pl-3 border-l-2 border-dashed border-indigo-500/40 text-rose-300 font-bold flex items-center gap-1.5">
-                                              <span>↳ Declared Node: <b>{selectedSymbol.name}</b> as <b>{selectedSymbol.datatype}</b></span>
+                                              <span>↳ Declared Node: <b>{selectedSymbol.name}</b> as <b>{selectedSymbol.datatype}</b> in <span className="text-rose-400 font-mono text-[10px] bg-white/5 px-1 py-0.5 rounded">{selectedSymbol.fileName || activeFileName}</span></span>
                                             </div>
                                             {selectedSymbol.references.map((r, ri) => (
                                               <div key={r.id} className="pl-3 border-l-2 border-dashed border-indigo-500/40 text-emerald-400 flex items-center gap-1.5">
-                                                <span>↳ Ref #{ri+1}: at Offset {r.start} resolved to declaration symbol</span>
+                                                <span>↳ Ref #{ri+1} ({r.fileName || activeFileName}): at Offset {r.start} resolved to declaration symbol</span>
                                               </div>
                                             ))}
                                           </div>
@@ -2822,7 +3492,7 @@ export default function App() {
                                         <div className="space-y-1">
                                           <span className="block text-[8px] text-slate-500 font-bold uppercase tracking-wider">Symbol Snippet Source</span>
                                           <pre className="p-2.5 rounded bg-black/60 border border-indigo-500/20 text-[10px] text-emerald-400 leading-relaxed overflow-x-auto truncate">
-                                            {testInput.substring(selectedSymbol.start, selectedSymbol.end) || "Empty Definition Match"}
+                                            {(workspaceFiles[selectedSymbol.fileName || activeFileName] || "").substring(selectedSymbol.start, selectedSymbol.end) || "Empty Definition Match"}
                                           </pre>
                                         </div>
 
@@ -2832,15 +3502,26 @@ export default function App() {
                                             <div className="text-[10px] italic text-slate-500">No active usages analyzed.</div>
                                           ) : (
                                             <div className="flex flex-wrap gap-1.5">
-                                              {selectedSymbol.references.map((r, ri) => (
-                                                <div 
-                                                  key={r.id}
-                                                  className="p-1.5 px-2 bg-emerald-500/5 hover:bg-emerald-500/10 border border-emerald-500/20 hover:border-emerald-500/40 rounded text-[10px] text-emerald-300 transition-all flex items-center gap-1.5"
-                                                >
-                                                  <Link className="w-3 h-3 text-emerald-400/80" />
-                                                  <span>Ref #{ri+1} (Line {getLineAndCol(testInput, r.start).line}, Col {getLineAndCol(testInput, r.start).col})</span>
-                                                </div>
-                                              ))}
+                                              {selectedSymbol.references.map((r, ri) => {
+                                                const rFile = r.fileName || activeFileName;
+                                                const rContent = workspaceFiles[rFile] || "";
+                                                const rLoc = getLineAndCol(rContent, r.start);
+                                                return (
+                                                  <div 
+                                                    key={r.id}
+                                                    onClick={() => {
+                                                      setWorkspaceFiles(prev => ({ ...prev, [activeFileName]: testInput }));
+                                                      setActiveFileName(rFile);
+                                                      setTestInput(workspaceFiles[rFile] || "");
+                                                    }}
+                                                    className="p-1.5 px-2 bg-emerald-500/5 hover:bg-indigo-500/20 border border-emerald-500/20 hover:border-indigo-500/40 rounded text-[10px] text-emerald-300 transition-all flex items-center gap-1.5 cursor-pointer"
+                                                    title={`Click to jump to ${rFile} line ${rLoc.line}`}
+                                                  >
+                                                    <Link className="w-3 h-3 text-emerald-400/80" />
+                                                    <span>Ref #{ri+1} ({rFile}: Line {rLoc.line}, Col {rLoc.col})</span>
+                                                  </div>
+                                                );
+                                              })}
                                             </div>
                                           )}
                                         </div>
@@ -2859,14 +3540,54 @@ export default function App() {
                                     ) : (
                                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px]">
                                         {currentScope.references.map(ref => {
+                                          const isActive = selectedReference?.id === ref.id;
                                           return (
                                             <div 
                                               key={ref.id}
-                                              className="p-2.5 rounded-lg border bg-black/20 border-white/5 flex flex-col gap-1 font-mono hover:border-indigo-500/20 transition-all"
+                                              onClick={() => {
+                                                setSelectedReference(ref);
+                                                if (ref.resolvedSymbolId) {
+                                                  const sym = findSymbolById(ref.resolvedSymbolId);
+                                                  if (sym) {
+                                                    setSelectedSymbol(sym);
+                                                  }
+                                                } else {
+                                                  setSelectedSymbol(null);
+                                                }
+                                              }}
+                                              onMouseEnter={() => {
+                                                setHoveredReference(ref);
+                                                if (ref.resolvedSymbolId) {
+                                                  const sym = findSymbolById(ref.resolvedSymbolId);
+                                                  if (sym) {
+                                                    setHoveredSymbol(sym);
+                                                  }
+                                                }
+                                              }}
+                                              onMouseLeave={() => {
+                                                setHoveredReference(null);
+                                                setHoveredSymbol(null);
+                                              }}
+                                              onDoubleClick={(e) => {
+                                                e.stopPropagation();
+                                                scrollToNode(ref);
+                                              }}
+                                              title="Double-click to locate this reference in the editor"
+                                              className={cn(
+                                                "p-2.5 rounded-lg border flex flex-col gap-1 font-mono cursor-pointer transition-all",
+                                                isActive 
+                                                  ? "bg-sky-500/15 border-sky-500/40 shadow-[0_4px_16px_rgba(14,165,233,0.15)] text-sky-200" 
+                                                  : "bg-black/20 border-white/5 text-slate-300 hover:border-sky-500/25 hover:bg-black/40"
+                                              )}
                                             >
                                               <div className="flex items-center justify-between">
                                                 <span className="font-bold text-sky-300">{ref.name}</span>
-                                                <span className="text-[8px] uppercase text-emerald-400 bg-emerald-500/10 px-1 border border-emerald-500/20 rounded font-black tracking-tighter">
+                                                <span className={cn(
+                                                  "text-[8px] uppercase px-1 border rounded font-black tracking-tighter",
+                                                  ref.resolvedSymbolId 
+                                                    ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" 
+                                                    : "text-rose-400 bg-rose-500/10 border-rose-500/20"
+                                                )}>
                                                   {ref.resolvedSymbolId ? "RESOLVED" : "UNRESOLVED"}
                                                 </span>
                                               </div>

@@ -10,6 +10,7 @@ export interface SymbolDefinition {
   node: any;
   scopeId: string;
   references: SymbolReference[];
+  fileName?: string;
 }
 
 export interface SymbolReference {
@@ -20,6 +21,7 @@ export interface SymbolReference {
   node: any;
   scopeId: string;
   resolvedSymbolId?: string;
+  fileName?: string;
 }
 
 export interface LexicalScope {
@@ -33,6 +35,7 @@ export interface LexicalScope {
   children: LexicalScope[];
   symbols: SymbolDefinition[];
   references: SymbolReference[];
+  fileName?: string;
 }
 
 export class ScopeBuilder {
