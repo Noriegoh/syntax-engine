@@ -48,6 +48,7 @@ import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
 import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp } from './lib/engine';
 import { cn } from './lib/utils';
+import { ParserProfiler } from './components/ParserProfiler';
 
 interface SavedProject {
   id: string;
@@ -483,6 +484,7 @@ export default function App() {
   const [hierarchy, setHierarchy] = useState<any>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
   const [parseResult, setParseResult] = useState<any>(null);
+  const [profileRoot, setProfileRoot] = useState<any>(null);
   const [parseError, setParseError] = useState<{ message: string; ruleId?: number | string; offset?: number } | null>(null);
   const [recoveredErrors, setRecoveredErrors] = useState<{ message: string; offset: number }[]>([]);
   const [isRecoveredErrorsExpanded, setIsRecoveredErrorsExpanded] = useState(false);
@@ -490,7 +492,7 @@ export default function App() {
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
   const [showLibrary, setShowLibrary] = useState(false);
   const [activeTab, setActiveTab] = useState<'designer' | 'playground'>('designer');
-  const [cstViewMode, setCstViewMode] = useState<'json' | 'visual' | 'query' | 'scopes'>('json');
+  const [cstViewMode, setCstViewMode] = useState<'json' | 'visual' | 'query' | 'scopes' | 'performance'>('json');
   const [visualizeMode, setVisualizeMode] = useState<'cst' | 'ast'>('cst');
   const [selectedSymbol, setSelectedSymbol] = useState<SymbolDefinition | null>(null);
   const [hoveredSymbol, setHoveredSymbol] = useState<SymbolDefinition | null>(null);
@@ -1150,13 +1152,16 @@ export default function App() {
   useEffect(() => {
     if (rootElement) {
       const startTime = performance.now();
+      const isPerformanceActive = activeTab === 'playground' && cstViewMode === 'performance';
       const context: any = { 
         maxOffset: -1, 
         maxError: null, 
         expectedPaths: [], 
         recoveredErrors: [],
         cacheHits: 0,
-        cacheMisses: 0
+        cacheMisses: 0,
+        profile: isPerformanceActive,
+        profileStack: isPerformanceActive ? [] : undefined
       };
 
       let result: any;
@@ -1172,6 +1177,7 @@ export default function App() {
       const endTime = performance.now();
       setParseDuration(endTime - startTime);
       setRecoveredErrors(context.recoveredErrors || []);
+      setProfileRoot(context.profileRoot || null);
 
       const memoTable = incrementalParserRef.current?.getMemoTable();
       setCacheStats({
@@ -1205,7 +1211,7 @@ export default function App() {
       setRecoveredErrors([]);
       setCacheStats(null);
     }
-  }, [debouncedTestInput, rootElement, useIncremental]);
+  }, [debouncedTestInput, rootElement, useIncremental, activeTab, cstViewMode]);
 
   const getLineAndCol = (text: string, offset: number) => {
     const lines = text.slice(0, Math.min(text.length, offset)).split("\n");
@@ -2888,6 +2894,15 @@ export default function App() {
                       >
                         SCOPES
                       </button>
+                      <button 
+                        onClick={() => setCstViewMode('performance')}
+                        className={cn(
+                          "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded flex items-center gap-0.5",
+                          cstViewMode === 'performance' ? "bg-orange-600/20 text-orange-400 border border-orange-500/25 font-black shadow-sm" : "text-slate-500 hover:text-slate-300"
+                        )}
+                      >
+                        ⚡ PERF
+                      </button>
                     </div>
                   </div>
                   
@@ -3266,7 +3281,7 @@ export default function App() {
                           })()}
                         </div>
                       </div>
-                    ) : (
+                    ) : cstViewMode === 'scopes' ? (
                       <div className="h-full flex flex-row overflow-hidden text-slate-300 bg-slate-950/20">
                         {/* 1. Left Sidebar: Scopes Tree & Search */}
                         <div className="w-[45%] border-r border-white/5 flex flex-col overflow-hidden bg-black/80">
@@ -3607,6 +3622,13 @@ export default function App() {
                           })()}
                         </div>
                       </div>
+                    ) : (
+                      <ParserProfiler 
+                        profileRoot={profileRoot} 
+                        testInput={testInput} 
+                        parseDuration={parseDuration} 
+                        cacheStats={cacheStats} 
+                      />
                     )
                   ) : (
                     <div className="flex flex-col items-center justify-center h-full text-slate-600 gap-4 italic text-sm opacity-40 text-center px-8">

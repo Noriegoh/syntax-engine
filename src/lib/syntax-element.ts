@@ -222,10 +222,32 @@ export class SyntaxElement {
     text: string, 
     offset: number = 0, 
     memo: Map<string, ParseResult> = new Map(), 
-    context?: { maxOffset: number; maxError: ParseResult | null; expectedPaths: string[]; recoveredErrors: ParseError[]; cacheHits?: number; cacheMisses?: number }
+    context?: { maxOffset: number; maxError: ParseResult | null; expectedPaths: string[]; recoveredErrors: ParseError[]; cacheHits?: number; cacheMisses?: number; profile?: boolean; profileStack?: any[]; profileRoot?: any }
   ): ParseResult | null {
     const memoKey = `${this.id}-${offset}`;
     const ctx = context || { maxOffset: -1, maxError: null, expectedPaths: [], recoveredErrors: [] };
+
+    let profilerNode: any = null;
+    let profilerStartTime = 0;
+    if (ctx.profile) {
+      profilerNode = {
+        name: this.name,
+        id: this.id,
+        offset: offset,
+        duration: 0,
+        selfTime: 0,
+        cacheHit: false,
+        children: []
+      };
+      if (ctx.profileStack && ctx.profileStack.length > 0) {
+        ctx.profileStack[ctx.profileStack.length - 1].children.push(profilerNode);
+      } else {
+        ctx.profileRoot = profilerNode;
+      }
+      ctx.profileStack = ctx.profileStack || [];
+      ctx.profileStack.push(profilerNode);
+      profilerStartTime = performance.now();
+    }
 
     if (memo.has(memoKey)) {
       if (typeof ctx.cacheHits === 'number') {
@@ -255,6 +277,13 @@ export class SyntaxElement {
           }
         }
       }
+
+      if (ctx.profile && profilerNode) {
+        profilerNode.duration = performance.now() - profilerStartTime;
+        profilerNode.selfTime = profilerNode.duration;
+        profilerNode.cacheHit = true;
+        ctx.profileStack.pop();
+      }
       return cached;
     }
 
@@ -278,6 +307,14 @@ export class SyntaxElement {
     }
 
     memo.set(memoKey, res);
+
+    if (ctx.profile && profilerNode) {
+      profilerNode.duration = performance.now() - profilerStartTime;
+      const childrenDuration = profilerNode.children.reduce((acc: number, c: any) => acc + c.duration, 0);
+      profilerNode.selfTime = Math.max(0, profilerNode.duration - childrenDuration);
+      ctx.profileStack.pop();
+    }
+
     return res;
   }
 

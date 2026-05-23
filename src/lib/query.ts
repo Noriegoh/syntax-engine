@@ -1,10 +1,3 @@
-export interface QueryPattern {
-  type: string;
-  children?: QueryPattern[];
-  capture?: string;
-  literalValue?: string;
-}
-
 export interface QueryCapture {
   name: string;
   node: any;
@@ -14,6 +7,24 @@ export interface QueryMatch {
   patternIndex: number;
   captures: QueryCapture[];
   node?: any;
+}
+
+export interface Predicate {
+  operator: string;
+  capture: string;
+  value: string;
+}
+
+export interface QueryPattern {
+  type: 'node' | 'literal' | 'wildcard' | 'alternation';
+  nodeType?: string;
+  literalValue?: string;
+  children?: QueryPattern[];
+  alternatives?: QueryPattern[];
+  capture?: string;
+  field?: string;
+  quantifier?: '*' | '+' | '?';
+  predicates?: Predicate[];
 }
 
 export function getStructuralNodes(node: any): any[] {
@@ -30,175 +41,404 @@ export function getStructuralNodes(node: any): any[] {
   return [];
 }
 
-export function parseQuery(queryStr: string): QueryPattern[] {
-  let offset = 0;
-  
-  function skipWhitespace() {
-    while (offset < queryStr.length && /\s/.test(queryStr[offset])) {
-      offset++;
+enum TokenType {
+  LPAREN,
+  RPAREN,
+  LBRACKET,
+  RBRACKET,
+  STRING,
+  IDENTIFIER,
+  CAPTURE,
+  FIELD,
+  QUANTIFIER,
+  WILDCARD,
+  PREDICATE
+}
+
+interface Token {
+  type: TokenType;
+  value: string;
+}
+
+function tokenizeQuery(queryStr: string): Token[] {
+  const tokens: Token[] = [];
+  let i = 0;
+  while (i < queryStr.length) {
+    if (/\s/.test(queryStr[i])) {
+      i++;
+      continue;
     }
-  }
-  
-  function parsePattern(): QueryPattern | null {
-    skipWhitespace();
-    if (offset >= queryStr.length) return null;
     
-    if (queryStr[offset] === '"' || queryStr[offset] === "'") {
-      const quote = queryStr[offset];
-      offset++;
+    if (queryStr[i] === '(') { tokens.push({ type: TokenType.LPAREN, value: '(' }); i++; continue; }
+    if (queryStr[i] === ')') { tokens.push({ type: TokenType.RPAREN, value: ')' }); i++; continue; }
+    if (queryStr[i] === '[') { tokens.push({ type: TokenType.LBRACKET, value: '[' }); i++; continue; }
+    if (queryStr[i] === ']') { tokens.push({ type: TokenType.RBRACKET, value: ']' }); i++; continue; }
+    
+    if (['*', '+', '?'].includes(queryStr[i])) {
+      tokens.push({ type: TokenType.QUANTIFIER, value: queryStr[i] });
+      i++;
+      continue;
+    }
+    
+    if (queryStr[i] === '"' || queryStr[i] === "'") {
+      const quote = queryStr[i];
+      i++;
       let val = "";
-      while (offset < queryStr.length && queryStr[offset] !== quote) {
-        val += queryStr[offset];
-        offset++;
-      }
-      if (offset < queryStr.length) offset++;
-      skipWhitespace();
-      let capture: string | undefined;
-      if (queryStr[offset] === '@') {
-        const start = offset;
-        offset++;
-        while (offset < queryStr.length && /[a-zA-Z0-9_]/.test(queryStr[offset])) {
-          offset++;
+      while (i < queryStr.length && queryStr[i] !== quote) {
+        if (queryStr[i] === '\\') {
+           val += queryStr[i+1] || '';
+           i += 2;
+        } else {
+           val += queryStr[i];
+           i++;
         }
-        capture = queryStr.substring(start + 1, offset);
       }
-      return { type: 'literal', literalValue: val, capture };
+      if (i < queryStr.length) i++;
+      tokens.push({ type: TokenType.STRING, value: val });
+      continue;
     }
     
-    if (queryStr[offset] !== '(') {
-      let start = offset;
-      while (offset < queryStr.length && /[a-zA-Z0-9_*-]/.test(queryStr[offset])) {
-        offset++;
+    if (queryStr[i] === '@') {
+      i++;
+      let val = "";
+      while (i < queryStr.length && /[a-zA-Z0-9_\-]/.test(queryStr[i])) {
+        val += queryStr[i];
+        i++;
       }
-      const type = queryStr.substring(start, offset);
-      if (!type) return null;
-      
-      skipWhitespace();
-      let capture: string | undefined;
-      if (queryStr[offset] === '@') {
-        const capStart = offset;
-        offset++;
-        while (offset < queryStr.length && /[a-zA-Z0-9_]/.test(queryStr[offset])) {
-          offset++;
-        }
-        capture = queryStr.substring(capStart + 1, offset);
-      }
-      return { type, capture };
+      tokens.push({ type: TokenType.CAPTURE, value: val });
+      continue;
     }
     
-    offset++; // skip '('
-    skipWhitespace();
-    
-    let start = offset;
-    while (offset < queryStr.length && /[a-zA-Z0-9_*-]/.test(queryStr[offset])) {
-      offset++;
-    }
-    const type = queryStr.substring(start, offset) || '_';
-    
-    let capture: string | undefined;
-    const children: QueryPattern[] = [];
-    skipWhitespace();
-    while (offset < queryStr.length && queryStr[offset] !== ')') {
-      if (queryStr[offset] === '@') {
-        const capStart = offset;
-        offset++;
-        while (offset < queryStr.length && /[a-zA-Z0-9_]/.test(queryStr[offset])) {
-          offset++;
-        }
-        capture = queryStr.substring(capStart + 1, offset);
-        skipWhitespace();
-        continue;
-      }
-      
-      const child = parsePattern();
-      if (!child) break;
-      children.push(child);
-      skipWhitespace();
+    if (queryStr[i] === ';') {
+      while (i < queryStr.length && queryStr[i] !== '\n') i++;
+      continue;
     }
     
-    if (queryStr[offset] === ')') {
-      offset++;
+    let start = i;
+    while (i < queryStr.length && /[a-zA-Z0-9_\-\.\#]/.test(queryStr[i])) {
+      i++;
     }
     
-    skipWhitespace();
-    if (queryStr[offset] === '@') {
-      const capStart = offset;
-      offset++;
-      while (offset < queryStr.length && /[a-zA-Z0-9_]/.test(queryStr[offset])) {
-        offset++;
-      }
-      capture = queryStr.substring(capStart + 1, offset);
+    if (i < queryStr.length && queryStr[i] === '?') {
+      i++;
+    }
+       
+    if (i < queryStr.length && queryStr[i] === ':') {
+      tokens.push({ type: TokenType.FIELD, value: queryStr.substring(start, i) });
+      i++;
+      continue;
     }
     
-    return { type, children, capture };
+    const val = queryStr.substring(start, i);
+    if (!val) { 
+      i++;
+      continue;
+    }
+    
+    if (val === '_') {
+      tokens.push({ type: TokenType.WILDCARD, value: '_' });
+    } else if (val.startsWith('#')) {
+      tokens.push({ type: TokenType.PREDICATE, value: val });
+    } else {
+      tokens.push({ type: TokenType.IDENTIFIER, value: val });
+    }
+  }
+  return tokens;
+}
+
+function parsePattern(tokens: Token[], pos: { current: number }): QueryPattern | null {
+  if (pos.current >= tokens.length) return null;
+  
+  let pattern: QueryPattern | null = null;
+  let field: string | undefined;
+  
+  if (tokens[pos.current].type === TokenType.FIELD) {
+    field = tokens[pos.current].value;
+    pos.current++;
   }
   
-  const patterns: QueryPattern[] = [];
-  while (offset < queryStr.length) {
-    skipWhitespace();
-    if (offset >= queryStr.length) break;
-    const pat = parsePattern();
-    if (pat) {
-      patterns.push(pat);
+  if (pos.current >= tokens.length) return null;
+  const token = tokens[pos.current];
+  
+  if (token.type === TokenType.WILDCARD) {
+    pattern = { type: 'wildcard' };
+    pos.current++;
+  } else if (token.type === TokenType.STRING) {
+    pattern = { type: 'literal', literalValue: token.value };
+    pos.current++;
+  } else if (token.type === TokenType.IDENTIFIER) {
+    pattern = { type: 'node', nodeType: token.value };
+    pos.current++;
+  } else if (token.type === TokenType.LBRACKET) {
+    pos.current++;
+    const alts: QueryPattern[] = [];
+    while (pos.current < tokens.length && tokens[pos.current].type !== TokenType.RBRACKET) {
+      const alt = parsePattern(tokens, pos);
+      if (alt) alts.push(alt);
+      else pos.current++;
+    }
+    if (pos.current < tokens.length) pos.current++;
+    pattern = { type: 'alternation', alternatives: alts };
+  } else if (token.type === TokenType.LPAREN) {
+    pos.current++;
+    if (pos.current >= tokens.length) return null;
+    
+    const nextToken = tokens[pos.current];
+    if (nextToken.type === TokenType.IDENTIFIER || nextToken.type === TokenType.WILDCARD) {
+      const nodeType = nextToken.value === '_' ? undefined : nextToken.value;
+      const type = nextToken.value === '_' ? 'wildcard' : 'node';
+      pos.current++;
+      
+      const children: QueryPattern[] = [];
+      const predicates: Predicate[] = [];
+      let innerCapture: string | undefined;
+      
+      while (pos.current < tokens.length && tokens[pos.current].type !== TokenType.RPAREN) {
+        if (tokens[pos.current].type === TokenType.LPAREN && 
+            pos.current + 1 < tokens.length && 
+            tokens[pos.current + 1].type === TokenType.PREDICATE) {
+          pos.current += 2;
+          const operator = tokens[pos.current - 1].value;
+          let cap = "";
+          let val = "";
+          
+          while (pos.current < tokens.length && tokens[pos.current].type !== TokenType.RPAREN) {
+              if (tokens[pos.current].type === TokenType.CAPTURE) {
+                  cap = tokens[pos.current].value;
+                  pos.current++;
+              } else if (tokens[pos.current].type === TokenType.STRING) {
+                  val = tokens[pos.current].value;
+                  pos.current++;
+              } else {
+                  pos.current++;
+              }
+          }
+          if (pos.current < tokens.length) pos.current++;
+          predicates.push({ operator, capture: cap, value: val });
+        } else if (tokens[pos.current].type === TokenType.CAPTURE) {
+           innerCapture = tokens[pos.current].value;
+           pos.current++;
+        } else {
+          const child = parsePattern(tokens, pos);
+          if (child) children.push(child);
+          else pos.current++;
+        }
+      }
+      if (pos.current < tokens.length) pos.current++;
+      
+      pattern = { type: type as any, nodeType, children, predicates };
+      if (innerCapture) pattern.capture = innerCapture;
+    } else {
+      pattern = parsePattern(tokens, pos);
+      if (pattern) {
+        while (pos.current < tokens.length && tokens[pos.current].type !== TokenType.RPAREN) {
+          if (tokens[pos.current].type === TokenType.LPAREN && 
+              pos.current + 1 < tokens.length && 
+              tokens[pos.current + 1].type === TokenType.PREDICATE) {
+            pos.current += 2;
+            const operator = tokens[pos.current - 1].value;
+            let cap = "";
+            let val = "";
+            
+            while (pos.current < tokens.length && tokens[pos.current].type !== TokenType.RPAREN) {
+                if (tokens[pos.current].type === TokenType.CAPTURE) {
+                    cap = tokens[pos.current].value;
+                    pos.current++;
+                } else if (tokens[pos.current].type === TokenType.STRING) {
+                    val = tokens[pos.current].value;
+                    pos.current++;
+                } else {
+                    pos.current++;
+                }
+            }
+            if (pos.current < tokens.length) pos.current++;
+            if (!pattern.predicates) pattern.predicates = [];
+            pattern.predicates.push({ operator, capture: cap, value: val });
+          } else {
+            pos.current++;
+          }
+        }
+        if (pos.current < tokens.length) pos.current++;
+      }
+    }
+  } else {
+    pos.current++;
+  }
+  
+  if (!pattern) return null;
+  if (field) pattern.field = field;
+  
+  while (pos.current < tokens.length) {
+    const postToken = tokens[pos.current];
+    if (postToken.type === TokenType.QUANTIFIER) {
+      pattern.quantifier = postToken.value as any;
+      pos.current++;
+    } else if (postToken.type === TokenType.CAPTURE) {
+      pattern.capture = postToken.value;
+      pos.current++;
     } else {
       break;
     }
   }
+  
+  return pattern;
+}
+
+export function parseQuery(queryStr: string): QueryPattern[] {
+  const tokens = tokenizeQuery(queryStr);
+  const patterns: QueryPattern[] = [];
+  let pos = { current: 0 };
+  while (pos.current < tokens.length) {
+    const pat = parsePattern(tokens, pos);
+    if (pat) patterns.push(pat);
+    else pos.current++;
+  }
   return patterns;
 }
 
-function matchChildren(flattenedChildren: any[], childPatterns: QueryPattern[], patternIndex: number, currentCaptures: QueryCapture[]): QueryCapture[] | null {
-  if (patternIndex >= childPatterns.length) {
-    return currentCaptures;
-  }
-  
-  const pat = childPatterns[patternIndex];
-  for (let i = 0; i < flattenedChildren.length; i++) {
-    const child = flattenedChildren[i];
-    const localCaptures: QueryCapture[] = [];
-    const matched = executePatternMatch(child, pat, localCaptures);
-    if (matched) {
-      const restCaptures = matchChildren(flattenedChildren.slice(i + 1), childPatterns, patternIndex + 1, [...currentCaptures, ...localCaptures]);
-      if (restCaptures !== null) {
-        return restCaptures;
-      }
+function evaluatePredicates(pat: QueryPattern, captures: QueryCapture[]): boolean {
+  if (!pat.predicates || pat.predicates.length === 0) return true;
+
+  for (const pred of pat.predicates) {
+    const targetCapture = captures.filter(c => c.name === pred.capture);
+    if (targetCapture.length === 0) continue;
+    
+    for (const cap of targetCapture) {
+       const getNodeText = (n: any): string => {
+           if (typeof n === 'string') return n;
+           if (n.value !== undefined && typeof n.value === 'string') return n.value;
+           if (n.type === 'token') return n.value || "";
+           return String(n.value || n.type);
+       }
+       
+       const val = getNodeText(cap.node);
+       
+       if (pred.operator === '#eq?') {
+         if (val !== pred.value) return false;
+       } else if (pred.operator === '#not-eq?') {
+         if (val === pred.value) return false;
+       } else if (pred.operator === '#match?') {
+         try {
+           const regex = new RegExp(pred.value);
+           if (!regex.test(val)) return false;
+         } catch { return false; }
+       }
     }
   }
+  return true;
+}
+
+function matchChildren(
+   parent: any,
+   flattenedChildren: any[],
+   childPatterns: QueryPattern[],
+   childIdx: number,
+   nodeIdx: number,
+   captures: QueryCapture[]
+): QueryCapture[] | null {
+  if (childIdx >= childPatterns.length) {
+     return captures;
+  }
+  
+  const pat = childPatterns[childIdx];
+  const q = pat.quantifier;
+  
+  if (pat.field) {
+    if (parent && parent[pat.field] !== undefined) {
+      const target = parent[pat.field];
+      const targetNodes = Array.isArray(target) ? target : [target];
+      
+      for (const tn of targetNodes) {
+        const localCaptures: QueryCapture[] = [];
+        if (executePatternMatch(tn, pat, localCaptures)) {
+           const res = matchChildren(parent, flattenedChildren, childPatterns, childIdx + 1, nodeIdx, [...captures, ...localCaptures]);
+           if (res !== null) return res;
+        }
+      }
+    }
+    // If it has a '*' or '?' quantifier, it implies the field is optional
+    if (q === '*' || q === '?') {
+      const res = matchChildren(parent, flattenedChildren, childPatterns, childIdx + 1, nodeIdx, captures);
+      if (res !== null) return res;
+    }
+    return null;
+  }
+  
+  if (q === '*' || q === '?') {
+    const res = matchChildren(parent, flattenedChildren, childPatterns, childIdx + 1, nodeIdx, captures);
+    if (res !== null) return res;
+  }
+  
+  for (let i = nodeIdx; i < flattenedChildren.length; i++) {
+     const localCaptures: QueryCapture[] = [];
+     if (executePatternMatch(flattenedChildren[i], pat, localCaptures)) {
+        if (q === '?' || !q) {
+           const res = matchChildren(parent, flattenedChildren, childPatterns, childIdx + 1, i + 1, [...captures, ...localCaptures]);
+           if (res !== null) return res;
+        } else if (q === '*' || q === '+') {
+           const modifiedPat = { ...pat, quantifier: '*' as const };
+           const newPatterns = [...childPatterns];
+           newPatterns[childIdx] = modifiedPat;
+           const res = matchChildren(parent, flattenedChildren, newPatterns, childIdx, i + 1, [...captures, ...localCaptures]);
+           if (res !== null) return res;
+        }
+     }
+  }
+
   return null;
 }
 
 export function executePatternMatch(node: any, pat: QueryPattern, captures: QueryCapture[]): boolean {
+  if (!node && pat.type !== 'wildcard') return false;
   if (!node || typeof node !== 'object') return false;
+  
+  const startCapturesLen = captures.length;
+
+  if (pat.type === 'wildcard') {
+    if (pat.capture) captures.push({ name: pat.capture, node });
+    return evaluatePredicates(pat, captures.slice(startCapturesLen));
+  }
   
   if (pat.type === 'literal') {
     const textVal = typeof node === 'string' ? node : (node.value && typeof node.value === 'string' ? node.value : null);
-    if (textVal && textVal === pat.literalValue) {
-      if (pat.capture) {
-        captures.push({ name: pat.capture, node });
-      }
-      return true;
+    if (textVal === pat.literalValue) {
+      if (pat.capture) captures.push({ name: pat.capture, node });
+      return evaluatePredicates(pat, captures.slice(startCapturesLen));
     }
     return false;
   }
   
-  if (pat.type !== '_' && node.type !== pat.type) {
+  if (pat.type === 'alternation') {
+    for (const alt of pat.alternatives || []) {
+      const altCaptures: QueryCapture[] = [];
+      if (executePatternMatch(node, alt, altCaptures)) {
+        captures.push(...altCaptures);
+        if (pat.capture) captures.push({ name: pat.capture, node });
+        return evaluatePredicates(pat, captures.slice(startCapturesLen));
+      }
+    }
     return false;
   }
   
-  if (pat.children && pat.children.length > 0) {
-    const childrenNodes = getStructuralNodes(node.children !== undefined ? node.children : node.value);
-    const childMatchCaptures = matchChildren(childrenNodes, pat.children, 0, []);
-    if (childMatchCaptures === null) {
+  if (pat.type === 'node') {
+    if (pat.nodeType && pat.nodeType !== '_' && node.type !== pat.nodeType) {
       return false;
     }
-    captures.push(...childMatchCaptures);
+    
+    if (pat.children && pat.children.length > 0) {
+      const childrenNodes = getStructuralNodes(node.children !== undefined ? node.children : node.value);
+      const childMatchCaptures = matchChildren(node, childrenNodes, pat.children, 0, 0, []);
+      if (childMatchCaptures === null) {
+        return false;
+      }
+      captures.push(...childMatchCaptures);
+    }
+    
+    if (pat.capture) captures.push({ name: pat.capture, node });
+    return evaluatePredicates(pat, captures.slice(startCapturesLen));
   }
   
-  if (pat.capture) {
-    captures.push({ name: pat.capture, node });
-  }
-  
-  return true;
+  return false;
 }
 
 export class CSTQuery {
