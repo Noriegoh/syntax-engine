@@ -554,6 +554,8 @@ export default function App() {
     return includes;
   };
 
+  const backgroundAstCacheRef = useRef<Record<string, { content: string; rootElement: any; debouncedAstCode: string; ast: any }>>({});
+
   // Build ASTs for all workspace files. Reuses the active file's compile result directly
   const computedWorkspaceASTs = useMemo(() => {
     const asts: Record<string, any> = {};
@@ -562,6 +564,17 @@ export default function App() {
     for (const [filename, content] of Object.entries(workspaceFiles)) {
       if (filename === activeFileName) {
         asts[filename] = astResult;
+        continue;
+      }
+      
+      const cached = backgroundAstCacheRef.current[filename];
+      if (
+        cached && 
+        cached.content === content && 
+        cached.rootElement === rootElement && 
+        cached.debouncedAstCode === debouncedAstCode
+      ) {
+        asts[filename] = cached.ast;
         continue;
       }
       
@@ -582,6 +595,13 @@ export default function App() {
             ast = customTransform(result.ast, content) || result.ast;
           }
           asts[filename] = ast;
+          
+          backgroundAstCacheRef.current[filename] = {
+            content,
+            rootElement,
+            debouncedAstCode,
+            ast
+          };
         } else {
           asts[filename] = null;
         }
@@ -599,10 +619,66 @@ export default function App() {
     setScopeError(resolverErrorMsg);
   }, [resolverErrorMsg]);
 
+  const backgroundScopesCacheRef = useRef<Record<string, { ast: any; content: string; debouncedScopeResolverCode: string; scope: LexicalScope }>>({});
+
   // Build local scopes and resolve cross-file references on top of workspace ASTs
   const resolvedWorkspaceScopes = useMemo(() => {
     const scopes: Record<string, LexicalScope> = {};
     if (!debouncedScopeResolverCode || !rootElement) return scopes;
+
+    const cloneLexicalScope = (scope: LexicalScope): LexicalScope => {
+      const cloned: LexicalScope = {
+        id: scope.id,
+        name: scope.name,
+        type: scope.type,
+        start: scope.start,
+        end: scope.end,
+        node: scope.node,
+        parentId: scope.parentId,
+        fileName: scope.fileName,
+        children: [],
+        symbols: [],
+        references: []
+      };
+
+      if (scope.symbols) {
+        cloned.symbols = scope.symbols.map(sym => ({
+          id: sym.id,
+          name: sym.name,
+          kind: sym.kind,
+          datatype: sym.datatype,
+          start: sym.start,
+          end: sym.end,
+          node: sym.node,
+          scopeId: sym.scopeId,
+          fileName: sym.fileName,
+          references: []
+        }));
+      }
+
+      if (scope.references) {
+        cloned.references = scope.references.map(ref => ({
+          id: ref.id,
+          name: ref.name,
+          start: ref.start,
+          end: ref.end,
+          node: ref.node,
+          scopeId: ref.scopeId,
+          resolvedSymbolId: ref.resolvedSymbolId,
+          fileName: ref.fileName
+        }));
+      }
+
+      if (scope.children) {
+        cloned.children = scope.children.map(child => {
+          const clonedChild = cloneLexicalScope(child);
+          clonedChild.parentId = cloned.id;
+          return clonedChild;
+        });
+      }
+
+      return cloned;
+    };
 
     try {
       setResolverErrorMsg(null);
@@ -612,6 +688,18 @@ export default function App() {
       for (const [filename, ast] of Object.entries(computedWorkspaceASTs)) {
         if (!ast) continue;
         const content = workspaceFiles[filename] || "";
+
+        const cached = backgroundScopesCacheRef.current[filename];
+        if (
+          cached && 
+          cached.ast === ast && 
+          cached.content === content && 
+          cached.debouncedScopeResolverCode === debouncedScopeResolverCode
+        ) {
+          scopes[filename] = cloneLexicalScope(cached.scope);
+          continue;
+        }
+
         try {
           const res = customBuildScopeChain(ast, content, ScopeBuilder);
           if (res) {
@@ -638,6 +726,13 @@ export default function App() {
             };
             annotateFile(res);
             scopes[filename] = res;
+
+            backgroundScopesCacheRef.current[filename] = {
+              ast,
+              content,
+              debouncedScopeResolverCode,
+              scope: res
+            };
           }
         } catch (e: any) {
           console.error(`Error building local scope for ${filename}:`, e);
