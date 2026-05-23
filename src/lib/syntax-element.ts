@@ -5,7 +5,7 @@ import {
   nextRuleId, 
   matchRegex, 
   WS_REGEX, 
-  shiftASTOffsets 
+  GreenNode
 } from './types';
 
 export class SyntaxElement {
@@ -144,13 +144,13 @@ export class SyntaxElement {
     } else if (pattern instanceof RegExp) {
       const match = matchRegex(pattern, text, currentOffset);
       if (match) {
-        return { success: true, value: { type: 'token', value: match[0], ruleId, start: currentOffset, end: currentOffset + match[0].length }, newOffset: currentOffset + match[0].length, dependencyLimit: currentOffset + match[0].length };
+        return { success: true, value: new GreenNode('token', match[0], ruleId, match[0].length), newOffset: currentOffset + match[0].length, dependencyLimit: currentOffset + match[0].length };
       } else {
         return { success: false, error: `Regex failed: ${pattern.source}`, newOffset: currentOffset, dependencyLimit: currentOffset + 1 };
       }
     } else {
       if (text.startsWith(pattern as string, currentOffset)) {
-        return { success: true, value: { type: 'literal', value: pattern, ruleId, start: currentOffset, end: currentOffset + (pattern as string).length }, newOffset: currentOffset + (pattern as string).length, dependencyLimit: currentOffset + (pattern as string).length };
+        return { success: true, value: new GreenNode('literal', pattern, ruleId, (pattern as string).length), newOffset: currentOffset + (pattern as string).length, dependencyLimit: currentOffset + (pattern as string).length };
       } else {
         return { success: false, error: `Expected literal: ${pattern}`, newOffset: currentOffset, dependencyLimit: currentOffset + (pattern as string).length };
       }
@@ -193,7 +193,7 @@ export class SyntaxElement {
           currentLimit = Math.max(currentLimit, r.dependencyLimit);
           const msg = `Syntax Error in ${this.name}: ${err.error} at offset ${currentOffset}. Recovered at offset ${r.newOffset}`;
           ctx.recoveredErrors.push({ message: msg, offset: currentOffset });
-          const res = { type: 'error_node', message: msg, start: currentOffset, end: r.newOffset, deepestOffset: currentOffset };
+          const res = new GreenNode('error_node', msg, 0, r.newOffset - currentOffset);
           err.dependencyLimit = currentLimit;
           return { action: 'break', err, res: { newOffset: r.newOffset, node: res }, dependencyLimit: currentLimit };
         }
@@ -209,7 +209,7 @@ export class SyntaxElement {
         const cleanSnippet = skippedContent.length > 25 ? skippedContent.slice(0, 22) + '...' : skippedContent;
         const msg = `Self-Healed: Malformed structure in ${this.name}. Skipped "${cleanSnippet}" to sync at next boundary.`;
         ctx.recoveredErrors.push({ message: msg, offset: currentOffset });
-        const res = { type: 'error_node', message: msg, start: currentOffset, end: r.newOffset, deepestOffset: currentOffset };
+        const res = new GreenNode('error_node', msg, 0, r.newOffset - currentOffset);
         err.dependencyLimit = currentLimit;
         return { action: 'break', err, res: { newOffset: r.newOffset, node: res }, dependencyLimit: currentLimit };
       }
@@ -255,18 +255,16 @@ export class SyntaxElement {
       }
       const cached = memo.get(memoKey)!;
       
-      // Lazily shift AST offsets and recoveredErrors on cache hit
+      // Lazily shift recoveredErrors on cache hit
       if (cached.astDelta && cached.astDelta !== 0) {
         const d = cached.astDelta;
-        if (cached.ast) {
-          cached.ast = shiftASTOffsets(cached.ast, d);
-        }
         if (cached.recoveredErrors) {
           cached.recoveredErrors = cached.recoveredErrors.map(err => ({
             ...err,
             offset: err.offset + d
           }));
         }
+        // NOTE: Red-Green trees do not need AST offset shifting!
         cached.astDelta = 0;
       }
 
@@ -363,7 +361,7 @@ export class SyntaxElement {
       else if (rule.type === 'whitespace') {
         const match = matchRegex(WS_REGEX, text, currentOffset);
         if (match) {
-          results.push({ type: 'whitespace', value: match[0], ruleId: rule.id, start: currentOffset, end: currentOffset + match[0].length });
+          results.push(new GreenNode('whitespace', match[0], rule.id, match[0].length));
           currentOffset += match[0].length;
           localMaxOffset = Math.max(localMaxOffset, currentOffset);
           // whitespace usually doesn't commit alone
@@ -490,7 +488,7 @@ export class SyntaxElement {
           }
           currentOffset = res.newOffset;
         }
-        if (matches.length > 0) results.push({ type: 'zeroOrMore', value: matches, ruleId: rule.id, start: loopStartOffset, end: currentOffset });
+        if (matches.length > 0) results.push(new GreenNode('zeroOrMore', matches, rule.id, currentOffset - loopStartOffset));
       }
 
       else if (rule.type === 'oneOrMore') {
@@ -510,7 +508,7 @@ export class SyntaxElement {
           currentOffset = res.newOffset;
         }
         if (matches.length > 0) {
-          results.push({ type: 'oneOrMore', value: matches, ruleId: rule.id, start: loopStartOffset, end: currentOffset });
+          results.push(new GreenNode('oneOrMore', matches, rule.id, currentOffset - loopStartOffset));
           if (currentOffset > offset) hasCommitted = true;
         } else {
           const rec = this.handleFailure(text, currentOffset, rule.id, "Expected at least one match", memo, ctx, hasCommitted, localMaxOffset);
@@ -527,7 +525,7 @@ export class SyntaxElement {
 
       else if (rule.type === 'eof') {
         if (currentOffset === text.length) {
-          results.push({ type: 'eof', ruleId: rule.id, start: currentOffset, end: currentOffset });
+          results.push(new GreenNode('eof', null, rule.id, 0));
           localMaxOffset = Math.max(localMaxOffset, currentOffset + 1);
         } else {
           localMaxOffset = Math.max(localMaxOffset, currentOffset + 1);
@@ -553,7 +551,7 @@ export class SyntaxElement {
     }
 
     const finalResult: ParseResult = { 
-      ast: { type: this.name, value: results, ruleId: this.id, start: offset, end: currentOffset }, 
+      ast: new GreenNode(this.name, results, this.id, currentOffset - offset), 
       newOffset: currentOffset,
       recoveredErrors: [...ctx.recoveredErrors],
       dependencyLimit: localMaxOffset

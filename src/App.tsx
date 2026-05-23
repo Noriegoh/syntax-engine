@@ -46,7 +46,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp } from './lib/engine';
+import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, wrapASTTransformerWithIncrementalCache } from './lib/engine';
 import { cn } from './lib/utils';
 import { ParserProfiler } from './components/ParserProfiler';
 
@@ -545,7 +545,8 @@ export default function App() {
       if (!debouncedAstCode || !debouncedAstCode.trim()) {
         return parseResult;
       }
-      const customTransform = new Function('cst', 'fullText', debouncedAstCode);
+      const wrappedBody = wrapASTTransformerWithIncrementalCache(debouncedAstCode);
+      const customTransform = new Function('cst', 'fullText', wrappedBody);
       const res = customTransform(parseResult, testInput);
       return res || parseResult;
     } catch (e: any) {
@@ -603,7 +604,8 @@ export default function App() {
         if (result && !result.error) {
           let ast = result.ast;
           if (debouncedAstCode && debouncedAstCode.trim()) {
-            const customTransform = new Function('cst', 'fullText', debouncedAstCode);
+            const wrappedBody = wrapASTTransformerWithIncrementalCache(debouncedAstCode);
+            const customTransform = new Function('cst', 'fullText', wrappedBody);
             ast = customTransform(result.ast, content) || result.ast;
           }
           asts[filename] = ast;

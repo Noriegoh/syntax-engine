@@ -96,22 +96,129 @@ export function findDiff(oldStr: string, newStr: string): { editOffset: number; 
   };
 }
 
-export function shiftASTOffsets(ast: any, delta: number): any {
-  if (!ast || typeof ast !== 'object') return ast;
-  if (Array.isArray(ast)) {
-    return ast.map(item => shiftASTOffsets(item, delta));
-  }
-  const shifted = { ...ast };
-  if (typeof shifted.start === 'number') shifted.start += delta;
-  if (typeof shifted.end === 'number') shifted.end += delta;
-  if (typeof shifted.deepestOffset === 'number') shifted.deepestOffset += delta;
-  
-  if (shifted.value !== undefined) {
-    if (Array.isArray(shifted.value)) {
-      shifted.value = shifted.value.map((v: any) => shiftASTOffsets(v, delta));
-    } else {
-      shifted.value = shiftASTOffsets(shifted.value, delta);
-    }
-  }
-  return shifted;
+export class GreenNode {
+  constructor(
+    public type: string,
+    public value: any,
+    public ruleId: number,
+    public width: number
+  ) {}
 }
+
+export class RedNode {
+  private _valueCache: any = undefined;
+
+  constructor(
+    public green: GreenNode,
+    public parent: RedNode | null,
+    public offset: number 
+  ) {}
+
+  get type() { return this.green.type; }
+  get ruleId() { return this.green.ruleId; }
+  get start() { return this.offset; }
+  get end() { return this.offset + this.green.width; }
+  get deepestOffset() { return this.start; } // optional API compatibility
+  
+  get value(): any {
+    if (this._valueCache !== undefined) return this._valueCache;
+    
+    if (typeof this.green.value === 'string' || !Array.isArray(this.green.value)) {
+      this._valueCache = this.green.value;
+      return this._valueCache;
+    }
+    
+    let currentOffset = this.offset;
+    const redChildren: RedNode[] = [];
+    for (const childGreen of this.green.value as GreenNode[]) {
+      redChildren.push(new RedNode(childGreen, this, currentOffset));
+      currentOffset += childGreen.width;
+    }
+    this._valueCache = redChildren;
+    return this._valueCache;
+  }
+
+  toJSON() {
+    return {
+      type: this.type,
+      ruleId: this.ruleId,
+      start: this.start,
+      end: this.end,
+      deepestOffset: this.deepestOffset,
+      value: this.value
+    };
+  }
+}
+
+export function wrapASTTransformerWithIncrementalCache(userAstCode: string): string {
+  if (!userAstCode || !userAstCode.trim()) {
+    return userAstCode;
+  }
+  
+  // Try to find the name of the function invoked at the end, default to 'transform'
+  const match = userAstCode.match(/return\s+(\w+)\(cst\);?\s*$/);
+  const transformFuncName = match ? match[1] : 'transform';
+
+  // Replace 'function transform(' with 'function _user_transform('
+  const userFuncPattern = new RegExp(`\\bfunction\\s+${transformFuncName}\\s*\\(`, 'g');
+  const replacedCode = userAstCode.replace(userFuncPattern, `function _user_${transformFuncName}(`);
+
+  return `
+    if (!self.__green_ast_cache) {
+      self.__green_ast_cache = new WeakMap();
+    }
+    const __ast_cache = self.__green_ast_cache;
+
+    function shiftAST(ast, delta) {
+      if (!ast || typeof ast !== 'object') return ast;
+      if (Array.isArray(ast)) {
+        return ast.map(x => shiftAST(x, delta)).filter(Boolean);
+      }
+      const shifted = { ...ast };
+      if (typeof shifted.start === 'number') shifted.start += delta;
+      if (typeof shifted.end === 'number') shifted.end += delta;
+      if (typeof shifted.deepestOffset === 'number') shifted.deepestOffset += delta;
+      if (shifted.children) shifted.children = shifted.children.map(x => shiftAST(x, delta)).filter(Boolean);
+      if (shifted.data) shifted.data = shiftAST(shifted.data, delta);
+      if (shifted.value) {
+        if (Array.isArray(shifted.value)) {
+          shifted.value = shifted.value.map(x => shiftAST(x, delta)).filter(Boolean);
+        } else {
+          shifted.value = shiftAST(shifted.value, delta);
+        }
+      }
+      return shifted;
+    }
+
+    ${replacedCode}
+
+    function ${transformFuncName}(node) {
+      if (!node || typeof node !== 'object') return node;
+      if (Array.isArray(node)) {
+        return node.map(${transformFuncName}).filter(Boolean);
+      }
+      if (node.green) {
+        const cached = __ast_cache.get(node.green);
+        if (cached) {
+          const delta = node.start - cached.offset;
+          return delta === 0 ? cached.ast : shiftAST(cached.ast, delta);
+        }
+      }
+      if (typeof _user_${transformFuncName} !== 'function') {
+        return node;
+      }
+      const result = _user_${transformFuncName}(node);
+      if (node.green && result && typeof result === 'object') {
+        __ast_cache.set(node.green, {
+          offset: node.start,
+          ast: result
+        });
+      }
+      return result;
+    }
+
+    return ${transformFuncName}(cst);
+  `;
+}
+
+

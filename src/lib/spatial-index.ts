@@ -1,4 +1,4 @@
-import { ParseResult, findDiff, shiftASTOffsets, ParseError } from './types';
+import { ParseResult, findDiff, ParseError, RedNode } from './types';
 import { SyntaxElement } from './syntax-element';
 
 export interface CSTNode {
@@ -130,11 +130,8 @@ export class SpatialCSTIndex extends Map<string, ParseResult> {
             newOffset: node.result.newOffset + delta,
             dependencyLimit: newDependencyLimit,
             astDelta: 0,
+            ast: node.result.ast // Red-Green trees do not require shifting immutable AST nodes
           };
-
-          if (node.result.ast) {
-            shiftedResult.ast = shiftASTOffsets(node.result.ast, delta);
-          }
 
           if (node.result.recoveredErrors) {
             shiftedResult.recoveredErrors = node.result.recoveredErrors.map(err => ({
@@ -216,7 +213,7 @@ export class IncrementalParser {
       this.lastText = newText;
       this.lastResult = res || { ast: null, newOffset: 0, error: "Parsing failed" };
       this.lastContext = ctx;
-      return this.lastResult;
+      return this.lastResult.ast ? { ...this.lastResult, ast: new RedNode(this.lastResult.ast, null, 0) } : this.lastResult;
     }
 
     // Incremental parse: calculate the diff
@@ -237,6 +234,6 @@ export class IncrementalParser {
     this.lastText = newText;
     this.lastResult = res || { ast: null, newOffset: 0, error: "Parsing failed" };
     this.lastContext = ctx;
-    return this.lastResult;
+    return this.lastResult.ast ? { ...this.lastResult, ast: new RedNode(this.lastResult.ast, null, 0) } : this.lastResult;
   }
 }

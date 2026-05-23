@@ -1,3 +1,5 @@
+import { GreenNode, RedNode } from './types';
+
 export interface QueryCapture {
   name: string;
   node: any;
@@ -7,6 +9,50 @@ export interface QueryMatch {
   patternIndex: number;
   captures: QueryCapture[];
   node?: any;
+}
+
+interface RelativeQueryMatch {
+  patternIndex: number;
+  nodePath: number[];
+  captures: Array<{
+    name: string;
+    nodePath: number[];
+  }>;
+}
+
+const greenQueryCache = new WeakMap<GreenNode, Map<CSTQuery, RelativeQueryMatch[]>>();
+
+function getPathFromRoot(node: RedNode, root: RedNode): number[] {
+  const path: number[] = [];
+  let curr = node;
+  while (curr !== root && curr.parent !== null) {
+    const parentVal = curr.parent.value;
+    if (Array.isArray(parentVal)) {
+      const idx = parentVal.indexOf(curr);
+      if (idx !== -1) {
+        path.push(idx);
+      } else {
+        break;
+      }
+    } else {
+      break;
+    }
+    curr = curr.parent;
+  }
+  return path.reverse();
+}
+
+function resolveNodePath(root: RedNode, path: number[]): RedNode {
+  let current: RedNode = root;
+  for (const idx of path) {
+    const val = current.value;
+    if (Array.isArray(val) && idx < val.length) {
+      current = val[idx];
+    } else {
+      break;
+    }
+  }
+  return current;
 }
 
 export interface Predicate {
@@ -512,7 +558,60 @@ export class CSTQuery {
     this.patterns = parseQuery(queryString);
   }
 
-  run(ast: any): QueryMatch[] {
+  private runRecursively(
+    node: RedNode,
+    path: number[],
+    tempMatches: Array<{ patternIndex: number; nodePath: number[]; captures: Array<{ name: string; nodePath: number[] }> }>
+  ): void {
+    if (!node || typeof node !== 'object') return;
+
+    const cacheMap = greenQueryCache.get(node.green);
+    const cachedSub = cacheMap?.get(this);
+    if (cachedSub) {
+      for (const rel of cachedSub) {
+        tempMatches.push({
+          patternIndex: rel.patternIndex,
+          nodePath: [...path, ...rel.nodePath],
+          captures: rel.captures.map(c => ({
+            name: c.name,
+            nodePath: [...path, ...c.nodePath]
+          }))
+        });
+      }
+      return;
+    }
+
+    const startCapturesLen = 0;
+    for (let i = 0; i < this.patterns.length; i++) {
+      const pat = this.patterns[i];
+      const captures: QueryCapture[] = [];
+      if (executePatternMatch(node, pat, captures)) {
+        tempMatches.push({
+          patternIndex: i,
+          nodePath: [...path],
+          captures: captures.map(c => {
+            const relativePath = getPathFromRoot(c.node, node);
+            return {
+              name: c.name,
+              nodePath: [...path, ...relativePath]
+            };
+          })
+        });
+      }
+    }
+
+    const childVal = node.value;
+    if (Array.isArray(childVal)) {
+      for (let idx = 0; idx < childVal.length; idx++) {
+        const child = childVal[idx];
+        if (child instanceof RedNode) {
+          this.runRecursively(child, [...path, idx], tempMatches);
+        }
+      }
+    }
+  }
+
+  rawRun(ast: any): QueryMatch[] {
     const matches: QueryMatch[] = [];
     
     const traverse = (node: any) => {
@@ -536,7 +635,7 @@ export class CSTQuery {
         }
       }
       
-      const childrenToTraverse = node.children !== undefined ? node.children : node.value;
+      const childrenToTraverse = (node.children !== undefined) ? node.children : node.value;
       if (childrenToTraverse !== undefined) {
         traverse(childrenToTraverse);
       }
@@ -544,5 +643,36 @@ export class CSTQuery {
     
     traverse(ast);
     return matches;
+  }
+
+  run(ast: any): QueryMatch[] {
+    if (!(ast instanceof RedNode)) {
+      return this.rawRun(ast);
+    }
+
+    let cacheMap = greenQueryCache.get(ast.green);
+    if (!cacheMap) {
+      cacheMap = new Map();
+      greenQueryCache.set(ast.green, cacheMap);
+    }
+
+    let cached = cacheMap.get(this);
+    if (!cached) {
+      const tempMatches: Array<{ patternIndex: number; nodePath: number[]; captures: Array<{ name: string; nodePath: number[] }> }> = [];
+      const tempRoot = new RedNode(ast.green, null, 0);
+      
+      this.runRecursively(tempRoot, [], tempMatches);
+      cached = tempMatches;
+      cacheMap.set(this, cached);
+    }
+
+    return cached.map(rel => ({
+      patternIndex: rel.patternIndex,
+      node: resolveNodePath(ast, rel.nodePath),
+      captures: rel.captures.map(cap => ({
+        name: cap.name,
+        node: resolveNodePath(ast, cap.nodePath)
+      }))
+    }));
   }
 }

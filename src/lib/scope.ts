@@ -154,32 +154,39 @@ export class ScopeBuilder {
       }
     }
 
-    // Sort scopes by length (larger scopes first), then start position
-    // This makes child scopes fall entirely within parent scopes
+    // Sort scopes by start position ascending, and then by end position descending (larger first)
     scopes.sort((a, b) => {
-      const lenA = a.end - a.start;
-      const lenB = b.end - b.start;
-      if (lenA !== lenB) return lenB - lenA;
-      return a.start - b.start;
+      if (a.start !== b.start) return a.start - b.start;
+      return b.end - a.end;
     });
 
     const allScopes = [globalScope, ...scopes];
     const scopeMap = new Map<string, LexicalScope>(allScopes.map(s => [s.id, s]));
 
-    // Build scope tree
+    // Build scope tree in O(S) time using a stack
+    const activeStack: LexicalScope[] = [globalScope];
     for (const scope of scopes) {
-      // Find the smallest scope that contains this scope
-      let parent = globalScope;
-      for (const possibleParent of allScopes) {
-        if (possibleParent === scope) continue;
-        if (possibleParent.start <= scope.start && possibleParent.end >= scope.end) {
-          if (possibleParent.end - possibleParent.start < parent.end - parent.start) {
-            parent = possibleParent;
-          }
+      while (activeStack.length > 1) {
+        const top = activeStack[activeStack.length - 1];
+        if (top.start <= scope.start && top.end >= scope.end) {
+          break;
         }
+        activeStack.pop();
       }
+      const parent = activeStack[activeStack.length - 1];
       scope.parentId = parent.id;
       parent.children.push(scope);
+      activeStack.push(scope);
+    }
+
+    // High performance recursive scope descent helper
+    function findDeepestScope(parent: LexicalScope, start: number, end: number): LexicalScope {
+      for (const child of parent.children) {
+        if (child.start <= start && child.end >= end) {
+          return findDeepestScope(child, start, end);
+        }
+      }
+      return parent;
     }
 
     // 2. Find all symbols
@@ -222,14 +229,7 @@ export class ScopeBuilder {
           const start = sym.node.start ?? 0;
           const end = sym.node.end ?? 0;
 
-          let parentScope = globalScope;
-          for (const scope of allScopes) {
-            if (scope.start <= start && scope.end >= end) {
-              if (scope.end - scope.start < parentScope.end - parentScope.start) {
-                parentScope = scope;
-              }
-            }
-          }
+          const parentScope = findDeepestScope(globalScope, start, end);
 
           const symId = `sym-${++symbolCounter}`;
           parentScope.symbols.push({
@@ -263,14 +263,7 @@ export class ScopeBuilder {
         // Don't add a reference if there's a declaration at the exact same offset
         if (mainDeclOffsets.has(start)) continue;
 
-        let parentScope = globalScope;
-        for (const scope of allScopes) {
-          if (scope.start <= start && scope.end >= end) {
-            if (scope.end - scope.start < parentScope.end - parentScope.start) {
-              parentScope = scope;
-            }
-          }
-        }
+        const parentScope = findDeepestScope(globalScope, start, end);
 
         parentScope.references.push({
           id: `ref-${++refCounter}`,
