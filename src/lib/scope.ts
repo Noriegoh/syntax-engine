@@ -39,22 +39,60 @@ export interface LexicalScope {
 }
 
 export class ScopeBuilder {
-  private scopeRules: { type: string; query: CSTQuery; nameFn: (match: Record<string, any>) => string }[] = [];
-  private symbolRules: { query: CSTQuery; nameFn: (match: Record<string, any>) => string; kindFn: (match: Record<string, any>) => string; datatypeFn: (match: Record<string, any>) => string }[] = [];
-  private referenceRules: { query: CSTQuery; nameFn: (match: Record<string, any>) => string }[] = [];
+  private scopeRules: { type: string; query: CSTQuery; nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string }[] = [];
+  private symbolRules: { 
+    query: CSTQuery; 
+    nameFn?: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string; 
+    kindFn?: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string; 
+    datatypeFn?: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string;
+    isPlural?: boolean;
+    symbolsFn?: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => Array<{
+      node: any;
+      name: string;
+      kind?: 'variable' | 'parameter' | 'function' | 'struct' | 'member' | 'other' | string;
+      datatype?: string;
+    }>;
+  }[] = [];
+  private referenceRules: { query: CSTQuery; nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string }[] = [];
 
-  defineScope(type: string, queryStr: string, nameFn: (match: Record<string, any>) => string) {
-    this.scopeRules.push({ type, query: new CSTQuery(queryStr), nameFn });
+  defineScope(type: string, query: string | CSTQuery, nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string) {
+    this.scopeRules.push({ type, query: query instanceof CSTQuery ? query : new CSTQuery(query), nameFn });
     return this;
   }
 
-  defineSymbol(queryStr: string, nameFn: (match: Record<string, any>) => string, kindFn: (match: Record<string, any>) => string, datatypeFn: (match: Record<string, any>) => string) {
-    this.symbolRules.push({ query: new CSTQuery(queryStr), nameFn, kindFn, datatypeFn });
+  defineSymbol(
+    query: string | CSTQuery, 
+    nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string, 
+    kindFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string, 
+    datatypeFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string
+  ) {
+    this.symbolRules.push({ query: query instanceof CSTQuery ? query : new CSTQuery(query), nameFn, kindFn, datatypeFn });
     return this;
   }
 
-  defineReference(queryStr: string, nameFn: (match: Record<string, any>) => string) {
-    this.referenceRules.push({ query: new CSTQuery(queryStr), nameFn });
+  defineSymbols(
+    query: string | CSTQuery,
+    symbolsFn: (
+      match: Record<string, any>,
+      rawCaptures: any[],
+      rawMatch: any
+    ) => Array<{
+      node: any;
+      name: string;
+      kind?: 'variable' | 'parameter' | 'function' | 'struct' | 'member' | 'other' | string;
+      datatype?: string;
+    }>
+  ) {
+    this.symbolRules.push({
+      query: query instanceof CSTQuery ? query : new CSTQuery(query),
+      isPlural: true,
+      symbolsFn
+    });
+    return this;
+  }
+
+  defineReference(query: string | CSTQuery, nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string) {
+    this.referenceRules.push({ query: query instanceof CSTQuery ? query : new CSTQuery(query), nameFn });
     return this;
   }
 
@@ -76,18 +114,34 @@ export class ScopeBuilder {
     let symbolCounter = 0;
     let refCounter = 0;
 
+    const getCapturesDict = (match: any): Record<string, any> => {
+      const dict: Record<string, any> = {};
+      for (const c of match.captures) {
+        if (dict[c.name] !== undefined) {
+          if (Array.isArray(dict[c.name])) {
+            dict[c.name].push(c.node);
+          } else {
+            dict[c.name] = [dict[c.name], c.node];
+          }
+        } else {
+          dict[c.name] = c.node;
+        }
+      }
+      return dict;
+    };
+
     // 1. Find all scopes
     const scopes: LexicalScope[] = [];
     for (const rule of this.scopeRules) {
       const matches = rule.query.run(ast);
       for (const match of matches) {
-        const captures = Object.fromEntries(match.captures.map(c => [c.name, c.node]));
+        const captures = getCapturesDict(match);
         const targetNode = captures['node'] || match.captures[0]?.node;
         if (!targetNode) continue;
         
         scopes.push({
           id: `scope-${rule.type}-${++scopeCounter}`,
-          name: rule.nameFn(captures),
+          name: rule.nameFn(captures, match.captures, match),
           type: rule.type,
           start: targetNode.start ?? 0,
           end: targetNode.end ?? 0,
@@ -134,36 +188,64 @@ export class ScopeBuilder {
     for (const rule of this.symbolRules) {
       const matches = rule.query.run(ast);
       for (const match of matches) {
-        const captures = Object.fromEntries(match.captures.map(c => [c.name, c.node]));
-        const targetNode = captures['node'] || match.captures[0]?.node;
-        if (!targetNode) continue;
+        const captures = getCapturesDict(match);
         
-        const start = targetNode.start ?? 0;
-        const end = targetNode.end ?? 0;
-
-        let parentScope = globalScope;
-        for (const scope of allScopes) {
-          if (scope.start <= start && scope.end >= end) {
-            if (scope.end - scope.start < parentScope.end - parentScope.start) {
-              parentScope = scope;
+        let symbolsToRegister: Array<{ node: any; name: string; kind: string; datatype: string }> = [];
+        
+        if (rule.isPlural && rule.symbolsFn) {
+          const list = rule.symbolsFn(captures, match.captures, match);
+          if (Array.isArray(list)) {
+            for (const s of list) {
+              if (s && s.node && s.name) {
+                symbolsToRegister.push({
+                  node: s.node,
+                  name: s.name,
+                  kind: s.kind || 'variable',
+                  datatype: s.datatype || 'auto'
+                });
+              }
             }
           }
+        } else if (rule.nameFn && rule.kindFn && rule.datatypeFn) {
+          const targetNode = captures['node'] || match.captures[0]?.node;
+          if (targetNode) {
+            symbolsToRegister.push({
+              node: targetNode,
+              name: rule.nameFn(captures, match.captures, match),
+              kind: rule.kindFn(captures, match.captures, match),
+              datatype: rule.datatypeFn(captures, match.captures, match)
+            });
+          }
         }
-
-        const symId = `sym-${++symbolCounter}`;
-        parentScope.symbols.push({
-          id: symId,
-          name: rule.nameFn(captures),
-          kind: rule.kindFn(captures),
-          datatype: rule.datatypeFn(captures),
-          start,
-          end,
-          node: targetNode,
-          scopeId: parentScope.id,
-          references: []
-        });
         
-        mainDeclOffsets.add(start);
+        for (const sym of symbolsToRegister) {
+          const start = sym.node.start ?? 0;
+          const end = sym.node.end ?? 0;
+
+          let parentScope = globalScope;
+          for (const scope of allScopes) {
+            if (scope.start <= start && scope.end >= end) {
+              if (scope.end - scope.start < parentScope.end - parentScope.start) {
+                parentScope = scope;
+              }
+            }
+          }
+
+          const symId = `sym-${++symbolCounter}`;
+          parentScope.symbols.push({
+            id: symId,
+            name: sym.name,
+            kind: sym.kind,
+            datatype: sym.datatype,
+            start,
+            end,
+            node: sym.node,
+            scopeId: parentScope.id,
+            references: []
+          });
+          
+          mainDeclOffsets.add(start);
+        }
       }
     }
 
@@ -171,7 +253,7 @@ export class ScopeBuilder {
     for (const rule of this.referenceRules) {
       const matches = rule.query.run(ast);
       for (const match of matches) {
-        const captures = Object.fromEntries(match.captures.map(c => [c.name, c.node]));
+        const captures = getCapturesDict(match);
         const targetNode = captures['node'] || match.captures[0]?.node;
         if (!targetNode) continue;
         
@@ -192,7 +274,7 @@ export class ScopeBuilder {
 
         parentScope.references.push({
           id: `ref-${++refCounter}`,
-          name: rule.nameFn(captures),
+          name: rule.nameFn(captures, match.captures, match),
           start,
           end,
           node: targetNode,

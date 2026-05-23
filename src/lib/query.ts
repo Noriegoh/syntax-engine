@@ -24,6 +24,7 @@ export interface QueryPattern {
   capture?: string;
   field?: string;
   quantifier?: '*' | '+' | '?';
+  isDescendant?: boolean;
   predicates?: Predicate[];
 }
 
@@ -74,8 +75,20 @@ function tokenizeQuery(queryStr: string): Token[] {
     if (queryStr[i] === '[') { tokens.push({ type: TokenType.LBRACKET, value: '[' }); i++; continue; }
     if (queryStr[i] === ']') { tokens.push({ type: TokenType.RBRACKET, value: ']' }); i++; continue; }
     
-    if (['*', '+', '?'].includes(queryStr[i])) {
+    if (queryStr.substring(i, i + 2) === '..') {
+      tokens.push({ type: TokenType.IDENTIFIER, value: '..' });
+      i += 2;
+      continue;
+    }
+    
+    if (['+', '?'].includes(queryStr[i])) {
       tokens.push({ type: TokenType.QUANTIFIER, value: queryStr[i] });
+      i++;
+      continue;
+    }
+    
+    if (queryStr[i] === '*') {
+      tokens.push({ type: TokenType.WILDCARD, value: '*' });
       i++;
       continue;
     }
@@ -185,13 +198,14 @@ function parsePattern(tokens: Token[], pos: { current: number }): QueryPattern |
     
     const nextToken = tokens[pos.current];
     if (nextToken.type === TokenType.IDENTIFIER || nextToken.type === TokenType.WILDCARD) {
-      const nodeType = nextToken.value === '_' ? undefined : nextToken.value;
-      const type = nextToken.value === '_' ? 'wildcard' : 'node';
+      const nodeType = (nextToken.value === '_' || nextToken.value === '*') ? undefined : nextToken.value;
+      const type = (nextToken.value === '_' || nextToken.value === '*') ? 'wildcard' : 'node';
       pos.current++;
       
       const children: QueryPattern[] = [];
       const predicates: Predicate[] = [];
       let innerCapture: string | undefined;
+      let nextIsDescendant = false;
       
       while (pos.current < tokens.length && tokens[pos.current].type !== TokenType.RPAREN) {
         if (tokens[pos.current].type === TokenType.LPAREN && 
@@ -218,10 +232,20 @@ function parsePattern(tokens: Token[], pos: { current: number }): QueryPattern |
         } else if (tokens[pos.current].type === TokenType.CAPTURE) {
            innerCapture = tokens[pos.current].value;
            pos.current++;
+        } else if (tokens[pos.current].type === TokenType.IDENTIFIER && tokens[pos.current].value === '..') {
+           nextIsDescendant = true;
+           pos.current++;
         } else {
-          const child = parsePattern(tokens, pos);
-          if (child) children.push(child);
-          else pos.current++;
+           const child = parsePattern(tokens, pos);
+           if (child) {
+             if (nextIsDescendant) {
+               child.isDescendant = true;
+               nextIsDescendant = false;
+             }
+             children.push(child);
+           } else {
+             pos.current++;
+           }
         }
       }
       if (pos.current < tokens.length) pos.current++;
@@ -270,7 +294,7 @@ function parsePattern(tokens: Token[], pos: { current: number }): QueryPattern |
   
   while (pos.current < tokens.length) {
     const postToken = tokens[pos.current];
-    if (postToken.type === TokenType.QUANTIFIER) {
+    if (postToken.type === TokenType.QUANTIFIER || (postToken.type === TokenType.WILDCARD && postToken.value === '*')) {
       pattern.quantifier = postToken.value as any;
       pos.current++;
     } else if (postToken.type === TokenType.CAPTURE) {
@@ -328,9 +352,41 @@ function evaluatePredicates(pat: QueryPattern, captures: QueryCapture[]): boolea
   return true;
 }
 
+export interface Candidate {
+  node: any;
+  isDirect: boolean;
+}
+
+export function getPreOrderCandidates(nodes: any[]): Candidate[] {
+  const result: Candidate[] = [];
+  
+  const traverse = (n: any, isDirect: boolean) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) {
+      for (const item of n) {
+        traverse(item, isDirect);
+      }
+      return;
+    }
+    
+    result.push({ node: n, isDirect });
+    
+    const childrenNodes = getStructuralNodes(n.children !== undefined ? n.children : n.value);
+    for (const child of childrenNodes) {
+      traverse(child, false);
+    }
+  };
+  
+  for (const node of nodes) {
+    traverse(node, true);
+  }
+  
+  return result;
+}
+
 function matchChildren(
    parent: any,
-   flattenedChildren: any[],
+   candidates: Candidate[],
    childPatterns: QueryPattern[],
    childIdx: number,
    nodeIdx: number,
@@ -342,6 +398,7 @@ function matchChildren(
   
   const pat = childPatterns[childIdx];
   const q = pat.quantifier;
+  const isDescendantPat = pat.isDescendant || false;
   
   if (pat.field) {
     if (parent && parent[pat.field] !== undefined) {
@@ -351,38 +408,44 @@ function matchChildren(
       for (const tn of targetNodes) {
         const localCaptures: QueryCapture[] = [];
         if (executePatternMatch(tn, pat, localCaptures)) {
-           const res = matchChildren(parent, flattenedChildren, childPatterns, childIdx + 1, nodeIdx, [...captures, ...localCaptures]);
+           const res = matchChildren(parent, candidates, childPatterns, childIdx + 1, nodeIdx, [...captures, ...localCaptures]);
            if (res !== null) return res;
         }
       }
     }
     // If it has a '*' or '?' quantifier, it implies the field is optional
     if (q === '*' || q === '?') {
-      const res = matchChildren(parent, flattenedChildren, childPatterns, childIdx + 1, nodeIdx, captures);
+      const res = matchChildren(parent, candidates, childPatterns, childIdx + 1, nodeIdx, captures);
       if (res !== null) return res;
     }
     return null;
   }
   
-  if (q === '*' || q === '?') {
-    const res = matchChildren(parent, flattenedChildren, childPatterns, childIdx + 1, nodeIdx, captures);
-    if (res !== null) return res;
-  }
-  
-  for (let i = nodeIdx; i < flattenedChildren.length; i++) {
+  for (let i = nodeIdx; i < candidates.length; i++) {
+     const cand = candidates[i];
+     
+     if (!isDescendantPat && !cand.isDirect) {
+        continue;
+     }
+     
      const localCaptures: QueryCapture[] = [];
-     if (executePatternMatch(flattenedChildren[i], pat, localCaptures)) {
+     if (executePatternMatch(cand.node, pat, localCaptures)) {
         if (q === '?' || !q) {
-           const res = matchChildren(parent, flattenedChildren, childPatterns, childIdx + 1, i + 1, [...captures, ...localCaptures]);
+           const res = matchChildren(parent, candidates, childPatterns, childIdx + 1, i + 1, [...captures, ...localCaptures]);
            if (res !== null) return res;
         } else if (q === '*' || q === '+') {
            const modifiedPat = { ...pat, quantifier: '*' as const };
            const newPatterns = [...childPatterns];
            newPatterns[childIdx] = modifiedPat;
-           const res = matchChildren(parent, flattenedChildren, newPatterns, childIdx, i + 1, [...captures, ...localCaptures]);
+           const res = matchChildren(parent, candidates, newPatterns, childIdx, i + 1, [...captures, ...localCaptures]);
            if (res !== null) return res;
         }
      }
+  }
+
+  if (q === '*' || q === '?') {
+    const res = matchChildren(parent, candidates, childPatterns, childIdx + 1, nodeIdx, captures);
+    if (res !== null) return res;
   }
 
   return null;
@@ -427,7 +490,8 @@ export function executePatternMatch(node: any, pat: QueryPattern, captures: Quer
     
     if (pat.children && pat.children.length > 0) {
       const childrenNodes = getStructuralNodes(node.children !== undefined ? node.children : node.value);
-      const childMatchCaptures = matchChildren(node, childrenNodes, pat.children, 0, 0, []);
+      const candidates = getPreOrderCandidates(childrenNodes);
+      const childMatchCaptures = matchChildren(node, candidates, pat.children, 0, 0, []);
       if (childMatchCaptures === null) {
         return false;
       }

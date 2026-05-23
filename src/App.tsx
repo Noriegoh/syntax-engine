@@ -342,6 +342,18 @@ builder.defineSymbol(
   (match) => extractType(match.node)                    
 );
 
+// Note: You can also use the plural builder.defineSymbols() method 
+// to define multiple symbols from a single query. For example:
+// builder.defineSymbols("(function .. param @param)", (match) => {
+//   const params = Array.isArray(match.param) ? match.param : (match.param ? [match.param] : []);
+//   return params.map(p => ({
+//     node: p,
+//     name: extractId(p),
+//     kind: "parameter",
+//     datatype: extractType(p)
+//   }));
+// });
+
 // 3. Define Symbol References (connects identifiers back to their declarations)
 builder.defineReference("(id @name)", (match) => extractId(match.name));
 
@@ -3173,19 +3185,44 @@ export default function App() {
                       <div className="h-full flex flex-col overflow-hidden bg-slate-950/20">
                         <div className="p-4 border-b border-white/5 bg-white/[0.02]">
                           <div className="relative group">
-                            <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-500 group-focus-within:text-indigo-400 transition-colors">
+                            <div className="absolute top-2.5 left-3 flex items-center pointer-events-none text-slate-500 group-focus-within:text-indigo-400 transition-colors">
                               <Search className="w-3.5 h-3.5" />
                             </div>
-                            <input 
-                              type="text"
+                            <textarea 
                               value={queryText}
                               onChange={(e) => setQueryText(e.target.value)}
-                              placeholder="Enter S-expression query (e.g. (struct_decl (identifier) @name))"
-                              className="w-full bg-slate-900/50 border border-white/10 rounded-lg py-2 pl-9 pr-4 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all font-mono"
+                              placeholder="Enter S-expression query (e.g.&#10;(struct_decl&#10;  (id @name)))"
+                              rows={4}
+                              className="w-full bg-slate-900/50 border border-white/10 rounded-lg py-2.5 pl-9 pr-4 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all font-mono resize-y min-h-[90px] custom-scrollbar"
                             />
-                            <div className="absolute right-3 top-1/2 -translate-y-1/2 flex gap-1">
-                               <div className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-[8px] font-bold text-slate-500 uppercase tracking-tighter">Enter to Run</div>
+                            <div className="absolute right-3 bottom-2.5 flex gap-1 pointer-events-none">
+                               <div className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-[8px] font-bold text-slate-500 uppercase tracking-tighter">S-Expr Parser</div>
                             </div>
+                          </div>
+                          
+                          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                            <span className="text-[10px] text-slate-500 font-medium select-none">Examples:</span>
+                            <button 
+                              onClick={() => setQueryText('(struct_decl (identifier) @struct_name)')}
+                              className="text-[10px] bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/15 rounded px-1.5 py-0.5 font-mono cursor-pointer transition-colors"
+                              title="Click to load direct child query"
+                            >
+                              Direct Child
+                            </button>
+                            <button 
+                              onClick={() => setQueryText('(hlsl_func_decl .. param @p)')}
+                              className="text-[10px] bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/15 rounded px-1.5 py-0.5 font-mono cursor-pointer transition-colors"
+                              title="Click to load descendant query searching params inside any function"
+                            >
+                              .. Descendant Params
+                            </button>
+                            <button 
+                              onClick={() => setQueryText('(struct_decl .. (var_decl (identifier) @field))')}
+                              className="text-[10px] bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/15 rounded px-1.5 py-0.5 font-mono cursor-pointer transition-colors"
+                              title="Click to load descendant query searching fields nested inside a struct"
+                            >
+                              .. Nested Fields
+                            </button>
                           </div>
                         </div>
                         
