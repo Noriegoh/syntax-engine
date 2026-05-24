@@ -46,9 +46,100 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, wrapASTTransformerWithIncrementalCache } from './lib/engine';
+import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, wrapASTTransformerWithIncrementalCache, findDiff } from './lib/engine';
 import { cn } from './lib/utils';
 import { ParserProfiler } from './components/ParserProfiler';
+
+const STYLE_PLAIN_ID = 0;
+const STYLE_COMMENT_ID = 1;
+const STYLE_STRING_ID = 2;
+const STYLE_NUMBER_ID = 3;
+const STYLE_KEYWORD_ID = 4;
+const STYLE_ACTIVE_DECL_ID = 5;
+const STYLE_ACTIVE_REF_ID = 6;
+const STYLE_REF_DIRECT_ID = 7;
+
+const STYLE_ID_TO_NAME = [
+  "",
+  "comment",
+  "string",
+  "number",
+  "keyword",
+  "active-symbol-declaration",
+  "active-symbol-reference",
+  "active-reference-direct"
+];
+
+const extraStyleIdMap = new Map<string, number>();
+const styleIdToNameList = [...STYLE_ID_TO_NAME];
+
+const styleNameToIdMap = new Map<string, number>();
+for (let i = 0; i < STYLE_ID_TO_NAME.length; i++) {
+  styleNameToIdMap.set(STYLE_ID_TO_NAME[i], i);
+}
+
+const getStyleIdForName = (name: string | undefined): number => {
+  if (!name) return 0;
+  
+  const cachedId = styleNameToIdMap.get(name);
+  if (cachedId !== undefined) return cachedId;
+  
+  let dynamicId = extraStyleIdMap.get(name);
+  if (dynamicId === undefined) {
+    dynamicId = styleIdToNameList.length;
+    extraStyleIdMap.set(name, dynamicId);
+    styleIdToNameList.push(name);
+  }
+  return dynamicId;
+};
+
+const getStyleClass = (styleId: number, isInActiveBlock: boolean): string => {
+  if (styleId === 0) return "plain-code text-slate-300" + (isInActiveBlock ? " bg-indigo-950/40 text-indigo-100 ring-1 ring-indigo-500/15 rounded-sm" : "");
+  
+  const name = styleIdToNameList[styleId] || "";
+  let cls = "";
+  
+  if (name === 'active-symbol-declaration') {
+    cls = "bg-indigo-500/40 text-indigo-200 font-extrabold ring-1 ring-indigo-400 px-0.5 rounded shadow-[0_0_12px_rgba(99,102,241,0.6)]";
+  } else if (name === 'active-symbol-reference') {
+    cls = "bg-emerald-500/35 text-emerald-200 font-bold border-b-2 border-dashed border-emerald-400/80 px-0.5 rounded";
+  } else if (name === 'active-reference-direct') {
+    cls = "bg-sky-500/40 text-sky-200 font-extrabold ring-1 ring-sky-400 px-0.5 rounded shadow-[0_0_12px_rgba(14,165,233,0.6)]";
+  } else if (name.includes("keyword") || name === "kw" || name === "key" || name === "modifier") {
+    cls = "text-pink-400 font-bold";
+  } else if (name.includes("comment") || name === "noise") {
+    cls = "text-slate-500/80 italic";
+  } else if (name.includes("string") || name === "str" || name === "char") {
+    cls = "text-amber-300";
+  } else if (name.includes("number") || name === "num" || name === "float" || name === "int" || name === "digit" || name === "val" || name === "value") {
+    cls = "text-cyan-400";
+  } else if (name.includes("id") || name === "identifier") {
+    cls = "text-sky-300";
+  } else if (name.includes("type") || name === "typename" || name === "decl_type" || name === "structname") {
+    cls = "text-teal-300 font-medium";
+  } else if (name.includes("func") || name === "fn" || name === "method" || name === "call" || name === "vert" || name === "frag") {
+    cls = "text-emerald-400 font-semibold";
+  } else if (name.includes("operator") || name === "op" || name === "punctuation" || name === "equals" || name === "plus" || name === "minus" || name === "mul" || name === "div") {
+    cls = "text-indigo-300";
+  } else if (name === "error_node" || name.includes("error")) {
+    cls = "text-rose-400 bg-rose-500/10 underline decoration-rose-500/80 decoration-wavy";
+  } else if (name.includes("whitespace") || name === "ws") {
+    cls = "text-slate-500/30";
+  } else if (name.includes("struct") || name.includes("class") || name.includes("interface") || name.includes("cbuffer")) {
+    cls = "text-violet-400 font-bold";
+  } else if (name.includes("semantics") || name === "semantic" || name.includes("colon")) {
+    cls = "text-purple-400";
+  } else {
+    cls = "text-indigo-200/90";
+  }
+
+  if (isInActiveBlock) {
+    // Overlay block highlighting styling beautifully
+    cls += " bg-indigo-950/40 text-indigo-100 ring-1 ring-indigo-500/15 rounded-sm";
+  }
+
+  return cls;
+};
 
 interface SavedProject {
   id: string;
@@ -276,86 +367,20 @@ const DEFAULT_SCOPE_RESOLVER_CODE = `// --- Custom Lexical Scope Resolver ---
 
 const builder = new ScopeBuilder();
 
-// Helper to extract nested identifier strings safely
-function extractId(n) {
-  if (!n) return "untitled";
-  if (typeof n === 'string') return n;
-  if (Array.isArray(n)) {
-    for (const item of n) {
-      const res = extractId(item);
-      if (res !== "untitled") return res;
-    }
-    return "untitled";
-  }
-  if (n.type === 'id' && typeof n.value === 'string') return n.value;
-  
-  const next = n.value !== undefined ? n.value : n.children;
-  if (next !== undefined) {
-    return extractId(next);
-  }
-  return "untitled";
-}
-
-// Helper to extract datatype from symbol nodes (e.g. variable, parameter, member)
-function extractType(n) {
-  if (!n) return "auto";
-  if (n.type === 'hlsl_type' || n.type === 'type') {
-    return extractId(n);
-  }
-  const children = n.children !== undefined ? n.children : n.value;
-  if (Array.isArray(children)) {
-    for (const child of children) {
-      const t = extractType(child);
-      if (t !== "auto") return t;
-    }
-  } else if (children && typeof children === 'object') {
-    return extractType(children);
-  }
-  return "auto";
-}
-
 // 1. Define Lexical Scopes (containers that hold symbols)
-builder.defineScope("struct", "(struct (id @name)) @node", (match) => "struct " + extractId(match.name));
-builder.defineScope("function", "(function (id @name)) @node", (match) => "func " + extractId(match.name));
-builder.defineScope("block", "(code_block @node)", (match) => "Local Block");
+// You can use standard function callbacks, or descriptive string formats like "{name}" or "{node:type}"!
+builder.defineScope("struct", "(struct (id @name)) @node", "struct {name}");
+builder.defineScope("function", "(function (id @name)) @node", "func {name}");
+builder.defineScope("block", "(code_block @node)", "Local Block");
 
 // 2. Define Symbol Declarations (variables, parameters, members)
-// Query captures give you direct access to matched AST nodes
-builder.defineSymbol(
-  "(variable (id @name)) @node", 
-  (match) => extractId(match.name),               // Name
-  (match) => "variable",                          // Kind
-  (match) => extractType(match.node)              // Datatype
-);
-
-builder.defineSymbol(
-  "(param (id @name)) @node", 
-  (match) => extractId(match.name),         
-  (match) => "parameter",               
-  (match) => extractType(match.node)                    
-);
-
-builder.defineSymbol(
-  "(struct_member (id @name)) @node", 
-  (match) => extractId(match.name),         
-  (match) => "member",               
-  (match) => extractType(match.node)                    
-);
-
-// Note: You can also use the plural builder.defineSymbols() method 
-// to define multiple symbols from a single query. For example:
-// builder.defineSymbols("(function .. param @param)", (match) => {
-//   const params = Array.isArray(match.param) ? match.param : (match.param ? [match.param] : []);
-//   return params.map(p => ({
-//     node: p,
-//     name: extractId(p),
-//     kind: "parameter",
-//     datatype: extractType(p)
-//   }));
-// });
+// Binds patterns matching (variable/param/member) to lexical symbols
+builder.defineSymbol("(variable (id @name)) @node", "{name}", "variable", "{node:type}");
+builder.defineSymbol("(param (id @name)) @node", "{name}", "parameter", "{node:type}");
+builder.defineSymbol("(struct_member (id @name)) @node", "{name}", "member", "{node:type}");
 
 // 3. Define Symbol References (connects identifiers back to their declarations)
-builder.defineReference("(id @name)", (match) => extractId(match.name));
+builder.defineReference("(id @name)", "{name}");
 
 return builder.build(ast, fullText);
 `;
@@ -487,6 +512,16 @@ export default function App() {
     return initialFiles["main.hlsl"];
   });
 
+  // Debounced input states to reduce keystroke latency
+  const [debouncedTestInput, setDebouncedTestInput] = useState<string>(testInput);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedTestInput(testInput);
+    }, 200); // 200ms debounce for high performance
+    return () => clearTimeout(handler);
+  }, [testInput]);
+
   const [isAddingFile, setIsAddingFile] = useState(false);
   const [newFileNameInput, setNewFileNameInput] = useState("");
   const [renamingFileName, setRenamingFileName] = useState<string | null>(null);
@@ -503,6 +538,48 @@ export default function App() {
   const [projectName, setProjectName] = useState("HLSL Subset");
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
   const [showLibrary, setShowLibrary] = useState(false);
+
+  // C# Code Export settings
+  const [showCSharpModal, setShowCSharpModal] = useState(false);
+  const [csNamespace, setCsNamespace] = useState("SyntaxEngine");
+  const [csExportMode, setCsExportMode] = useState<'bundle' | 'modular'>('bundle');
+  const [csAstSeparate, setCsAstSeparate] = useState(false);
+  const [csSelectedFileIndex, setCsSelectedFileIndex] = useState(0);
+  const [copiedFileIndex, setCopiedFileIndex] = useState<number | null>(null);
+const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(null);
+  
+  const csGeneratedFiles = useMemo(() => {
+    if (!rootElement) return [];
+    if (csExportMode === 'bundle') {
+      const code = generateFullCSharp(rootElement, csNamespace, lastScopeBuilder || undefined);
+      return [{ name: `${rootElement.name ? rootElement.name.replace(/[^a-zA-Z0-9]/g, '') : 'Parser'}Bundle.cs`, content: code }];
+    } else {
+      return generateModularCSharp(rootElement, {
+        namespace: csNamespace,
+        stronglyTypedAstSeparate: csAstSeparate,
+        scopeBuilder: lastScopeBuilder || undefined
+      });
+    }
+  }, [rootElement, csNamespace, csExportMode, csAstSeparate, lastScopeBuilder]);
+
+  const downloadSingleFile = (name: string, content: string) => {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadAllFiles = () => {
+    csGeneratedFiles.forEach((file, index) => {
+      setTimeout(() => {
+        downloadSingleFile(file.name, file.content);
+      }, index * 100);
+    });
+  };
+
   const [activeTab, setActiveTab] = useState<'designer' | 'playground'>('designer');
   const [cstViewMode, setCstViewMode] = useState<'json' | 'visual' | 'query' | 'scopes' | 'performance'>('json');
   const [visualizeMode, setVisualizeMode] = useState<'cst' | 'ast'>('cst');
@@ -547,14 +624,14 @@ export default function App() {
       }
       const wrappedBody = wrapASTTransformerWithIncrementalCache(debouncedAstCode);
       const customTransform = new Function('cst', 'fullText', wrappedBody);
-      const res = customTransform(parseResult, testInput);
+      const res = customTransform(parseResult, debouncedTestInput);
       return res || parseResult;
     } catch (e: any) {
       console.error(e);
       setAstError(e.message || "Error transforming CST to AST");
       return parseResult; // Fallback to raw CST on error so development flow isn't crashed
     }
-  }, [parseResult, testInput, debouncedAstCode]);
+  }, [parseResult, debouncedTestInput, debouncedAstCode]);
 
   // Helper to find includes from a given document text
   const getIncludesFromText = (content: string): string[] => {
@@ -696,6 +773,13 @@ export default function App() {
 
     try {
       setResolverErrorMsg(null);
+      let capturedScopeBuilder: ScopeBuilder | null = null;
+      class InterceptedScopeBuilder extends ScopeBuilder {
+        constructor() {
+          super();
+          capturedScopeBuilder = this;
+        }
+      }
       const customBuildScopeChain = new Function('ast', 'fullText', 'ScopeBuilder', debouncedScopeResolverCode);
       
       // 1. Build local scope tree for each file & annotate fileNames
@@ -715,7 +799,7 @@ export default function App() {
         }
 
         try {
-          const res = customBuildScopeChain(ast, content, ScopeBuilder);
+          const res = customBuildScopeChain(ast, content, InterceptedScopeBuilder);
           if (res) {
             res.name = filename; // Label global scope
             
@@ -754,6 +838,10 @@ export default function App() {
             setResolverErrorMsg(e.message || `Error building local scope for ${filename}`);
           }
         }
+      }
+
+      if (capturedScopeBuilder) {
+        setLastScopeBuilder(capturedScopeBuilder);
       }
 
       // Collect helper
@@ -857,7 +945,7 @@ export default function App() {
     }
     
     // Smooth scroll inside parent container
-    const textBefore = testInput.substring(0, node.start);
+    const textBefore = debouncedTestInput.substring(0, node.start);
     const linesBefore = textBefore.split('\n');
     const line = linesBefore.length;
     const col = linesBefore[linesBefore.length - 1].length + 1;
@@ -901,18 +989,83 @@ export default function App() {
   const [cacheStats, setCacheStats] = useState<{ hits: number; misses: number; size: number } | null>(null);
   const [parseDuration, setParseDuration] = useState<number>(0);
   const incrementalParserRef = useRef<IncrementalParser | null>(null);
+  const pendingEditsRef = useRef<{ editOffset: number; removedLength: number; insertedText: string }[]>([]);
   const latestCSTRef = useRef<any>(null);
 
+  const shiftAstAndStateOffsets = (editOffset: number, removedLength: number, delta: number) => {
+    const shiftRedNode = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+      
+      if (typeof node.offset === 'number') {
+        if (node.offset >= editOffset + removedLength) {
+          node.offset += delta;
+        } else if (node.offset >= editOffset) {
+          node.offset += delta;
+        }
+      }
+
+      if (node._valueCache !== undefined && Array.isArray(node._valueCache)) {
+        const len = node._valueCache.length;
+        for (let i = 0; i < len; i++) {
+          shiftRedNode(node._valueCache[i]);
+        }
+      }
+    };
+
+    // Shift AST / Parse Results
+    if (parseResult) shiftRedNode(parseResult);
+    if (latestCSTRef.current) shiftRedNode(latestCSTRef.current);
+
+    const shiftGeneralObj = (obj: any) => {
+      if (!obj || typeof obj !== 'object') return;
+      if (typeof obj.start === 'number') {
+        if (obj.start >= editOffset + removedLength) {
+          obj.start += delta;
+        } else if (obj.start >= editOffset) {
+          obj.start += delta;
+        }
+      }
+      if (typeof obj.end === 'number') {
+        if (obj.end >= editOffset + removedLength) {
+          obj.end += delta;
+        } else if (obj.end >= editOffset) {
+          obj.end += delta;
+        }
+      }
+      if (Array.isArray(obj.references)) {
+        for (const ref of obj.references) {
+          shiftGeneralObj(ref);
+        }
+      }
+      if (Array.isArray(obj.referencedBy)) {
+        for (const rBy of obj.referencedBy) {
+          shiftGeneralObj(rBy);
+        }
+      }
+    };
+
+    // Shift UI states
+    if (hoveredScope) shiftGeneralObj(hoveredScope);
+    if (selectedScope) shiftGeneralObj(selectedScope);
+    if (hoveredSymbol) shiftGeneralObj(hoveredSymbol);
+    if (selectedSymbol) shiftGeneralObj(selectedSymbol);
+    if (hoveredReference) shiftGeneralObj(hoveredReference);
+    if (selectedReference) shiftGeneralObj(selectedReference);
+  };
+
   // Debounced input states to reduce keystroke latency
-  const [debouncedTestInput, setDebouncedTestInput] = useState<string>(testInput);
   const [debouncedGrammarCode, setDebouncedGrammarCode] = useState<string>(grammarCode);
 
+  // Debounce syncing testInput back to workspaceFiles on pause to prevent excessive parent state mutations
   useEffect(() => {
     const handler = setTimeout(() => {
-      setDebouncedTestInput(testInput);
-    }, 200); // 200ms debounce for high performance
+      setWorkspaceFiles(prev => {
+        if (prev[activeFileName] === testInput) return prev;
+        return { ...prev, [activeFileName]: testInput };
+      });
+    }, 250);
     return () => clearTimeout(handler);
-  }, [testInput]);
+  }, [testInput, activeFileName]);
 
   useEffect(() => {
     const handler = setTimeout(() => {
@@ -920,6 +1073,29 @@ export default function App() {
     }, 250); // 250ms debounce for grammar definition
     return () => clearTimeout(handler);
   }, [grammarCode]);
+
+  const errorLines = useMemo(() => {
+    const lines = new Set<number>();
+    const len = recoveredErrors.length;
+    for (let i = 0; i < len; i++) {
+      const err = recoveredErrors[i];
+      if (err && typeof err.offset === 'number') {
+        try {
+          lines.add(getLineAndCol(debouncedTestInput, err.offset).line);
+        } catch {}
+      }
+    }
+    return lines;
+  }, [recoveredErrors, debouncedTestInput]);
+
+  const fatalErrorLine = useMemo(() => {
+    if (parseError && typeof parseError.offset === 'number') {
+      try {
+        return getLineAndCol(debouncedTestInput, parseError.offset).line;
+      } catch {}
+    }
+    return -1;
+  }, [parseError, debouncedTestInput]);
 
   // Layout states for adjustable and collapsible panels
   const [designerEditorWidth, setDesignerEditorWidth] = useState(500);
@@ -1256,7 +1432,8 @@ export default function App() {
     if (incrementalParserRef.current) {
       incrementalParserRef.current.clear();
     }
-  }, [rootElement]);
+    pendingEditsRef.current = [];
+  }, [rootElement, activeFileName]);
 
   useEffect(() => {
     if (rootElement) {
@@ -1278,7 +1455,9 @@ export default function App() {
         if (!incrementalParserRef.current) {
           incrementalParserRef.current = new IncrementalParser();
         }
-        result = incrementalParserRef.current.parse(rootElement, debouncedTestInput, context);
+        const edits = [...pendingEditsRef.current];
+        pendingEditsRef.current = [];
+        result = incrementalParserRef.current.parse(rootElement, debouncedTestInput, context, edits);
       } else {
         result = rootElement.parse(debouncedTestInput, 0, new Map(), context);
       }
@@ -1328,28 +1507,34 @@ export default function App() {
   };
 
   const highlightWithCST = (code: string) => {
-    const charStyles = new Array<any>(code.length).fill(null);
+    const charStyles = new Int32Array(code.length);
 
     // 1. Pre-populate basic common tokens to guarantee robust basic highlighting on failure to parse
     const commentsRegex = /\/\/.*|\/\*[\s\S]*?\*\//g;
     let match;
     while ((match = commentsRegex.exec(code)) !== null) {
-      for (let i = match.index; i < match.index + match[0].length; i++) {
-        charStyles[i] = { styleName: 'comment' };
+      const matchLen = match[0].length;
+      const startIndex = match.index;
+      for (let i = 0; i < matchLen; i++) {
+        charStyles[startIndex + i] = STYLE_COMMENT_ID;
       }
     }
 
     const stringRegex = /"([^"\\]|\\.)*"|'([^'\\]|\\.)*'/g;
     while ((match = stringRegex.exec(code)) !== null) {
-      for (let i = match.index; i < match.index + match[0].length; i++) {
-        charStyles[i] = { styleName: 'string' };
+      const matchLen = match[0].length;
+      const startIndex = match.index;
+      for (let i = 0; i < matchLen; i++) {
+        charStyles[startIndex + i] = STYLE_STRING_ID;
       }
     }
 
     const numberRegex = /\b\d+(?:\.\d+)?\b/g;
     while ((match = numberRegex.exec(code)) !== null) {
-      for (let i = match.index; i < match.index + match[0].length; i++) {
-        charStyles[i] = { styleName: 'number' };
+      const matchLen = match[0].length;
+      const startIndex = match.index;
+      for (let i = 0; i < matchLen; i++) {
+        charStyles[startIndex + i] = STYLE_NUMBER_ID;
       }
     }
 
@@ -1359,14 +1544,18 @@ export default function App() {
       const end = match.index + match[0].length;
       // Pre-populate keywords but respect already-identified comments
       for (let i = start; i < end; i++) {
-        if (!charStyles[i] || charStyles[i].styleName !== 'comment') {
-          charStyles[i] = { styleName: 'keyword' };
+        const existing = charStyles[i];
+        if (existing !== STYLE_COMMENT_ID) {
+          charStyles[i] = STYLE_KEYWORD_ID;
         }
       }
     }
 
     // 2. Walk the parsed CST to layer high-fidelity semantic highlighting on top
-    const ast = parseResult || latestCSTRef.current;
+    // Delay high-fidelity walking if the editor content differs from the debounced AST state.
+    // If the user is typing, standard AST offsets will be shifted relative to the actual code.
+    // Skipping during active edits prevents offset mismatch flickering during typing epochs.
+    const ast = (code === debouncedTestInput) ? (parseResult || latestCSTRef.current) : null;
     if (ast) {
       const isContainer = (name: string) => {
         const n = name.toLowerCase();
@@ -1380,8 +1569,9 @@ export default function App() {
       const walk = (node: any) => {
         if (!node || typeof node !== 'object') return;
         if (Array.isArray(node)) {
-          for (const item of node) {
-            walk(item);
+          const len = node.length;
+          for (let i = 0; i < len; i++) {
+            walk(node[i]);
           }
           return;
         }
@@ -1391,20 +1581,18 @@ export default function App() {
           if (styleName && !isContainer(styleName)) {
             const start = Math.max(0, node.start);
             const end = Math.min(code.length, node.end);
+            
+            const nodeStyleId = getStyleIdForName(styleName);
+
             for (let i = start; i < end; i++) {
-              // Respect pre-populated comments, strings, numbers, and keywords so structural syntax trees
-              // do not turn them into plain identifier colors or unstyled text.
-              const currStyle = charStyles[i]?.styleName;
-              if (!currStyle || 
-                  (currStyle !== 'comment' && 
-                   currStyle !== 'string' && 
-                   currStyle !== 'number' && 
-                   currStyle !== 'keyword')) {
-                charStyles[i] = {
-                  type: node.type,
-                  ruleId: node.ruleId,
-                  styleName: styleName
-                };
+              // Respect pre-populated comments, strings, numbers, and keywords
+              const currStyle = charStyles[i];
+              if (currStyle === STYLE_PLAIN_ID || 
+                  (currStyle !== STYLE_COMMENT_ID && 
+                   currStyle !== STYLE_STRING_ID && 
+                   currStyle !== STYLE_NUMBER_ID && 
+                   currStyle !== STYLE_KEYWORD_ID)) {
+                charStyles[i] = nodeStyleId;
               }
             }
           }
@@ -1412,8 +1600,9 @@ export default function App() {
 
         if (node.value !== undefined) {
           if (Array.isArray(node.value)) {
-            for (const item of node.value) {
-              walk(item);
+            const len = node.value.length;
+            for (let i = 0; i < len; i++) {
+              walk(node.value[i]);
             }
           } else {
             walk(node.value);
@@ -1425,30 +1614,26 @@ export default function App() {
     }
 
     const activeBlock = hoveredScope || selectedScope;
-    if (activeBlock && activeBlock.type !== 'global' && (!activeBlock.fileName || activeBlock.fileName === activeFileName)) {
-      for (let i = activeBlock.start; i < activeBlock.end; i++) {
-        if (i >= 0 && i < charStyles.length) {
-          if (!charStyles[i]) {
-            charStyles[i] = { styleName: 'plain' };
-          }
-          charStyles[i].isInActiveBlock = true;
-        }
-      }
-    }
+    const hasActiveBlock = !!(activeBlock && activeBlock.type !== 'global' && (!activeBlock.fileName || activeBlock.fileName === activeFileName));
+    const activeBlockStart = hasActiveBlock ? activeBlock.start : -1;
+    const activeBlockEnd = hasActiveBlock ? activeBlock.end : -1;
 
     const activeSym = selectedSymbol || hoveredSymbol;
     if (activeSym) {
-      for (let i = activeSym.start; i < activeSym.end; i++) {
-        if (i >= 0 && i < charStyles.length) {
-          charStyles[i] = { ...charStyles[i], styleName: 'active-symbol-declaration' };
-        }
+      const declStart = Math.max(0, activeSym.start);
+      const declEnd = Math.min(code.length, activeSym.end);
+      for (let i = declStart; i < declEnd; i++) {
+        charStyles[i] = STYLE_ACTIVE_DECL_ID;
       }
       if (activeSym.references) {
-        for (const ref of activeSym.references) {
-          for (let i = ref.start; i < ref.end; i++) {
-            if (i >= 0 && i < charStyles.length) {
-              charStyles[i] = { ...charStyles[i], styleName: 'active-symbol-reference' };
-            }
+        const refs = activeSym.references;
+        const len = refs.length;
+        for (let r = 0; r < len; r++) {
+          const ref = refs[r];
+          const refStart = Math.max(0, ref.start);
+          const refEnd = Math.min(code.length, ref.end);
+          for (let i = refStart; i < refEnd; i++) {
+            charStyles[i] = STYLE_ACTIVE_REF_ID;
           }
         }
       }
@@ -1456,112 +1641,58 @@ export default function App() {
 
     const activeRef = selectedReference || hoveredReference;
     if (activeRef && (!activeRef.fileName || activeRef.fileName === activeFileName)) {
-      for (let i = activeRef.start; i < activeRef.end; i++) {
-        if (i >= 0 && i < charStyles.length) {
-          charStyles[i] = { ...charStyles[i], styleName: 'active-reference-direct' };
-        }
+      const refStart = Math.max(0, activeRef.start);
+      const refEnd = Math.min(code.length, activeRef.end);
+      for (let i = refStart; i < refEnd; i++) {
+        charStyles[i] = STYLE_REF_DIRECT_ID;
       }
     }
 
-    // 3. Render charStyles to styled HTML spans using run-length encoding
+    // 3. Render charStyles to styled HTML spans using highly optimized run-length encoding and native text slicing
     let html = "";
-    let currentStyle: any = null;
-    let currentText = "";
+    let prevStyleId = -1;
+    let runStart = 0;
 
     const escapeHtml = (text: string): string => {
-      // Escape HTML characters to avoid disrupting react-simple-code-editor structure
       return text
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
     };
 
-    const getStyleClass = (style: any): string => {
-      if (!style) return "plain-code text-slate-300";
-      
-      const name = (style.styleName || "").toLowerCase();
-      let cls = "";
-      
-      if (name === 'active-symbol-declaration') {
-        cls = "bg-indigo-500/40 text-indigo-200 font-extrabold ring-1 ring-indigo-400 px-0.5 rounded shadow-[0_0_12px_rgba(99,102,241,0.6)]";
-      } else if (name === 'active-symbol-reference') {
-        cls = "bg-emerald-500/35 text-emerald-200 font-bold border-b-2 border-dashed border-emerald-400/80 px-0.5 rounded";
-      } else if (name === 'active-reference-direct') {
-        cls = "bg-sky-500/40 text-sky-200 font-extrabold ring-1 ring-sky-400 px-0.5 rounded shadow-[0_0_12px_rgba(14,165,233,0.6)]";
-      } else if (name.includes("keyword") || name === "kw" || name === "key" || name === "modifier") {
-        cls = "text-pink-400 font-bold";
-      } else if (name.includes("comment") || name === "noise") {
-        cls = "text-slate-500/80 italic";
-      } else if (name.includes("string") || name === "str" || name === "char") {
-        cls = "text-amber-300";
-      } else if (name.includes("number") || name === "num" || name === "float" || name === "int" || name === "digit" || name === "val" || name === "value") {
-        cls = "text-cyan-400";
-      } else if (name.includes("id") || name === "identifier") {
-        cls = "text-sky-300";
-      } else if (name.includes("type") || name === "typename" || name === "decl_type" || name === "structname") {
-        cls = "text-teal-300 font-medium";
-      } else if (name.includes("func") || name === "fn" || name === "method" || name === "call" || name === "vert" || name === "frag") {
-        cls = "text-emerald-400 font-semibold";
-      } else if (name.includes("operator") || name === "op" || name === "punctuation" || name === "equals" || name === "plus" || name === "minus" || name === "mul" || name === "div") {
-        cls = "text-indigo-300";
-      } else if (name === "error_node" || name.includes("error")) {
-        cls = "text-rose-400 bg-rose-500/10 underline decoration-rose-500/80 decoration-wavy";
-      } else if (name.includes("whitespace") || name === "ws") {
-        cls = "text-slate-500/30";
-      } else if (name.includes("struct") || name.includes("class") || name.includes("interface") || name.includes("cbuffer")) {
-        cls = "text-violet-400 font-bold";
-      } else if (name.includes("semantics") || name === "semantic" || name.includes("colon")) {
-        cls = "text-purple-400";
-      } else {
-        cls = "text-indigo-200/90";
-      }
+    const codeLen = code.length;
+    for (let i = 0; i < codeLen; i++) {
+      const styleId = charStyles[i];
+      const itemInActive = hasActiveBlock && i >= activeBlockStart && i < activeBlockEnd;
+      const prevInActive = hasActiveBlock && (i - 1) >= activeBlockStart && (i - 1) < activeBlockEnd;
 
-      if (style.isInActiveBlock) {
-        // Overlay block highlighting styling beautifully
-        cls += " bg-indigo-950/40 text-indigo-100 ring-1 ring-indigo-500/15 rounded-sm";
-      }
+      const isSameStyle = (i > 0) && (styleId === prevStyleId && itemInActive === prevInActive);
 
-      return cls;
-    };
-
-    for (let i = 0; i < code.length; i++) {
-      const style = charStyles[i];
-      const char = code[i];
-      
-      const isSameStyle = currentStyle && style && 
-        currentStyle.styleName === style.styleName && 
-        currentStyle.type === style.type && 
-        currentStyle.ruleId === style.ruleId &&
-        currentStyle.isInActiveBlock === style.isInActiveBlock;
-        
-      const isBothUnstyled = !currentStyle && !style;
-
-      if (isSameStyle || isBothUnstyled) {
-        currentText += char;
-      } else {
-        if (currentText) {
-          const cls = getStyleClass(currentStyle);
-          html += `<span class="${cls}">${escapeHtml(currentText)}</span>`;
+      if (!isSameStyle) {
+        if (i > runStart) {
+          const spanText = code.slice(runStart, i);
+          const cls = getStyleClass(prevStyleId, prevInActive);
+          html += `<span class="${cls}">${escapeHtml(spanText)}</span>`;
         }
-        currentStyle = style;
-        currentText = char;
+        prevStyleId = styleId;
+        runStart = i;
       }
     }
 
-    if (currentText) {
-      const cls = getStyleClass(currentStyle);
-      html += `<span class="${cls}">${escapeHtml(currentText)}</span>`;
+    if (codeLen > runStart) {
+      const spanText = code.slice(runStart, codeLen);
+      const lastInActive = hasActiveBlock && (codeLen - 1) >= activeBlockStart && (codeLen - 1) < activeBlockEnd;
+      const cls = getStyleClass(prevStyleId, lastInActive);
+      html += `<span class="${cls}">${escapeHtml(spanText)}</span>`;
     }
 
     return html;
   };
 
   const generateCSharp = () => {
-    if (!rootElement) return "";
-    const code = generateFullCSharp(rootElement);
-    console.log(code);
-    alert("C# Parser Generated! The complete code has been logged to the browser console. \n\nYou can copy it from there and paste it into a file in Unity.");
-    return code;
+    if (!rootElement) return;
+    setCsSelectedFileIndex(0);
+    setShowCSharpModal(true);
   };
 
   const renderCSTVisualNode = (node: any, depth: number = 0, isLast: boolean = true, path: string = "root"): React.ReactNode => {
@@ -2751,23 +2882,11 @@ export default function App() {
                       const lineNum = index + 1;
                       const isCurrentLine = lineNum === cursorPosition.line;
                       
-                      // Check for recovered errors on this exact line
-                      const hasRecovered = recoveredErrors.some(err => {
-                        try {
-                          return getLineAndCol(testInput, err.offset).line === lineNum;
-                        } catch {
-                          return false;
-                        }
-                      });
+                      // Check for recovered errors on this exact line using constant-time Set lookup
+                      const hasRecovered = errorLines.has(lineNum);
 
                       // Check for fatal errors on this exact line
-                      const hasFatal = parseError && parseError.offset !== undefined && (() => {
-                        try {
-                          return getLineAndCol(testInput, parseError.offset).line === lineNum;
-                        } catch {
-                          return false;
-                        }
-                      })();
+                      const hasFatal = lineNum === fatalErrorLine;
 
                       return (
                         <div 
@@ -2789,8 +2908,25 @@ export default function App() {
                     <Editor
                       value={testInput}
                       onValueChange={code => {
+                        let edit: { editOffset: number; removedLength: number; insertedText: string } | undefined;
+                        
+                        // Grab the last edit recorded by onBeforeInput/onPaste/onCut
+                        if (pendingEditsRef.current.length > 0) {
+                          edit = pendingEditsRef.current[pendingEditsRef.current.length - 1];
+                        } else {
+                          // Fallback to findDiff if the browser/event did not capture it in time
+                          edit = findDiff(testInput, code);
+                          pendingEditsRef.current.push(edit);
+                        }
+
+                        if (edit) {
+                          const delta = edit.insertedText.length - edit.removedLength;
+                          if (delta !== 0 || edit.removedLength > 0) {
+                            shiftAstAndStateOffsets(edit.editOffset, edit.removedLength, delta);
+                          }
+                        }
+
                         setTestInput(code);
-                        setWorkspaceFiles(prev => ({ ...prev, [activeFileName]: code }));
                         // Update cursor position directly when text changes to capture accurate cursor line metrics
                         const activeEl = document.activeElement;
                         if (activeEl && activeEl.tagName === 'TEXTAREA') {
@@ -2802,6 +2938,70 @@ export default function App() {
                           const col = lines[lines.length - 1].length + 1;
                           setCursorPosition({ line, col });
                         }
+                      }}
+                      onBeforeInput={e => {
+                        const textarea = e.currentTarget as HTMLTextAreaElement;
+                        if (!textarea) return;
+
+                        const start = textarea.selectionStart;
+                        const end = textarea.selectionEnd;
+                        const inputType = (e as any).inputType;
+                        const data = (e as any).data;
+
+                        let editOffset = start;
+                        let removedLength = end - start;
+                        let insertedText = "";
+
+                        if (inputType === 'insertLineBreak') {
+                          insertedText = "\n";
+                        } else if (inputType === 'deleteContentBackward') {
+                          if (removedLength === 0 && start > 0) {
+                            editOffset = start - 1;
+                            removedLength = 1;
+                          }
+                        } else if (inputType === 'deleteContentForward') {
+                          if (removedLength === 0 && start < textarea.value.length) {
+                            editOffset = start;
+                            removedLength = 1;
+                          }
+                        } else if (inputType === 'insertText' || inputType === 'insertCompositionText') {
+                          insertedText = data || "";
+                        } else {
+                          return;
+                        }
+
+                        pendingEditsRef.current.push({
+                          editOffset,
+                          removedLength,
+                          insertedText
+                        });
+                      }}
+                      onPaste={e => {
+                        const textarea = e.currentTarget as HTMLTextAreaElement;
+                        if (!textarea) return;
+
+                        const start = textarea.selectionStart;
+                        const end = textarea.selectionEnd;
+                        const text = e.clipboardData.getData('text');
+
+                        pendingEditsRef.current.push({
+                          editOffset: start,
+                          removedLength: end - start,
+                          insertedText: text
+                        });
+                      }}
+                      onCut={e => {
+                        const textarea = e.currentTarget as HTMLTextAreaElement;
+                        if (!textarea) return;
+
+                        const start = textarea.selectionStart;
+                        const end = textarea.selectionEnd;
+
+                        pendingEditsRef.current.push({
+                          editOffset: start,
+                          removedLength: end - start,
+                          insertedText: ""
+                        });
                       }}
                       highlight={code => highlightWithCST(code)}
                       padding={20}
@@ -2855,7 +3055,7 @@ export default function App() {
                         {parseError.offset !== undefined && (
                           <div className="mt-3 flex items-center gap-4">
                             <span className="text-indigo-400 font-bold px-2 py-0.5 bg-indigo-500/10 rounded border border-indigo-500/20">
-                              Line {getLineAndCol(testInput, parseError.offset).line}, Col {getLineAndCol(testInput, parseError.offset).col}
+                              Line {getLineAndCol(debouncedTestInput, parseError.offset).line}, Col {getLineAndCol(debouncedTestInput, parseError.offset).col}
                             </span>
                             <span className="text-slate-500 text-[10px]">RULE: {parseError.ruleId}</span>
                           </div>
@@ -2895,7 +3095,7 @@ export default function App() {
                               {recoveredErrors.map((err, i) => (
                                 <div key={i} className="flex items-start justify-between p-2.5 bg-black/20 rounded border border-white/5 gap-3">
                                   <span className="opacity-80 break-words whitespace-pre-wrap flex-1 leading-relaxed" title={err.message}>{err.message}</span>
-                                  <span className="text-amber-500/60 font-bold shrink-0 text-[11px]">L{getLineAndCol(testInput, err.offset).line}:C{getLineAndCol(testInput, err.offset).col}</span>
+                                  <span className="text-amber-500/60 font-bold shrink-0 text-[11px]">L{getLineAndCol(debouncedTestInput, err.offset).line}:C{getLineAndCol(debouncedTestInput, err.offset).col}</span>
                                 </div>
                               ))}
                             </div>
@@ -3111,7 +3311,7 @@ export default function App() {
                           let nodeText = "";
                           if (typeof activeNode === 'object' && activeNode !== null) {
                             if (typeof activeNode.start === 'number' && typeof activeNode.end === 'number') {
-                              nodeText = testInput.substring(Math.max(0, activeNode.start), Math.min(testInput.length, activeNode.end));
+                              nodeText = debouncedTestInput.substring(Math.max(0, activeNode.start), Math.min(debouncedTestInput.length, activeNode.end));
                             } else if (activeNode.value !== undefined) {
                               nodeText = String(activeNode.value);
                             }
@@ -3166,7 +3366,7 @@ export default function App() {
                                     <div className="bg-white/[0.02] p-1.5 rounded border border-white/5 col-span-2">
                                       <span className="block text-[8px] text-slate-600 font-black uppercase tracking-widest mb-0.5">Match Location</span>
                                       <span className="text-emerald-400 font-bold">
-                                        Line {getLineAndCol(testInput, activeNode.start).line}, Col {getLineAndCol(testInput, activeNode.start).col}
+                                        Line {getLineAndCol(debouncedTestInput, activeNode.start).line}, Col {getLineAndCol(debouncedTestInput, activeNode.start).col}
                                       </span>
                                     </div>
                                   </div>
@@ -3237,7 +3437,7 @@ export default function App() {
                               const getNodeText = (node: any): string => {
                                 if (!node) return "";
                                 if (typeof node.start === 'number' && typeof node.end === 'number') {
-                                  return testInput.substring(node.start, node.end);
+                                  return debouncedTestInput.substring(node.start, node.end);
                                 }
                                 if (Array.isArray(node)) {
                                   return node.map(getNodeText).join("");
@@ -3256,8 +3456,8 @@ export default function App() {
                               const renderNodeCard = (node: any, titleStr: string, badgeColor: string, copyKey: string) => {
                                 if (!node) return null;
                                 const matchedText = getNodeText(node);
-                                const startCoords = typeof node.start === 'number' ? getLineAndCol(testInput, node.start) : { line: 1, col: 1 };
-                                const endCoords = typeof node.end === 'number' ? getLineAndCol(testInput, node.end) : { line: 1, col: 1 };
+                                const startCoords = typeof node.start === 'number' ? getLineAndCol(debouncedTestInput, node.start) : { line: 1, col: 1 };
+                                const endCoords = typeof node.end === 'number' ? getLineAndCol(debouncedTestInput, node.end) : { line: 1, col: 1 };
                                 const isCopied = copiedMap[copyKey];
 
                                 return (
@@ -3742,7 +3942,7 @@ export default function App() {
                                               </div>
                                               <div className="text-[8px] text-slate-500 flex items-center justify-between">
                                                 <span>Offset: {ref.start}-{ref.end}</span>
-                                                <span>L: {getLineAndCol(testInput, ref.start).line} C: {getLineAndCol(testInput, ref.start).col}</span>
+                                                <span>L: {getLineAndCol(debouncedTestInput, ref.start).line} C: {getLineAndCol(debouncedTestInput, ref.start).col}</span>
                                               </div>
                                             </div>
                                           );
@@ -3891,6 +4091,212 @@ export default function App() {
                  >
                    <Plus className="w-4 h-4" /> Start New Project
                  </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* C# Export Modal */}
+      <AnimatePresence>
+        {showCSharpModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-slate-950/85 backdrop-blur-lg flex items-center justify-center p-6"
+            onClick={() => setShowCSharpModal(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.95, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 15 }}
+              className="w-full max-w-6xl bg-slate-900 border border-white/10 rounded-3xl shadow-2xl overflow-hidden flex flex-col h-[85vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center border border-indigo-500/30">
+                    <Code2 className="text-indigo-400 w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-white tracking-tight leading-none mb-1">C# Engine Export</h2>
+                    <p className="text-xs text-slate-500 font-medium uppercase tracking-widest font-mono">Compiler Codegen & Export Options</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowCSharpModal(false)}
+                  className="w-8 h-8 rounded-full hover:bg-white/5 flex items-center justify-center text-slate-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Main Split Layout */}
+              <div className="flex-1 flex overflow-hidden">
+                {/* Left Drawer: Configuration Panel */}
+                <div className="w-80 border-r border-white/5 bg-black/10 overflow-y-auto p-6 space-y-6 shrink-0">
+                  <div>
+                    <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2 font-mono">Namespace</label>
+                    <input 
+                      type="text" 
+                      value={csNamespace}
+                      onChange={(e) => setCsNamespace(e.target.value.replace(/[^a-zA-Z0-9_.]/g, ''))}
+                      className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 transition-colors font-mono"
+                      placeholder="SyntaxEngine"
+                    />
+                  </div>
+
+                  <div>
+                    <span className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2 font-mono">Export Mode</span>
+                    <div className="grid grid-cols-1 gap-2">
+                      <button 
+                        onClick={() => { setCsExportMode('bundle'); setCsSelectedFileIndex(0); }}
+                        className={cn(
+                          "p-3 rounded-xl border text-left transition-all cursor-pointer",
+                          csExportMode === 'bundle' 
+                            ? "bg-indigo-500/10 border-indigo-500 text-white font-bold ring-1 ring-indigo-500/30" 
+                            : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10 hover:text-slate-200"
+                        )}
+                      >
+                        <div className="text-xs mb-1">Single File Bundle</div>
+                        <div className="text-[10px] text-slate-400 font-normal leading-relaxed">Everything consolidated in a single C# file. Ready for drag-and-drop.</div>
+                      </button>
+
+                      <button 
+                        onClick={() => { setCsExportMode('modular'); setCsSelectedFileIndex(0); }}
+                        className={cn(
+                          "p-3 rounded-xl border text-left transition-all cursor-pointer",
+                          csExportMode === 'modular' 
+                            ? "bg-indigo-500/10 border-indigo-500 text-white font-bold ring-1 ring-indigo-500/30" 
+                            : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10 hover:text-slate-200"
+                        )}
+                      >
+                        <div className="text-xs mb-1">Modular Core & Engine</div>
+                        <div className="text-[10px] text-slate-400 font-normal leading-relaxed">Splits code into Core structures and separate Parser + Nodes files. Ideal for multi-parser projects.</div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {csExportMode === 'modular' && (
+                    <div className="pt-2">
+                      <span className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2 font-mono">AST Nodes Style</span>
+                      <div className="grid grid-cols-1 gap-2">
+                        <button 
+                          onClick={() => { setCsAstSeparate(false); setCsSelectedFileIndex(0); }}
+                          className={cn(
+                            "p-3 rounded-xl border text-left transition-all cursor-pointer",
+                            !csAstSeparate 
+                              ? "bg-indigo-500/10 border-indigo-500 text-white font-bold ring-1 ring-indigo-500/30" 
+                              : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10 hover:text-slate-200"
+                          )}
+                        >
+                          <div className="text-xs mb-1">Single AST File</div>
+                          <div className="text-[10px] text-slate-400 font-normal leading-relaxed">Contains all strongly-typed AST node classes in SyntaxEngine.AstNodes.cs.</div>
+                        </button>
+
+                        <button 
+                          onClick={() => { setCsAstSeparate(true); setCsSelectedFileIndex(0); }}
+                          className={cn(
+                            "p-3 rounded-xl border text-left transition-all cursor-pointer",
+                            csAstSeparate 
+                              ? "bg-indigo-500/10 border-indigo-500 text-white font-bold ring-1 ring-indigo-500/30" 
+                              : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10 hover:text-slate-200"
+                          )}
+                        >
+                          <div className="text-xs mb-1">Separate Node Files</div>
+                          <div className="text-[10px] text-slate-400 font-normal leading-relaxed">Generates individual C# file for every AST element (e.g. ProgramNode.cs, StatementNode.cs) sequentially.</div>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-4 border-t border-white/5 space-y-3">
+                    <span className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400 font-mono">Engine Enhancements</span>
+                    <div className="flex items-start gap-2.5 p-3 bg-slate-950/50 rounded-xl border border-white/5 text-[11px] text-slate-400 leading-relaxed font-sans">
+                      <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <span><strong>Allman Braces</strong>: Every curly brace resides on a clean newline.</span>
+                    </div>
+                    <div className="flex items-start gap-2.5 p-3 bg-slate-950/50 rounded-xl border border-white/5 text-[11px] text-slate-400 leading-relaxed font-sans">
+                      <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <span><strong>Typed Node Enum</strong>: Fast Enum matching avoids slow runtime string routing.</span>
+                    </div>
+                    <div className="flex items-start gap-2.5 p-3 bg-slate-950/50 rounded-xl border border-white/5 text-[11px] text-slate-400 leading-relaxed font-sans">
+                      <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <span><strong>String-Free Cache Key</strong>: Hash struct cache lookup bypasses allocations completely!</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Area: Code Tabs & Content Preview */}
+                <div className="flex-1 flex flex-col overflow-hidden bg-slate-950/40">
+                  {/* File Tabs Bar */}
+                  <div className="flex items-center justify-between border-b border-white/5 px-6 py-2 shrink-0 bg-black/15">
+                    <div className="flex items-center gap-2 overflow-x-auto max-w-[65%] pb-1 pt-1.5 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-white/10">
+                      {csGeneratedFiles.map((file, idx) => (
+                        <button 
+                          key={file.name}
+                          onClick={() => setCsSelectedFileIndex(idx)}
+                          className={cn(
+                            "px-3 py-1.5 rounded-lg text-[11px] font-mono font-medium transition-all flex items-center gap-1.5 shrink-0 border cursor-pointer",
+                            csSelectedFileIndex === idx 
+                              ? "bg-white/10 border-white/10 text-white shadow-md font-bold" 
+                              : "bg-transparent border-transparent text-slate-500 hover:text-slate-300"
+                          )}
+                        >
+                          <FileCode className="w-3.5 h-3.5 text-slate-400" />
+                          {file.name}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {csGeneratedFiles.length > 1 && (
+                        <button 
+                          onClick={downloadAllFiles}
+                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 hover:shadow-lg hover:shadow-indigo-500/20 text-white text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Rocket className="w-3.5 h-3.5" /> Download All
+                        </button>
+                      )}
+                      <button 
+                        onClick={() => {
+                          const file = csGeneratedFiles[csSelectedFileIndex];
+                          if (file) {
+                            navigator.clipboard.writeText(file.content);
+                            setCopiedFileIndex(csSelectedFileIndex);
+                            setTimeout(() => setCopiedFileIndex(null), 1500);
+                          }
+                        }}
+                        className="px-3 py-1.5 bg-white/5 border border-white/15 hover:bg-white/10 text-slate-200 hover:text-white text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
+                      >
+                        {copiedFileIndex === csSelectedFileIndex ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        {copiedFileIndex === csSelectedFileIndex ? 'Copied' : 'Copy'}
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const file = csGeneratedFiles[csSelectedFileIndex];
+                          if (file) downloadSingleFile(file.name, file.content);
+                        }}
+                        className="px-3 py-1.5 bg-white/5 border border-white/15 hover:bg-white/10 text-slate-200 hover:text-white text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <FileCode className="w-3.5 h-3.5 text-indigo-400" /> Download
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Code Viewer Viewport */}
+                  <div className="flex-1 overflow-auto p-6 font-mono text-[11px] text-slate-300 select-text leading-relaxed bg-slate-950/80 custom-scrollbar">
+                    {csGeneratedFiles[csSelectedFileIndex] ? (
+                      <pre className="whitespace-pre overflow-auto font-mono text-[11px] select-all">
+                        <code>{csGeneratedFiles[csSelectedFileIndex].content}</code>
+                      </pre>
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-slate-600">No content available</div>
+                    )}
+                  </div>
+                </div>
               </div>
             </motion.div>
           </motion.div>

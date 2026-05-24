@@ -137,20 +137,20 @@ export class SyntaxElement {
     if (pattern instanceof SyntaxElement) {
       const subResult = pattern.parse(text, currentOffset, memo, context);
       if (subResult && !subResult.error) {
-        return { success: true, value: subResult.ast, newOffset: subResult.newOffset, skipped: pattern.isHidden, dependencyLimit: subResult.dependencyLimit !== undefined ? subResult.dependencyLimit : subResult.newOffset };
+        return { success: true, value: subResult.ast, newOffset: subResult.newOffset, skipped: false, dependencyLimit: subResult.dependencyLimit !== undefined ? subResult.dependencyLimit : subResult.newOffset };
       } else {
         return { success: false, error: subResult?.error || `Failed sub-element: ${pattern.name}`, newOffset: subResult ? subResult.newOffset : currentOffset, dependencyLimit: subResult ? (subResult.dependencyLimit !== undefined ? subResult.dependencyLimit : subResult.newOffset) : currentOffset };
       }
     } else if (pattern instanceof RegExp) {
       const match = matchRegex(pattern, text, currentOffset);
       if (match) {
-        return { success: true, value: new GreenNode('token', match[0], ruleId, match[0].length), newOffset: currentOffset + match[0].length, dependencyLimit: currentOffset + match[0].length };
+        return { success: true, value: GreenNode.create('token', match[0], ruleId, match[0].length), newOffset: currentOffset + match[0].length, dependencyLimit: currentOffset + match[0].length };
       } else {
         return { success: false, error: `Regex failed: ${pattern.source}`, newOffset: currentOffset, dependencyLimit: currentOffset + 1 };
       }
     } else {
       if (text.startsWith(pattern as string, currentOffset)) {
-        return { success: true, value: new GreenNode('literal', pattern, ruleId, (pattern as string).length), newOffset: currentOffset + (pattern as string).length, dependencyLimit: currentOffset + (pattern as string).length };
+        return { success: true, value: GreenNode.create('literal', pattern, ruleId, (pattern as string).length), newOffset: currentOffset + (pattern as string).length, dependencyLimit: currentOffset + (pattern as string).length };
       } else {
         return { success: false, error: `Expected literal: ${pattern}`, newOffset: currentOffset, dependencyLimit: currentOffset + (pattern as string).length };
       }
@@ -193,7 +193,7 @@ export class SyntaxElement {
           currentLimit = Math.max(currentLimit, r.dependencyLimit);
           const msg = `Syntax Error in ${this.name}: ${err.error} at offset ${currentOffset}. Recovered at offset ${r.newOffset}`;
           ctx.recoveredErrors.push({ message: msg, offset: currentOffset });
-          const res = new GreenNode('error_node', msg, 0, r.newOffset - currentOffset);
+          const res = GreenNode.create('error_node', msg, 0, r.newOffset - currentOffset);
           err.dependencyLimit = currentLimit;
           return { action: 'break', err, res: { newOffset: r.newOffset, node: res }, dependencyLimit: currentLimit };
         }
@@ -209,7 +209,7 @@ export class SyntaxElement {
         const cleanSnippet = skippedContent.length > 25 ? skippedContent.slice(0, 22) + '...' : skippedContent;
         const msg = `Self-Healed: Malformed structure in ${this.name}. Skipped "${cleanSnippet}" to sync at next boundary.`;
         ctx.recoveredErrors.push({ message: msg, offset: currentOffset });
-        const res = new GreenNode('error_node', msg, 0, r.newOffset - currentOffset);
+        const res = GreenNode.create('error_node', msg, 0, r.newOffset - currentOffset);
         err.dependencyLimit = currentLimit;
         return { action: 'break', err, res: { newOffset: r.newOffset, node: res }, dependencyLimit: currentLimit };
       }
@@ -336,7 +336,7 @@ export class SyntaxElement {
         const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
         localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
         if (res.success) {
-          if (!res.skipped) {
+          if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
             results.push(res.value);
           }
           currentOffset = res.newOffset;
@@ -361,7 +361,10 @@ export class SyntaxElement {
       else if (rule.type === 'whitespace') {
         const match = matchRegex(WS_REGEX, text, currentOffset);
         if (match) {
-          results.push(new GreenNode('whitespace', match[0], rule.id, match[0].length));
+          const wsNode = GreenNode.create('whitespace', match[0], rule.id, match[0].length);
+          if (wsNode.width > 0) {
+            results.push(wsNode);
+          }
           currentOffset += match[0].length;
           localMaxOffset = Math.max(localMaxOffset, currentOffset);
           // whitespace usually doesn't commit alone
@@ -430,7 +433,7 @@ export class SyntaxElement {
           });
 
           const best = successes[0];
-          if (!best.skipped) {
+          if (best.res && (best.res.width > 0 || best.res.type === 'eof')) {
             results.push(best.res);
           }
           currentOffset = best.newOffset;
@@ -463,7 +466,7 @@ export class SyntaxElement {
         const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
         localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
         if (res.success) {
-          if (!res.skipped) {
+          if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
             results.push(res.value);
           }
           currentOffset = res.newOffset;
@@ -483,12 +486,17 @@ export class SyntaxElement {
             ctx.recoveredErrors.length = beforeLoopErrorsLength;
             break;
           }
-          if (!res.skipped) {
+          if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
             matches.push(res.value);
           }
           currentOffset = res.newOffset;
         }
-        if (matches.length > 0) results.push(new GreenNode('zeroOrMore', matches, rule.id, currentOffset - loopStartOffset));
+        if (matches.length > 0) {
+          const loopWidth = currentOffset - loopStartOffset;
+          if (loopWidth > 0) {
+            results.push(GreenNode.create('zeroOrMore', matches, rule.id, loopWidth));
+          }
+        }
       }
 
       else if (rule.type === 'oneOrMore') {
@@ -502,13 +510,16 @@ export class SyntaxElement {
             ctx.recoveredErrors.length = beforeLoopErrorsLength;
             break;
           }
-          if (!res.skipped) {
+          if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
             matches.push(res.value);
           }
           currentOffset = res.newOffset;
         }
         if (matches.length > 0) {
-          results.push(new GreenNode('oneOrMore', matches, rule.id, currentOffset - loopStartOffset));
+          const loopWidth = currentOffset - loopStartOffset;
+          if (loopWidth > 0) {
+            results.push(GreenNode.create('oneOrMore', matches, rule.id, loopWidth));
+          }
           if (currentOffset > offset) hasCommitted = true;
         } else {
           const rec = this.handleFailure(text, currentOffset, rule.id, "Expected at least one match", memo, ctx, hasCommitted, localMaxOffset);
@@ -525,7 +536,7 @@ export class SyntaxElement {
 
       else if (rule.type === 'eof') {
         if (currentOffset === text.length) {
-          results.push(new GreenNode('eof', null, rule.id, 0));
+          results.push(GreenNode.create('eof', null, rule.id, 0));
           localMaxOffset = Math.max(localMaxOffset, currentOffset + 1);
         } else {
           localMaxOffset = Math.max(localMaxOffset, currentOffset + 1);
@@ -551,7 +562,7 @@ export class SyntaxElement {
     }
 
     const finalResult: ParseResult = { 
-      ast: new GreenNode(this.name, results, this.id, currentOffset - offset), 
+      ast: GreenNode.create(this.name, results, this.id, currentOffset - offset), 
       newOffset: currentOffset,
       recoveredErrors: [...ctx.recoveredErrors],
       dependencyLimit: localMaxOffset

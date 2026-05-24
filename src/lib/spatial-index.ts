@@ -193,7 +193,8 @@ export class IncrementalParser {
       recoveredErrors: ParseError[];
       cacheHits?: number;
       cacheMisses?: number;
-    }
+    },
+    edits?: { editOffset: number; removedLength: number; insertedText: string }[]
   ): ParseResult {
     const ctx = context || {
       maxOffset: -1,
@@ -216,13 +217,21 @@ export class IncrementalParser {
       return this.lastResult.ast ? { ...this.lastResult, ast: new RedNode(this.lastResult.ast, null, 0) } : this.lastResult;
     }
 
-    // Incremental parse: calculate the diff
-    const { editOffset, removedLength, insertedText } = findDiff(this.lastText, newText);
-    const delta = insertedText.length - removedLength;
+    if (edits && edits.length > 0) {
+      // Eagerly apply the precise event-driven edits
+      for (const edit of edits) {
+        const delta = edit.insertedText.length - edit.removedLength;
+        this.memo.applyEdit(edit.editOffset, edit.removedLength, delta);
+      }
+    } else {
+      // Fallback: calculate the diff
+      const { editOffset, removedLength, insertedText } = findDiff(this.lastText, newText);
+      const delta = insertedText.length - removedLength;
 
-    // Shift/invalidate the spatial CST index
-    if (removedLength > 0 || insertedText.length > 0) {
-      this.memo.applyEdit(editOffset, removedLength, delta);
+      // Shift/invalidate the spatial CST index
+      if (removedLength > 0 || insertedText.length > 0) {
+        this.memo.applyEdit(editOffset, removedLength, delta);
+      }
     }
 
     // Parse with the updated memo cache

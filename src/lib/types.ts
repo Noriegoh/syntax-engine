@@ -96,13 +96,59 @@ export function findDiff(oldStr: string, newStr: string): { editOffset: number; 
   };
 }
 
+const greenNodeCache = new Map<string, WeakRef<GreenNode>>();
+const finalizationRegistry = new FinalizationRegistry<string>((key) => {
+  const ref = greenNodeCache.get(key);
+  if (ref && !ref.deref()) {
+    greenNodeCache.delete(key);
+  }
+});
+
+let nextGreenNodeId = 0;
+
 export class GreenNode {
+  public id: number;
+
   constructor(
     public type: string,
     public value: any,
     public ruleId: number,
     public width: number
-  ) {}
+  ) {
+    this.id = ++nextGreenNodeId;
+  }
+
+  public static create(
+    type: string,
+    value: any,
+    ruleId: number,
+    width: number
+  ): GreenNode {
+    let valueKey = "";
+    if (value === null || value === undefined) {
+      valueKey = "null";
+    } else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      valueKey = String(value);
+    } else if (Array.isArray(value)) {
+      valueKey = `[${value.map((c) => (c ? (c as any).id || "0" : "0")).join(",")}]`;
+    } else {
+      valueKey = "obj";
+    }
+
+    const key = `${type}:${ruleId}:${width}:${valueKey}`;
+    const ref = greenNodeCache.get(key);
+    if (ref) {
+      const node = ref.deref();
+      if (node) {
+        return node;
+      }
+    }
+
+    const newNode = new GreenNode(type, value, ruleId, width);
+    greenNodeCache.set(key, new WeakRef(newNode));
+    finalizationRegistry.register(newNode, key);
+    return newNode;
+  }
 }
 
 export class RedNode {

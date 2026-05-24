@@ -1,5 +1,61 @@
 import { CSTQuery, getStructuralNodes } from './query';
 
+export function extractId(n: any): string {
+  if (!n) return "untitled";
+  if (typeof n === 'string') return n;
+  if (Array.isArray(n)) {
+    for (const item of n) {
+      const res = extractId(item);
+      if (res !== "untitled") return res;
+    }
+    return "untitled";
+  }
+  if (n.type === 'id' && typeof n.value === 'string') return n.value;
+  
+  const next = n.value !== undefined ? n.value : n.children;
+  if (next !== undefined) {
+    return extractId(next);
+  }
+  return "untitled";
+}
+
+export function extractType(n: any): string {
+  if (!n) return "auto";
+  if (n.type === 'hlsl_type' || n.type === 'type') {
+    return extractId(n);
+  }
+  const children = n.children !== undefined ? n.children : n.value;
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      const t = extractType(child);
+      if (t !== "auto") return t;
+    }
+  } else if (children && typeof children === 'object') {
+    return extractType(children);
+  }
+  return "auto";
+}
+
+export function evaluateFormat(format: string, captures: Record<string, any>): string {
+  if (typeof format !== 'string') return String(format);
+  return format.replace(/\{([^}]+)\}/g, (_, key) => {
+    let mode = 'id';
+    let capName = key;
+    if (key.includes(':')) {
+      const parts = key.split(':');
+      capName = parts[0];
+      mode = parts[1];
+    }
+    const node = captures[capName];
+    if (!node) return '';
+    const targetNode = Array.isArray(node) ? node[0] : node;
+    if (mode === 'type') {
+      return extractType(targetNode);
+    }
+    return extractId(targetNode);
+  });
+}
+
 export interface SymbolDefinition {
   id: string;
   name: string;
@@ -39,12 +95,13 @@ export interface LexicalScope {
 }
 
 export class ScopeBuilder {
-  private scopeRules: { type: string; query: CSTQuery; nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string }[] = [];
-  private symbolRules: { 
+  public scopeRules: { type: string; query: CSTQuery; queryStr: string; nameFn: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string) }[] = [];
+  public symbolRules: { 
     query: CSTQuery; 
-    nameFn?: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string; 
-    kindFn?: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string; 
-    datatypeFn?: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string;
+    queryStr: string;
+    nameFn?: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string); 
+    kindFn?: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string); 
+    datatypeFn?: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string);
     isPlural?: boolean;
     symbolsFn?: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => Array<{
       node: any;
@@ -53,20 +110,22 @@ export class ScopeBuilder {
       datatype?: string;
     }>;
   }[] = [];
-  private referenceRules: { query: CSTQuery; nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string }[] = [];
+  public referenceRules: { query: CSTQuery; queryStr: string; nameFn: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string) }[] = [];
 
-  defineScope(type: string, query: string | CSTQuery, nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string) {
-    this.scopeRules.push({ type, query: query instanceof CSTQuery ? query : new CSTQuery(query), nameFn });
+  defineScope(type: string, query: string | CSTQuery, nameFn: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string)) {
+    const queryStr = typeof query === 'string' ? query : '';
+    this.scopeRules.push({ type, query: query instanceof CSTQuery ? query : new CSTQuery(query), queryStr, nameFn });
     return this;
   }
 
   defineSymbol(
     query: string | CSTQuery, 
-    nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string, 
-    kindFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string, 
-    datatypeFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string
+    nameFn: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string), 
+    kindFn: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string), 
+    datatypeFn: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string)
   ) {
-    this.symbolRules.push({ query: query instanceof CSTQuery ? query : new CSTQuery(query), nameFn, kindFn, datatypeFn });
+    const queryStr = typeof query === 'string' ? query : '';
+    this.symbolRules.push({ query: query instanceof CSTQuery ? query : new CSTQuery(query), queryStr, nameFn, kindFn, datatypeFn });
     return this;
   }
 
@@ -83,16 +142,19 @@ export class ScopeBuilder {
       datatype?: string;
     }>
   ) {
+    const queryStr = typeof query === 'string' ? query : '';
     this.symbolRules.push({
       query: query instanceof CSTQuery ? query : new CSTQuery(query),
+      queryStr,
       isPlural: true,
       symbolsFn
     });
     return this;
   }
 
-  defineReference(query: string | CSTQuery, nameFn: (match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string) {
-    this.referenceRules.push({ query: query instanceof CSTQuery ? query : new CSTQuery(query), nameFn });
+  defineReference(query: string | CSTQuery, nameFn: string | ((match: Record<string, any>, rawCaptures: any[], rawMatch: any) => string)) {
+    const queryStr = typeof query === 'string' ? query : '';
+    this.referenceRules.push({ query: query instanceof CSTQuery ? query : new CSTQuery(query), queryStr, nameFn });
     return this;
   }
 
@@ -139,9 +201,13 @@ export class ScopeBuilder {
         const targetNode = captures['node'] || match.captures[0]?.node;
         if (!targetNode) continue;
         
+        const name = typeof rule.nameFn === 'string'
+          ? evaluateFormat(rule.nameFn, captures)
+          : rule.nameFn(captures, match.captures, match);
+
         scopes.push({
           id: `scope-${rule.type}-${++scopeCounter}`,
-          name: rule.nameFn(captures, match.captures, match),
+          name,
           type: rule.type,
           start: targetNode.start ?? 0,
           end: targetNode.end ?? 0,
@@ -216,11 +282,23 @@ export class ScopeBuilder {
         } else if (rule.nameFn && rule.kindFn && rule.datatypeFn) {
           const targetNode = captures['node'] || match.captures[0]?.node;
           if (targetNode) {
+            const name = typeof rule.nameFn === 'string'
+              ? evaluateFormat(rule.nameFn, captures)
+              : rule.nameFn(captures, match.captures, match);
+            
+            const kind = typeof rule.kindFn === 'string'
+              ? evaluateFormat(rule.kindFn, captures)
+              : rule.kindFn(captures, match.captures, match);
+            
+            const datatype = typeof rule.datatypeFn === 'string'
+              ? evaluateFormat(rule.datatypeFn, captures)
+              : rule.datatypeFn(captures, match.captures, match);
+
             symbolsToRegister.push({
               node: targetNode,
-              name: rule.nameFn(captures, match.captures, match),
-              kind: rule.kindFn(captures, match.captures, match),
-              datatype: rule.datatypeFn(captures, match.captures, match)
+              name,
+              kind,
+              datatype
             });
           }
         }
@@ -265,9 +343,13 @@ export class ScopeBuilder {
 
         const parentScope = findDeepestScope(globalScope, start, end);
 
+        const name = typeof rule.nameFn === 'string'
+          ? evaluateFormat(rule.nameFn, captures)
+          : rule.nameFn(captures, match.captures, match);
+
         parentScope.references.push({
           id: `ref-${++refCounter}`,
-          name: rule.nameFn(captures, match.captures, match),
+          name,
           start,
           end,
           node: targetNode,
