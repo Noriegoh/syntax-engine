@@ -46,7 +46,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, wrapASTTransformerWithIncrementalCache, findDiff } from './lib/engine';
+import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, wrapASTTransformerWithIncrementalCache, findDiff } from './lib/engine';
 import { cn } from './lib/utils';
 import { ParserProfiler } from './components/ParserProfiler';
 
@@ -990,6 +990,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
   const [parseDuration, setParseDuration] = useState<number>(0);
   const incrementalParserRef = useRef<IncrementalParser | null>(null);
   const pendingEditsRef = useRef<{ editOffset: number; removedLength: number; insertedText: string }[]>([]);
+  const lastCapturedEditRef = useRef<{ editOffset: number; removedLength: number; insertedText: string } | null>(null);
   const latestCSTRef = useRef<any>(null);
 
   const shiftAstAndStateOffsets = (editOffset: number, removedLength: number, delta: number) => {
@@ -1322,13 +1323,13 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       setCodeError(null);
       
       // Execute the grammar code
-      // We provide SyntaxElement to the execution context
-      const executionFunc = new Function('SyntaxElement', `
+      // We provide SyntaxElement and the Sort helper to the execution context
+      const executionFunc = new Function('SyntaxElement', 'Sort', `
         ${debouncedGrammarCode}
         return typeof root !== 'undefined' ? root : null;
       `);
       
-      const root = executionFunc(SyntaxElement);
+      const root = executionFunc(SyntaxElement, Sort);
       if (root instanceof SyntaxElement) {
         setRootElement(root);
         setHierarchy(root.getHierarchy());
@@ -2910,16 +2911,17 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                       onValueChange={code => {
                         let edit: { editOffset: number; removedLength: number; insertedText: string } | undefined;
                         
-                        // Grab the last edit recorded by onBeforeInput/onPaste/onCut
-                        if (pendingEditsRef.current.length > 0) {
-                          edit = pendingEditsRef.current[pendingEditsRef.current.length - 1];
+                        // Grab the edit recorded by onBeforeInput/onPaste/onCut in the same tick if present
+                        if (lastCapturedEditRef.current) {
+                          edit = lastCapturedEditRef.current;
+                          lastCapturedEditRef.current = null;
                         } else {
                           // Fallback to findDiff if the browser/event did not capture it in time
                           edit = findDiff(testInput, code);
-                          pendingEditsRef.current.push(edit);
                         }
 
                         if (edit) {
+                          pendingEditsRef.current.push(edit);
                           const delta = edit.insertedText.length - edit.removedLength;
                           if (delta !== 0 || edit.removedLength > 0) {
                             shiftAstAndStateOffsets(edit.editOffset, edit.removedLength, delta);
@@ -2970,11 +2972,11 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                           return;
                         }
 
-                        pendingEditsRef.current.push({
+                        lastCapturedEditRef.current = {
                           editOffset,
                           removedLength,
                           insertedText
-                        });
+                        };
                       }}
                       onPaste={e => {
                         const textarea = e.currentTarget as HTMLTextAreaElement;
@@ -2984,11 +2986,11 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                         const end = textarea.selectionEnd;
                         const text = e.clipboardData.getData('text');
 
-                        pendingEditsRef.current.push({
+                        lastCapturedEditRef.current = {
                           editOffset: start,
                           removedLength: end - start,
                           insertedText: text
-                        });
+                        };
                       }}
                       onCut={e => {
                         const textarea = e.currentTarget as HTMLTextAreaElement;
@@ -2997,11 +2999,11 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                         const start = textarea.selectionStart;
                         const end = textarea.selectionEnd;
 
-                        pendingEditsRef.current.push({
+                        lastCapturedEditRef.current = {
                           editOffset: start,
                           removedLength: end - start,
                           insertedText: ""
-                        });
+                        };
                       }}
                       highlight={code => highlightWithCST(code)}
                       padding={20}

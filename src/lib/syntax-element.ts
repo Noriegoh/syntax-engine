@@ -71,9 +71,12 @@ export class SyntaxElement {
     return this;
   }
 
-  ExpectsOneOf(...patterns: (string | RegExp | SyntaxElement)[]): this {
+  ExpectsOneOf(...patterns: (string | RegExp | SyntaxElement)[] | [(string | RegExp | SyntaxElement)[]]): this {
     const id = nextRuleId();
-    this.rules.push({ id, type: 'choice', value: patterns });
+    const flatPatterns = (patterns.length === 1 && Array.isArray(patterns[0]))
+      ? patterns[0]
+      : patterns as (string | RegExp | SyntaxElement)[];
+    this.rules.push({ id, type: 'choice', value: flatPatterns });
     return this;
   }
 
@@ -384,67 +387,63 @@ export class SyntaxElement {
 
       else if (rule.type === 'choice') {
         const patterns = rule.value as (string | RegExp | SyntaxElement)[];
-        const successes: { res: any; newOffset: number; precedence: number; skipped: boolean; errorsAdded: ParseError[]; dependencyLimit: number }[] = [];
+        let matched = false;
         let maxFailedOffset = currentOffset;
         let choiceErrorMsg = "None of the choices matched";
 
         const baseErrorsLength = ctx.recoveredErrors.length;
 
+        let backupMatch: { 
+          resVal: any; 
+          newOffset: number; 
+          errors: ParseError[]; 
+        } | null = null;
+
         for (const pattern of patterns) {
-          const beforeBranchLength = ctx.recoveredErrors.length;
+          const beforeBranchErrors = ctx.recoveredErrors.length;
           const res = this.parsePattern(pattern, text, currentOffset, memo, rule.id, ctx);
           localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
           
           if (res.success) {
-            const prec = pattern instanceof SyntaxElement ? pattern.precedence : 0;
-            const branchErrors = ctx.recoveredErrors.slice(beforeBranchLength);
-            successes.push({ 
-              res: res.value, 
-              newOffset: res.newOffset, 
-              precedence: prec,
-              skipped: !!res.skipped,
-              errorsAdded: branchErrors,
-              dependencyLimit: res.dependencyLimit
-            });
+            const branchErrorsCount = ctx.recoveredErrors.length - beforeBranchErrors;
+            if (branchErrorsCount === 0) {
+              if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
+                results.push(res.value);
+              }
+              currentOffset = res.newOffset;
+              if (currentOffset > offset) hasCommitted = true;
+              matched = true;
+              break;
+            } else {
+              if (!backupMatch) {
+                backupMatch = {
+                  resVal: res.value,
+                  newOffset: res.newOffset,
+                  errors: ctx.recoveredErrors.slice(beforeBranchErrors)
+                };
+              }
+              ctx.recoveredErrors.length = beforeBranchErrors;
+            }
           } else {
             if (res.newOffset && res.newOffset > maxFailedOffset) {
               maxFailedOffset = res.newOffset;
               choiceErrorMsg = res.error || choiceErrorMsg;
             }
+            ctx.recoveredErrors.length = baseErrorsLength;
           }
-          // Backtrack any speculative errors added during this branch
-          ctx.recoveredErrors.length = baseErrorsLength;
         }
 
-        if (successes.length > 0) {
-          // Sort successes:
-          // 1. Prioritize clean matches (errorsAdded.length === 0) over recovered matches
-          // 2. Prioritize higher precedence
-          // 3. Prioritize fewer recovered errors
-          // 4. Prioritize longest consumed match
-          successes.sort((a, b) => {
-            const aClean = a.errorsAdded.length === 0 ? 1 : 0;
-            const bClean = b.errorsAdded.length === 0 ? 1 : 0;
-            if (bClean !== aClean) return bClean - aClean;
-            
-            if (b.precedence !== a.precedence) return b.precedence - a.precedence;
-            if (a.errorsAdded.length !== b.errorsAdded.length) return a.errorsAdded.length - b.errorsAdded.length;
-            return (b.newOffset - currentOffset) - (a.newOffset - currentOffset);
-          });
-
-          const best = successes[0];
-          if (best.res && (best.res.width > 0 || best.res.type === 'eof')) {
-            results.push(best.res);
+        if (!matched && backupMatch) {
+          if (backupMatch.resVal && (backupMatch.resVal.width > 0 || backupMatch.resVal.type === 'eof')) {
+            results.push(backupMatch.resVal);
           }
-          currentOffset = best.newOffset;
+          currentOffset = backupMatch.newOffset;
           if (currentOffset > offset) hasCommitted = true;
-          
-          // Apply recovered errors of only the chosen branch
-          ctx.recoveredErrors.push(...best.errorsAdded);
-        } else {
-          // Ensure speculative errors are cleared if no choices matched
-          ctx.recoveredErrors.length = baseErrorsLength;
+          ctx.recoveredErrors.push(...backupMatch.errors);
+          matched = true;
+        }
 
+        if (!matched) {
           if (maxFailedOffset > currentOffset) {
             currentOffset = maxFailedOffset;
             if (currentOffset > offset) hasCommitted = true;
@@ -669,3 +668,21 @@ export class SyntaxElement {
 
 
 }
+
+/**
+ * Sorts patterns descending by their string representation/matching length.
+ * This helper function prevents shadowing in first-ordered choice parsing
+ * (e.g. matching 'float' before 'float4x4').
+ */
+export function Sort(...patterns: (string | RegExp | SyntaxElement)[] | [(string | RegExp | SyntaxElement)[]]): (string | RegExp | SyntaxElement)[] {
+  const list = (patterns.length === 1 && Array.isArray(patterns[0]))
+    ? patterns[0]
+    : patterns as (string | RegExp | SyntaxElement)[];
+
+  return [...list].sort((a, b) => {
+    const lenA = typeof a === 'string' ? a.length : (a instanceof RegExp ? a.source.length : (a instanceof SyntaxElement ? a.name.length : 0));
+    const lenB = typeof b === 'string' ? b.length : (b instanceof RegExp ? b.source.length : (b instanceof SyntaxElement ? b.name.length : 0));
+    return lenB - lenA; // Sort descending (longest first)
+  });
+}
+

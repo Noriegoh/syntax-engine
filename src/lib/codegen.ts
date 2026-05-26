@@ -1,5 +1,546 @@
 import { SyntaxElement } from './syntax-element';
 import { ScopeBuilder } from './scope';
+import regexpTree from 'regexp-tree';
+
+class NState {
+  id: number;
+  transitions: { range: [number, number]; target: NState }[] = [];
+  epsilonTransitions: NState[] = [];
+  isAccepting = false;
+  constructor(id: number) {
+    this.id = id;
+  }
+}
+
+function foldRange(start: number, end: number): [number, number][] {
+  const result: [number, number][] = [[start, end]];
+  
+  const startLower = Math.max(97, Math.min(122, start));
+  const endLower = Math.max(97, Math.min(122, end));
+  if (startLower <= endLower && startLower >= 97) {
+    result.push([startLower - 32, endLower - 32]);
+  }
+  
+  const startUpper = Math.max(65, Math.min(90, start));
+  const endUpper = Math.max(65, Math.min(90, end));
+  if (startUpper <= endUpper && startUpper >= 65) {
+    result.push([startUpper + 32, endUpper + 32]);
+  }
+  
+  return result;
+}
+
+function invertRanges(ranges: [number, number][]): [number, number][] {
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const r of sorted) {
+    if (merged.length === 0) {
+      merged.push([r[0], r[1]]);
+    } else {
+      const last = merged[merged.length - 1];
+      if (r[0] <= last[1] + 1) {
+        last[1] = Math.max(last[1], r[1]);
+      } else {
+        merged.push([r[0], r[1]]);
+      }
+    }
+  }
+
+  const inverted: [number, number][] = [];
+  let current = 0;
+  for (const r of merged) {
+    if (r[0] > current) {
+      inverted.push([current, r[0] - 1]);
+    }
+    current = r[1] + 1;
+  }
+  if (current <= 0xFFFF) {
+    inverted.push([current, 0xFFFF]);
+  }
+  return inverted;
+}
+
+function buildNFA(patternStr: string, flags: string = ""): NState {
+  const parsed = regexpTree.parse(`/${patternStr}/${flags}`);
+  const isCaseInsensitive = flags.includes('i');
+  
+  let stateCount = 0;
+  function createState() {
+    return new NState(stateCount++);
+  }
+
+  function getMetaRanges(value: string): [number, number][] {
+    if (value === '.') {
+      return [[0, 9], [11, 12], [14, 0xFFFF]];
+    }
+    if (value === '\\d') {
+      return [[48, 57]];
+    }
+    if (value === '\\D') {
+      return invertRanges([[48, 57]]);
+    }
+    if (value === '\\w') {
+      return [[48, 57], [65, 90], [95, 95], [97, 122]];
+    }
+    if (value === '\\W') {
+      return invertRanges([[48, 57], [65, 90], [95, 95], [97, 122]]);
+    }
+    if (value === '\\s') {
+      return [[9, 13], [32, 32]];
+    }
+    if (value === '\\S') {
+      return invertRanges([[9, 13], [32, 32]]);
+    }
+    if (value.startsWith('\\')) {
+      const c = value.slice(1);
+      if (c === 'n') return [[10, 10]];
+      if (c === 'r') return [[13, 13]];
+      if (c === 't') return [[9, 9]];
+      const code = c.charCodeAt(0);
+      return [[code, code]];
+    }
+    const code = value.charCodeAt(0);
+    return [[code, code]];
+  }
+
+  function toNFA(node: any): { entry: NState; exit: NState } {
+    if (!node) {
+      const entry = createState();
+      const exit = createState();
+      entry.epsilonTransitions.push(exit);
+      return { entry, exit };
+    }
+
+    if (node.type === 'Char') {
+      const entry = createState();
+      const exit = createState();
+      if (node.kind === 'simple') {
+        const code = node.value.charCodeAt(0);
+        const folded: [number, number][] = isCaseInsensitive ? foldRange(code, code) : [[code, code]];
+        for (const r of folded) {
+          entry.transitions.push({ range: r, target: exit });
+        }
+      } else if (node.kind === 'meta' || node.kind === 'escaped') {
+        const ranges = getMetaRanges(node.value);
+        for (const r of ranges) {
+          entry.transitions.push({ range: r, target: exit });
+        }
+      }
+      return { entry, exit };
+    }
+
+    if (node.type === 'CharacterClass') {
+      const entry = createState();
+      const exit = createState();
+      let rawRanges: [number, number][] = [];
+      const exprs = node.expressions || [];
+      for (const expr of exprs) {
+        if (expr.type === 'Char') {
+          if (expr.kind === 'simple') {
+            const code = expr.value.charCodeAt(0);
+            rawRanges.push([code, code]);
+          } else {
+            rawRanges.push(...getMetaRanges(expr.value));
+          }
+        } else if (expr.type === 'ClassRange') {
+          const fromCode = expr.from.value.charCodeAt(0);
+          const toCode = expr.to.value.charCodeAt(0);
+          rawRanges.push([fromCode, toCode]);
+        }
+      }
+
+      if (isCaseInsensitive) {
+        const folded: [number, number][] = [];
+        for (const r of rawRanges) {
+          folded.push(...foldRange(r[0], r[1]));
+        }
+        rawRanges = folded;
+      }
+
+      const finalRanges = node.negative ? invertRanges(rawRanges) : rawRanges;
+      for (const r of finalRanges) {
+        entry.transitions.push({ range: r, target: exit });
+      }
+      return { entry, exit };
+    }
+
+    if (node.type === 'Alternative') {
+      const exprs = node.expressions || [];
+      if (exprs.length === 0) {
+        const entry = createState();
+        const exit = createState();
+        entry.epsilonTransitions.push(exit);
+        return { entry, exit };
+      }
+      let prev = toNFA(exprs[0]);
+      const entry = prev.entry;
+      for (let i = 1; i < exprs.length; i++) {
+        const cur = toNFA(exprs[i]);
+        prev.exit.epsilonTransitions.push(cur.entry);
+        prev = cur;
+      }
+      const exit = prev.exit;
+      return { entry, exit };
+    }
+
+    if (node.type === 'Disjunction') {
+      const left = toNFA(node.left);
+      const right = toNFA(node.right);
+      const entry = createState();
+      const exit = createState();
+      entry.epsilonTransitions.push(left.entry);
+      entry.epsilonTransitions.push(right.entry);
+      left.exit.epsilonTransitions.push(exit);
+      right.exit.epsilonTransitions.push(exit);
+      return { entry, exit };
+    }
+
+    if (node.type === 'Repetition') {
+      const body = toNFA(node.expression);
+      const quant = node.quantifier || {};
+      const value = quant.value;
+      
+      const entry = createState();
+      const exit = createState();
+      
+      if (value === '*') {
+        entry.epsilonTransitions.push(body.entry);
+        entry.epsilonTransitions.push(exit);
+        body.exit.epsilonTransitions.push(body.entry);
+        body.exit.epsilonTransitions.push(exit);
+      } else if (value === '+') {
+        entry.epsilonTransitions.push(body.entry);
+        body.exit.epsilonTransitions.push(body.entry);
+        body.exit.epsilonTransitions.push(exit);
+      } else if (value === '?') {
+        entry.epsilonTransitions.push(body.entry);
+        entry.epsilonTransitions.push(exit);
+        body.exit.epsilonTransitions.push(exit);
+      } else {
+        entry.epsilonTransitions.push(body.entry);
+        entry.epsilonTransitions.push(exit);
+        body.exit.epsilonTransitions.push(body.entry);
+        body.exit.epsilonTransitions.push(exit);
+      }
+      return { entry, exit };
+    }
+
+    if (node.type === 'Group') {
+      return toNFA(node.expression);
+    }
+
+    if (node.type === 'Assertion') {
+      const entry = createState();
+      const exit = createState();
+      entry.epsilonTransitions.push(exit);
+      return { entry, exit };
+    }
+
+    const entry = createState();
+    const exit = createState();
+    entry.epsilonTransitions.push(exit);
+    return { entry, exit };
+  }
+
+  const rootNFA = toNFA(parsed.body);
+  rootNFA.exit.isAccepting = true;
+  return rootNFA.entry;
+}
+
+function formatChar(cp: number): string {
+  if (cp === 10) return "'\\n'";
+  if (cp === 13) return "'\\r'";
+  if (cp === 9) return "'\\t'";
+  if (cp === 39) return "'\\''";
+  if (cp === 92) return "'\\\\'";
+  if (cp >= 32 && cp <= 126) return `'${String.fromCharCode(cp)}'`;
+  return `(char)${cp}`;
+}
+
+export function generateDFACSharpMethod(methodName: string, regex: RegExp, ruleId: number, type: 'Rule' | 'Spec'): string {
+  const patternStr = regex.source;
+  const flags = regex.flags;
+  
+  try {
+    const startState = buildNFA(patternStr, flags);
+    const allRanges: [number, number][] = [];
+    const visited = new Set<number>();
+    
+    function collectRanges(state: NState) {
+      if (visited.has(state.id)) return;
+      visited.add(state.id);
+      for (const t of state.transitions) {
+        allRanges.push(t.range);
+      }
+      for (const t of state.transitions) {
+        collectRanges(t.target);
+      }
+      for (const next of state.epsilonTransitions) {
+        collectRanges(next);
+      }
+    }
+    collectRanges(startState);
+    
+    const splitPointsSet = new Set<number>();
+    splitPointsSet.add(0);
+    splitPointsSet.add(0x10000);
+    for (const r of allRanges) {
+      splitPointsSet.add(r[0]);
+      splitPointsSet.add(r[1] + 1);
+    }
+    const splitPoints = Array.from(splitPointsSet).sort((a, b) => a - b);
+    
+    const intervals: [number, number][] = [];
+    for (let i = 0; i < splitPoints.length - 1; i++) {
+      intervals.push([splitPoints[i], splitPoints[i+1] - 1]);
+    }
+    
+    function getEpsilonClosure(states: Iterable<NState>): Set<NState> {
+      const closure = new Set<NState>(states);
+      const queue = Array.from(states);
+      while (queue.length > 0) {
+        const s = queue.shift()!;
+        for (const next of s.epsilonTransitions) {
+          if (!closure.has(next)) {
+            closure.add(next);
+            queue.push(next);
+          }
+        }
+      }
+      return closure;
+    }
+    
+    class DFAState {
+      id: number;
+      nfaStates: Set<NState>;
+      transitions = new Map<number, DFAState>();
+      isAccepting = false;
+      constructor(id: number, nfaStates: Set<NState>) {
+        this.id = id;
+        this.nfaStates = nfaStates;
+        for (const s of nfaStates) {
+          if (s.isAccepting) {
+            this.isAccepting = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    function getDFAStateKey(states: Set<NState>): string {
+      return Array.from(states).map(s => s.id).sort((a, b) => a - b).join(',');
+    }
+    
+    const dfaStates: DFAState[] = [];
+    const stateMap = new Map<string, DFAState>();
+    
+    const startClosure = getEpsilonClosure([startState]);
+    const startDFAState = new DFAState(0, startClosure);
+    dfaStates.push(startDFAState);
+    stateMap.set(getDFAStateKey(startClosure), startDFAState);
+    
+    const queue = [startDFAState];
+    while (queue.length > 0) {
+      const currentDFA = queue.shift()!;
+      
+      for (let intervalIdx = 0; intervalIdx < intervals.length; intervalIdx++) {
+        const [startCp] = intervals[intervalIdx];
+        const targets = new Set<NState>();
+        
+        for (const nState of currentDFA.nfaStates) {
+          for (const t of nState.transitions) {
+            if (startCp >= t.range[0] && startCp <= t.range[1]) {
+              targets.add(t.target);
+            }
+          }
+        }
+        
+        if (targets.size > 0) {
+          const closure = getEpsilonClosure(targets);
+          const key = getDFAStateKey(closure);
+          
+          let targetDFA = stateMap.get(key);
+          if (!targetDFA) {
+            targetDFA = new DFAState(dfaStates.length, closure);
+            dfaStates.push(targetDFA);
+            stateMap.set(key, targetDFA);
+            queue.push(targetDFA);
+          }
+          currentDFA.transitions.set(intervalIdx, targetDFA);
+        }
+      }
+    }
+    
+    const acceptingCases: string[] = [];
+    for (const dState of dfaStates) {
+      if (dState.isAccepting) {
+        acceptingCases.push(`                case ${dState.id}: finalMatchLength = i; break;`);
+      }
+    }
+    const acceptingStatesCases = acceptingCases.join('\n');
+    
+    const transitionCasesList: string[] = [];
+    for (const dState of dfaStates) {
+      const targetGroups = new Map<number, {start: number; end: number}[]>();
+      for (const [intervalIdx, targetDFA] of dState.transitions.entries()) {
+        const interval = intervals[intervalIdx];
+        if (!targetGroups.has(targetDFA.id)) {
+          targetGroups.set(targetDFA.id, []);
+        }
+        targetGroups.get(targetDFA.id)!.push({start: interval[0], end: interval[1]});
+      }
+      
+      for (const [targetId, ranges] of targetGroups.entries()) {
+        const sorted = [...ranges].sort((a, b) => a.start - b.start);
+        const merged: {start: number; end: number}[] = [];
+        for (const r of sorted) {
+          if (merged.length === 0) {
+            merged.push({start: r.start, end: r.end});
+          } else {
+            const last = merged[merged.length - 1];
+            if (r.start <= last.end + 1) {
+              last.end = Math.max(last.end, r.end);
+            } else {
+              merged.push({start: r.start, end: r.end});
+            }
+          }
+        }
+        targetGroups.set(targetId, merged);
+      }
+      
+      const sortedTargets = Array.from(targetGroups.entries()).sort((a, b) => {
+        const aWidth = a[1].reduce((sum, r) => sum + (r.end - r.start + 1), 0);
+        const bWidth = b[1].reduce((sum, r) => sum + (r.end - r.start + 1), 0);
+        return aWidth - bWidth;
+      });
+      
+      const conditions: string[] = [];
+      for (let j = 0; j < sortedTargets.length; j++) {
+        const [targetId, ranges] = sortedTargets[j];
+        const rangeExprs = ranges.map(r => {
+          if (r.start === r.end) {
+            return `c == ${formatChar(r.start)}`;
+          } else {
+            return `(c >= ${formatChar(r.start)} && c <= ${formatChar(r.end)})`;
+          }
+        });
+        const condStr = rangeExprs.join(' || ');
+        
+        const isFallback = (j === sortedTargets.length - 1 && ranges.reduce((sum, r) => sum + (r.end - r.start + 1), 0) > 30000);
+        
+        if (isFallback) {
+          conditions.push(`                    // Fallback transition
+                    state = ${targetId};
+                    break;`);
+        } else {
+          const ifKeyword = conditions.length === 0 ? 'if' : 'else if';
+          conditions.push(`                    ${ifKeyword} (${condStr})
+                    {
+                        state = ${targetId};
+                        break;
+                    }`);
+        }
+      }
+      
+      if (conditions.length > 0) {
+        const lastCond = conditions[conditions.length - 1];
+        if (!lastCond.includes('// Fallback transition')) {
+          conditions.push(`                    else
+                    {
+                        goto end_match;
+                    }`);
+        }
+      } else {
+        conditions.push(`                    goto end_match;`);
+      }
+      
+      transitionCasesList.push(`            case ${dState.id}:
+${conditions.join('\n')}
+`);
+    }
+    const transitionsCases = transitionCasesList.join('\n');
+    
+    return `
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool ${methodName}(ITextDocument text, int offset, out string matchedValue)
+        {
+            matchedValue = string.Empty;
+            int textLength = text.Length;
+            if (offset >= textLength) return false;
+
+            ReadOnlyMemory<char> mem = text.GetText(offset, textLength - offset);
+            ReadOnlySpan<char> span = mem.Span;
+            int spanLength = span.Length;
+
+            int state = 0;
+            int finalMatchLength = -1;
+            int i = 0;
+
+            while (i < spanLength)
+            {
+                switch (state)
+                {
+${acceptingStatesCases}
+                }
+
+                char c = span[i];
+                switch (state)
+                {
+${transitionsCases}
+                    default:
+                        goto end_match;
+                }
+                i++;
+            }
+
+            switch (state)
+            {
+${acceptingStatesCases}
+            }
+
+        end_match:
+            if (finalMatchLength != -1)
+            {
+                matchedValue = span.Slice(0, finalMatchLength).ToString();
+                return true;
+            }
+            return false;
+        }
+`;
+  } catch (err: any) {
+    console.warn(`DFA compiler fallback for /${patternStr}/:`, err);
+    const errMsg = err?.message || String(err);
+    const errStackComment = err?.stack ? err.stack.split('\n').map((l: string) => `        // ${l}`).join('\n') : `        // No stack trace available`;
+    const escapedErrMsg = escapeString(errMsg);
+
+    return `
+        // Regular Expression Fallback
+        // DFA Compilation Failed: ${errMsg.replace(/\ng/, ' ')}
+${errStackComment}
+        #warning "DFA compilation failed for ${methodName} (Pattern: /${escapeRegex(regex)}/): ${escapedErrMsg}"
+        private static readonly Regex Regex_Obj_${methodName} = new Regex(@"^${escapeRegex(regex)}", RegexOptions.Compiled);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool ${methodName}(ITextDocument text, int offset, out string matchedValue)
+        {
+            matchedValue = string.Empty;
+            if (offset >= text.Length) return false;
+
+            ReadOnlyMemory<char> mem = text.GetText(offset, text.Length - offset);
+            string slice = mem.ToString();
+            var match = Regex_Obj_${methodName}.Match(slice);
+            if (match.Success && match.Index == 0)
+            {
+                matchedValue = match.Value;
+                return true;
+            }
+
+            return false;
+        }
+`;
+  }
+}
+
 
 /**
  * Normalizes a string to be a safe C# identifier.
@@ -88,7 +629,8 @@ function compileSpeculativeMatch(
   pattern: any,
   ruleId: number,
   varId: number,
-  childElements: Set<string>
+  childElements: Set<string>,
+  dfaMethodName?: string
 ): { code: string; matchedName: string; parsedAstName: string; newOffsetName: string; precName: string } {
   const mVar = `matched_${varId}`;
   const astVar = `parsedAst_${varId}`;
@@ -97,20 +639,19 @@ function compileSpeculativeMatch(
 
   let code = "";
   if (pattern instanceof RegExp) {
+    const fnName = dfaMethodName || `MatchDFA_Spec_${ruleId}`;
     code = `
-                        int lookahead_${varId} = Math.Min(text.Length - currentOffset, 512);
-                        string cand_${varId} = text.GetText(currentOffset, lookahead_${varId});
-                        var m_${varId} = Regex_Spec_${ruleId}.Match(cand_${varId});
-                        bool ${mVar} = (m_${varId}.Success && m_${varId}.Index == 0);
-                        GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Token, m_${varId}.Value, ${ruleId}, m_${varId}.Value.Length) : null;
-                        int ${offsetVar} = ${mVar} ? currentOffset + m_${varId}.Value.Length : currentOffset;
+                        string mval_${varId};
+                        bool ${mVar} = ${fnName}(text, currentOffset, out mval_${varId});
+                        GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Token, mval_${varId}, ${ruleId}, mval_${varId}.Length) : null;
+                        int ${offsetVar} = ${mVar} ? currentOffset + mval_${varId}.Length : currentOffset;
                         int ${precVar} = 0;`;
   } else if (typeof pattern === 'string') {
     const esc = escapeString(pattern);
     code = `
                         const string lit_${varId} = "${esc}";
                         const int litLen_${varId} = ${pattern.length};
-                        bool ${mVar} = (currentOffset + litLen_${varId} <= text.Length && text.GetText(currentOffset, litLen_${varId}) == lit_${varId});
+                        bool ${mVar} = ctx.MatchLiteral(text, currentOffset, lit_${varId}, litLen_${varId});
                         GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Literal, lit_${varId}, ${ruleId}, litLen_${varId}) : null;
                         int ${offsetVar} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset;
                         int ${precVar} = 0;`;
@@ -119,7 +660,7 @@ function compileSpeculativeMatch(
     const cname = sanitize(pattern.name);
     childElements.add(cname);
     code = `
-                        var res_${varId} = Parse_${cname}(text, currentOffset, memo, ctx);
+                        var res_${varId} = Parse${cname}(text, currentOffset, memo, ctx);
                         bool ${mVar} = res_${varId}.Success;
                         GreenNode ${astVar} = ${mVar} ? res_${varId}.Ast : null;
                         int ${offsetVar} = ${mVar} ? res_${varId}.NewOffset : currentOffset;
@@ -200,27 +741,49 @@ namespace ${namespaceName}
     public interface ITextDocument
     {
         int Length { get; }
-        string GetText(int start, int length);
+        ReadOnlyMemory<char> GetText(int start, int length);
         char this[int index] { get; }
+        int GetLineEnd(int offset);
+        int GetLineEnding(int offset);
     }
 
     public class StringTextDocument : ITextDocument
     {
         private readonly string _text;
+        private readonly ReadOnlyMemory<char> _memory;
         public int Length => _text.Length;
 
         public StringTextDocument(string text)
         {
             _text = text ?? "";
+            _memory = _text.AsMemory();
         }
 
-        public string GetText(int start, int length)
+        public ReadOnlyMemory<char> GetText(int start, int length)
         {
-            if (start < 0 || length <= 0 || start + length > _text.Length) return "";
-            return _text.Substring(start, length);
+            return _memory.Slice(start, length);
         }
 
         public char this[int index] => _text[index];
+
+        public int GetLineEnd(int offset)
+        {
+            if (offset < 0) return 0;
+            if (offset >= _text.Length) return _text.Length;
+            for (int i = offset; i < _text.Length; i++)
+            {
+                char c = _text[i];
+                if (c == '\r' || c == '\n') return i;
+            }
+            return _text.Length;
+        }
+
+        public int GetLineEnding(int offset)
+        {
+            if (offset < 0 || offset >= _text.Length) return 0;
+            int end = GetLineEnd(offset);
+            return end - offset;
+        }
 
         public override string ToString() => _text;
     }
@@ -287,6 +850,19 @@ namespace ${namespaceName}
                 }
             }
             return null;
+        }
+
+        public bool TryGet(int ruleId, int offset, out ParseResult cached)
+        {
+            if(NodesByOffset.TryGetValue(offset, out var ruleMap))
+            {
+                if(ruleMap.TryGetValue(ruleId, out var node))
+                {
+                    cached = node.Result;
+                    return true;
+                }
+            }
+            return false;
         }
 
         public void Set(int ruleId, int offset, ParseResult result)
@@ -405,6 +981,70 @@ namespace ${namespaceName}
     {
         public int MaxOffset { get; set; } = -1;
         public List<ParseError> RecoveredErrors { get; set; } = new List<ParseError>();
+
+        private int _cachedLineTextOffset = -1;
+        private int _cachedLineTextLength = -1;
+        private ReadOnlyMemory<char> _cachedLineText = ReadOnlyMemory<char>.Empty;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ReadOnlyMemory<char> GetCachedLineText(ITextDocument text, int offset, out int relativeOffset)
+        {
+            int lineEndingLength = text.GetLineEnding(offset);
+            bool isCached = !_cachedLineText.IsEmpty && offset >= _cachedLineTextOffset && offset < _cachedLineTextOffset + _cachedLineTextLength;
+
+            if (isCached)
+            {
+                relativeOffset = offset - _cachedLineTextOffset;
+                return _cachedLineText;
+            }
+
+            _cachedLineTextOffset = offset;
+            _cachedLineTextLength = lineEndingLength;
+            _cachedLineText = text.GetText(offset, lineEndingLength);
+            relativeOffset = 0;
+            return _cachedLineText;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool MatchLiteral(ITextDocument text, int offset, string literal, int literalLength)
+        {
+            if (offset + literalLength > text.Length) return false;
+
+            if (_cachedLineTextOffset != -1 && offset >= _cachedLineTextOffset && offset + literalLength <= _cachedLineTextOffset + _cachedLineTextLength)
+            {
+                int relOffset = offset - _cachedLineTextOffset;
+                return _cachedLineText.Span.Slice(relOffset, literalLength).SequenceEqual(literal.AsSpan());
+            }
+
+            ReadOnlyMemory<char> segment = text.GetText(offset, literalLength);
+            return segment.Span.SequenceEqual(literal.AsSpan());
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool MatchRegex(ITextDocument text, int offset, System.Text.RegularExpressions.Regex regex, out string matchedValue)
+        {
+            matchedValue = string.Empty;
+            if (offset >= text.Length) return false;
+
+            int lineEndingLength = text.GetLineEnding(offset);
+            if (lineEndingLength <= 0) return false;
+
+            int relOffset;
+            ReadOnlyMemory<char> lineText = GetCachedLineText(text, offset, out relOffset);
+
+            int sliceLen = lineText.Length - relOffset;
+            if (sliceLen <= 0) return false;
+
+            string slice = lineText.Slice(relOffset, sliceLen).ToString();
+            var match = regex.Match(slice);
+            if (match.Success && match.Index == 0)
+            {
+                matchedValue = match.Value;
+                return true;
+            }
+
+            return false;
+        }
     }
 
     public interface IParserRunner
@@ -488,27 +1128,27 @@ namespace ${namespaceName}
             return _lastResult;
         }
 
-        private static (int editOffset, int removedLength, string insertedText) FindDiff(string oldStr, string newStr)
+        private static (int editOffset, int removedLength, string insertedText) FindDiff(ReadOnlyMemory<char> oldStr, ReadOnlyMemory<char> newStr)
         {
+            ReadOnlySpan<char> oldSpan = oldStr.Span;
+            ReadOnlySpan<char> newSpan = newStr.Span;
+
             int prefix = 0;
-            while (prefix < oldStr.Length && prefix < newStr.Length && oldStr[prefix] == newStr[prefix])
+            while (prefix < oldSpan.Length && prefix < newSpan.Length && oldSpan[prefix] == newSpan[prefix])
             {
                 prefix++;
             }
 
-            string oldSuffix = oldStr.Substring(prefix);
-            string newSuffix = newStr.Substring(prefix);
-
-            int oldLen = oldSuffix.Length;
-            int newLen = newSuffix.Length;
+            int oldLen = oldSpan.Length - prefix;
+            int newLen = newSpan.Length - prefix;
             int suffix = 0;
-            while (suffix < oldLen && suffix < newLen && oldSuffix[oldLen - 1 - suffix] == newSuffix[newLen - 1 - suffix])
+            while (suffix < oldLen && suffix < newLen && oldSpan[oldSpan.Length - 1 - suffix] == newSpan[newSpan.Length - 1 - suffix])
             {
                 suffix++;
             }
 
             int removedLength = oldLen - suffix;
-            string insertedText = newSuffix.Substring(0, newLen - suffix);
+            string insertedText = newStr.Slice(prefix, newLen - suffix).ToString();
 
             return (prefix, removedLength, insertedText);
         }
@@ -1411,7 +2051,7 @@ namespace ${namespaceName}
     {
         public delegate string MatchSelectorDelegate(Dictionary<string, List<AstNode>> captures, List<QueryCapture> rawCaptures, QueryMatch match);
 
-\${generateScopeBuilderConfigCode(scopeBuilder)}
+${generateScopeBuilderConfigCode(scopeBuilder)}
 
         public class ScopeRule
         {
@@ -1980,6 +2620,70 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
 
   const regexFields: string[] = [];
   const speculativeRegexes: string[] = [];
+  const patternToVarName = new Map<string, string>();
+  const patternToDfaMethodName = new Map<string, string>();
+
+  // Pre-scan all RegExps to group by pattern key and assign beautiful shared names
+  const patternToRuleIds = new Map<string, { regex: RegExp; types: Set<'Rule' | 'Spec'>; ruleIds: Set<number> }>();
+
+  function registerPattern(p: RegExp, ruleId: number, type: 'Rule' | 'Spec') {
+    const key = `${p.source}///${p.flags}`;
+    let match = patternToRuleIds.get(key);
+    if (!match) {
+      match = { regex: p, types: new Set(), ruleIds: new Set() };
+      patternToRuleIds.set(key, match);
+    }
+    match.types.add(type);
+    match.ruleIds.add(ruleId);
+  }
+
+  // Scan all elements and their rules to find regexes
+  for (const el of elements) {
+    for (const rule of el.rules) {
+      const ruleId = rule.id;
+      if (rule.type === 'regex') {
+        registerPattern(rule.value, ruleId, 'Rule');
+      } else if (rule.type === 'choice') {
+        const patterns = rule.value as any[];
+        for (const p of patterns) {
+          if (p instanceof RegExp) {
+            registerPattern(p, ruleId, 'Spec');
+          }
+        }
+      } else if (
+        rule.type === 'optional' ||
+        rule.type === 'zeroOrMore' ||
+        rule.type === 'oneOrMore' ||
+        rule.type === 'not'
+      ) {
+        if (rule.value instanceof RegExp) {
+          registerPattern(rule.value, ruleId, 'Spec');
+        }
+      }
+    }
+  }
+
+  // Generate names and C# code for each unique pattern
+  for (const [key, match] of patternToRuleIds.entries()) {
+    const ruleIdsString = Array.from(match.ruleIds).sort((a, b) => a - b).join('_');
+    const primaryType = match.types.has('Rule') ? 'Rule' : 'Spec';
+    const name = `MatchDFA_${primaryType}_${ruleIdsString}`;
+    patternToDfaMethodName.set(key, name);
+
+    const fallbackRuleId = Array.from(match.ruleIds)[0] || 0;
+    const dfaMethod = generateDFACSharpMethod(name, match.regex, fallbackRuleId, primaryType);
+    if (match.types.has('Rule')) {
+      regexFields.push(dfaMethod);
+    } else {
+      speculativeRegexes.push(dfaMethod);
+    }
+  }
+
+  function getOrCreateDfaMethod(p: RegExp, type: 'Rule' | 'Spec', fallbackRuleId: number): string {
+    const key = `${p.source}///${p.flags}`;
+    const name = patternToDfaMethodName.get(key);
+    return name || `MatchDFA_${type}_${fallbackRuleId}`;
+  }
 
   // Core & custom nodes elements list mapping to C# NodeType enum
   const customNodeTypes = Array.from(new Set(elements.map(el => sanitize(el.name))));
@@ -2028,7 +2732,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 const string lit = "${esc}";
                 const int litLen = ${rule.value.length};
                 localMaxOffset = Math.Max(localMaxOffset, currentOffset + litLen);
-                if (currentOffset + litLen <= text.Length && text.GetText(currentOffset, litLen) == lit)
+                if (ctx.MatchLiteral(text, currentOffset, lit, litLen))
                 {
                     results.Add(GreenNode.Create(NodeType.Literal, lit, ${ruleId}, litLen));
                     currentOffset += litLen;
@@ -2037,44 +2741,33 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 else
                 {
                     if (TryRecover(text, currentOffset, ${ruleId}, "Expected literal \\"${esc}\\\"", ref localMaxOffset, results, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                    {
                         if (panicked) panicked = true; // Handled recovery boundary hit
-                    }
                     else
-                    {
                         return failRes;
-                    }
                 }
             }`;
       }
 
       if (rule.type === 'regex') {
-        regexFields.push(`        private static readonly Regex Regex_Rule_${ruleId} = new Regex(@"^${escapeRegex(rule.value)}", RegexOptions.Compiled);`);
+        const dfaMethodName = getOrCreateDfaMethod(rule.value, 'Rule', ruleId);
         return `
             // Regex Rule: ${rule.value.source} (id: ${ruleId})
             if (!panicked)
             {
-                int lookahead_${ruleId} = Math.Min(text.Length - currentOffset, 512);
-                string cand_${ruleId} = text.GetText(currentOffset, lookahead_${ruleId});
-                var m = Regex_Rule_${ruleId}.Match(cand_${ruleId});
-                if (m.Success && m.Index == 0)
+                string mval_${ruleId};
+                if (${dfaMethodName}(text, currentOffset, out mval_${ruleId}))
                 {
-                    string mval = m.Value;
-                    results.Add(GreenNode.Create(NodeType.Token, mval, ${ruleId}, mval.Length));
-                    currentOffset += mval.Length;
+                    results.Add(GreenNode.Create(NodeType.Token, mval_${ruleId}, ${ruleId}, mval_${ruleId}.Length));
+                    currentOffset += mval_${ruleId}.Length;
                     hasCommitted = true;
                     localMaxOffset = Math.Max(localMaxOffset, currentOffset);
                 }
                 else
                 {
                     if (TryRecover(text, currentOffset, ${ruleId}, "Expected match for pattern", ref localMaxOffset, results, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                    {
                         if (panicked) panicked = true;
-                    }
                     else
-                    {
                         return failRes;
-                    }
                 }
             }`;
       }
@@ -2092,18 +2785,14 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 localMaxOffset = Math.Max(localMaxOffset, currentOffset);
                 if (currentOffset > wsStart)
                 {
-                    results.Add(GreenNode.Create(NodeType.Whitespace, text.GetText(wsStart, currentOffset - wsStart), ${ruleId}, currentOffset - wsStart));
+                    results.Add(GreenNode.Create(NodeType.Whitespace, text.GetText(wsStart, currentOffset - wsStart).ToString(), ${ruleId}, currentOffset - wsStart));
                 }
                 else
                 {
                     if (TryRecover(text, currentOffset, ${ruleId}, "Expected whitespace", ref localMaxOffset, results, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                    {
                         if (panicked) panicked = true;
-                    }
                     else
-                    {
                         return failRes;
-                    }
                 }
             }`;
       }
@@ -2115,7 +2804,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
             // Element Rule: ${rule.value.name} (id: ${ruleId})
             if (!panicked)
             {
-                var res = Parse_${subName}(text, currentOffset, memo, ctx);
+                var res = Parse${subName}(text, currentOffset, memo, ctx);
                 localMaxOffset = Math.Max(localMaxOffset, res.DependencyLimit);
                 if (res.Success)
                 {
@@ -2129,13 +2818,9 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 else
                 {
                     if (TryRecover(text, currentOffset, ${ruleId}, res.Error ?? "Expected sub-element ${rule.value.name}", ref localMaxOffset, results, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                    {
                         if (panicked) panicked = true;
-                    }
                     else
-                    {
                         return failRes;
-                    }
                 }
             }`;
       }
@@ -2147,10 +2832,11 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         const choiceChecks: string[] = [];
         patterns.forEach(p => {
           const sId = nextSpecId();
+          let specificDfaName: string | undefined;
           if (p instanceof RegExp) {
-            speculativeRegexes.push(`        private static readonly Regex Regex_Spec_${ruleId} = new Regex(@"^${escapeRegex(p)}", RegexOptions.Compiled);`);
+            specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
           }
-          const spec = compileSpeculativeMatch(p, ruleId, sId, childElements);
+          const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
           choiceChecks.push(`
                 // Speculative alternative check ${sId}
                 if (!choiceMatched_${ruleId})
@@ -2159,11 +2845,27 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                     ${spec.code.trim()}
                     if (${spec.matchedName})
                     {
-                        bestAst = ${spec.parsedAstName};
-                        bestOffset = ${spec.newOffsetName};
-                        bestPrec = ${spec.precName};
-                        bestErrors = ctx.RecoveredErrors.GetRange(${baseErrorsVar}, ctx.RecoveredErrors.Count - ${baseErrorsVar});
-                        choiceMatched_${ruleId} = true;
+                        int branchErrorsCount = ctx.RecoveredErrors.Count - ${baseErrorsVar};
+                        if (branchErrorsCount == 0)
+                        {
+                            if (${spec.parsedAstName} != null && (${spec.parsedAstName}.Width > 0 || ${spec.parsedAstName}.Type == NodeType.Eof))
+                            {
+                                results.Add(${spec.parsedAstName});
+                            }
+                            currentOffset = ${spec.newOffsetName};
+                            hasCommitted = true;
+                            choiceMatched_${ruleId} = true;
+                        }
+                        else
+                        {
+                            if (backupAst_${ruleId} == null)
+                            {
+                                backupAst_${ruleId} = ${spec.parsedAstName};
+                                backupOffset_${ruleId} = ${spec.newOffsetName};
+                                backupErrors_${ruleId} = ctx.RecoveredErrors.GetRange(${baseErrorsVar}, branchErrorsCount);
+                            }
+                            ctx.RecoveredErrors.RemoveRange(${baseErrorsVar}, branchErrorsCount);
+                        }
                     }
                 }`);
         });
@@ -2175,33 +2877,31 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 bool choiceMatched_${ruleId} = false;
                 int ${baseErrorsVar} = ctx.RecoveredErrors.Count;
 
-                GreenNode bestAst = null;
-                int bestOffset = -1;
-                int bestPrec = -1;
-                List<ParseError> bestErrors = null;
+                GreenNode backupAst_${ruleId} = null;
+                int backupOffset_${ruleId} = -1;
+                List<ParseError> backupErrors_${ruleId} = null;
+
 ${choiceChecks.join("\n")}
 
-                if (choiceMatched_${ruleId} && bestAst != null)
+                if (!choiceMatched_${ruleId} && backupAst_${ruleId} != null)
                 {
-                    ctx.RecoveredErrors.AddRange(bestErrors);
-                    if (bestAst.Width > 0 || bestAst.Type == NodeType.Eof)
+                    if (backupAst_${ruleId}.Width > 0 || backupAst_${ruleId}.Type == NodeType.Eof)
                     {
-                        results.Add(bestAst);
+                        results.Add(backupAst_${ruleId});
                     }
-                    currentOffset = bestOffset;
+                    currentOffset = backupOffset_${ruleId};
                     hasCommitted = true;
+                    ctx.RecoveredErrors.AddRange(backupErrors_${ruleId});
+                    choiceMatched_${ruleId} = true;
                 }
-                else
+
+                if (!choiceMatched_${ruleId})
                 {
                     ctx.RecoveredErrors.RemoveRange(${baseErrorsVar}, ctx.RecoveredErrors.Count - ${baseErrorsVar});
                     if (TryRecover(text, currentOffset, ${ruleId}, "None of the choices matched in rule ${ruleId}", ref localMaxOffset, results, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                    {
                         if (panicked) panicked = true;
-                    }
                     else
-                    {
                         return failRes;
-                    }
                 }
             }`;
       }
@@ -2209,10 +2909,11 @@ ${choiceChecks.join("\n")}
       if (rule.type === 'optional') {
         const sId = nextSpecId();
         const escErrorsVar = `optErrors_${ruleId}`;
+        let specificDfaName: string | undefined;
         if (rule.value instanceof RegExp) {
-          speculativeRegexes.push(`        private static readonly Regex Regex_Spec_${ruleId} = new Regex(@"^${escapeRegex(rule.value)}", RegexOptions.Compiled);`);
+          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
         }
-        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements);
+        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
 
         return `
             // Optional Rule (id: ${ruleId})
@@ -2238,10 +2939,11 @@ ${choiceChecks.join("\n")}
       if (rule.type === 'zeroOrMore') {
         const sId = nextSpecId();
         const escErrorsVar = `loopErrors_${ruleId}`;
+        let specificDfaName: string | undefined;
         if (rule.value instanceof RegExp) {
-          speculativeRegexes.push(`        private static readonly Regex Regex_Spec_${ruleId} = new Regex(@"^${escapeRegex(rule.value)}", RegexOptions.Compiled);`);
+          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
         }
-        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements);
+        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
 
         return `
             // Zero Or More Rule (id: ${ruleId})
@@ -2275,10 +2977,11 @@ ${choiceChecks.join("\n")}
       if (rule.type === 'oneOrMore') {
         const sId = nextSpecId();
         const escErrorsVar = `loopErrors_${ruleId}`;
+        let specificDfaName: string | undefined;
         if (rule.value instanceof RegExp) {
-          speculativeRegexes.push(`        private static readonly Regex Regex_Spec_${ruleId} = new Regex(@"^${escapeRegex(rule.value)}", RegexOptions.Compiled);`);
+          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
         }
-        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements);
+        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
 
         return `
             // One Or More Rule (id: ${ruleId})
@@ -2310,13 +3013,9 @@ ${choiceChecks.join("\n")}
                 else
                 {
                     if (TryRecover(text, currentOffset, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                    {
                         if (panicked) panicked = true;
-                    }
                     else
-                    {
                         return failRes;
-                    }
                 }
             }`;
       }
@@ -2324,10 +3023,11 @@ ${choiceChecks.join("\n")}
       if (rule.type === 'not') {
         const sId = nextSpecId();
         const escErrorsVar = `notErrors_${ruleId}`;
+        let specificDfaName: string | undefined;
         if (rule.value instanceof RegExp) {
-          speculativeRegexes.push(`        private static readonly Regex Regex_Spec_${ruleId} = new Regex(@"^${escapeRegex(rule.value)}", RegexOptions.Compiled);`);
+          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
         }
-        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements);
+        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
 
         return `
             // Not Lookahead Rule: (id: ${ruleId})
@@ -2367,13 +3067,9 @@ ${choiceChecks.join("\n")}
                 else
                 {
                     if (TryRecover(text, currentOffset, ${ruleId}, "Expected EOF end of string", ref localMaxOffset, results, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                    {
                         if (panicked) panicked = true;
-                    }
                     else
-                    {
                         return failRes;
-                    }
                 }
             }`;
       }
@@ -2383,13 +3079,12 @@ ${choiceChecks.join("\n")}
 
     const instantiator = `GreenNode.Create(NodeType.${elName}, results, ruleId, currentOffset - offset)`;
 
-    return `        public ParseResult Parse_${elName}(ITextDocument text, int offset, SpatialCSTIndex memo, ParserContext ctx)
+    return `        public ParseResult Parse${elName}(ITextDocument text, int offset, SpatialCSTIndex memo, ParserContext ctx)
         {
             int ruleId = ${el.id};
-            if (memo.Has(ruleId, offset))
+            if (memo.TryGet(ruleId, offset, out var cached))
             {
-                var cached = memo.Get(ruleId, offset);
-                if (cached != null)
+                if(cached != null)
                 {
                     if (cached.RecoveredErrors != null)
                     {
@@ -2429,12 +3124,13 @@ ${ruleBlocks}
         }`;
   }).join("\n\n");
 
-  const combinedRegexes = Array.from(new Set([...regexFields, ...speculativeRegexes])).join("\n");
+  const combinedRegexes = Array.from(new Set([...regexFields, ...speculativeRegexes]));
 
   return `using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using System.Linq;
+using System.Runtime.CompilerServices;
 
 namespace ${namespaceName}
 {
@@ -2663,7 +3359,7 @@ namespace ${namespaceName}
                     return _valueCache;
                 }
 
-                _valueCache = "";
+                _valueCache = string.Empty;
                 return _valueCache;
             }
         }
@@ -2693,11 +3389,11 @@ ${factoryCases}
 
     public class ${rootName}Parser : IParserRunner
     {
-${combinedRegexes}
+${combinedRegexes.join("\n")}
 
         public ParseResult Parse(ITextDocument text, int offset, SpatialCSTIndex memo, ParserContext ctx)
         {
-            return Parse_${rootName}(text, offset, memo, ctx);
+            return Parse${rootName}(text, offset, memo, ctx);
         }
 
 ${parserMethods}
@@ -2742,7 +3438,7 @@ ${parserMethods}
                 foreach (var boundary in recoveryBoundaries)
                 {
                     int lookaheadLimit = Math.Min(text.Length - currentOffset, 2048);
-                    string window = text.GetText(currentOffset, lookaheadLimit);
+                    string window = text.GetText(currentOffset, lookaheadLimit).ToString();
                     int idxInWindow = window.IndexOf(boundary);
                     if (idxInWindow != -1)
                     {
@@ -2757,7 +3453,7 @@ ${parserMethods}
                 if (bestRecoveryOffset != -1)
                 {
                     int len = bestRecoveryOffset - currentOffset;
-                    string skipped = text.GetText(currentOffset, len);
+                    string skipped = text.GetText(currentOffset, len).ToString();
                     string snippet = skipped.Length > 25 ? skipped.Substring(0, 22) + "..." : skipped;
                     string msg = $"Syntax Error in parser: {errorMsg} at offset {currentOffset}. Skipped \\\"{snippet}\\\" to sync.";
 
