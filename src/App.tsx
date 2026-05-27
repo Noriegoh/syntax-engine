@@ -50,6 +50,16 @@ import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMat
 import { cn } from './lib/utils';
 import { ParserProfiler } from './components/ParserProfiler';
 
+const SyntaxEngineLogo = ({ className }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" fill="none" className={className} xmlns="http://www.w3.org/2000/svg">
+    <path d="M8 6C8 6 5 8 5 12C5 16 8 18 8 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+    <path d="M9 12H11C12.5 12 13 8 15 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+    <path d="M9 12H11C12.5 12 13 16 15 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+    <circle cx="17" cy="8" r="2" stroke="currentColor" strokeWidth="2.5"/>
+    <circle cx="17" cy="16" r="2.5" fill="currentColor"/>
+  </svg>
+);
+
 const STYLE_PLAIN_ID = 0;
 const STYLE_COMMENT_ID = 1;
 const STYLE_STRING_ID = 2;
@@ -157,7 +167,8 @@ const DEFAULT_CODE = `// Unity ShaderLab & HLSL Parser
 // 💡 PRECEDENCE: Use .Prec(level) to resolve ambiguities (higher = priority).
 // 💡 GREEDY CHOICE: ExpectsOneOf tries all branches and picks the best one 
 //    (highest precedence, then longest consumed match).
-// 💡 SELF-HEALING: Use .SelfHeals(...boundaries) on structural blocks to automatically skip typos/errors and synchronize parsing at boundaries.
+// 💡 AUTOMATED RECOVERY: The parser automatically derives recovery boundaries from ending literals 
+//    and dynamically heals malformed blocks using active EndScope boundaries!
 
 const ws = new SyntaxElement('ws').ExpectsWhitespace().Hide();
 const comment = new SyntaxElement('line_comment').Expects(/\\/\\/.*|\\/\\*[\\s\\S]*?\\*\\//).Hide();
@@ -187,20 +198,17 @@ const varDecl = new SyntaxElement("variable")
   .Expects(hlslType).Expects(s).Expects(id)
   .Optional(new SyntaxElement("opt_array").Optional(s).Expects(arraySpec))
   .Optional(new SyntaxElement("sem_opt").Optional(s).Expects(semantic))
-  .Optional(s).Expects(";")
-  .SelfHeals(";");
+  .Optional(s).Expects(";");
 
 // Allow structMember to recover on ';' or new line comments
 const structMember = new SyntaxElement("struct_member")
   .Unexpects("}")
-  .Optional(s).ExpectsOneOf(varDecl, comment).RecoverWith(";", /\\n/)
-  .SelfHeals(";", "}");
+  .Optional(s).ExpectsOneOf(varDecl, comment);
 
 const structDecl = new SyntaxElement("struct")
-  .Expects("struct").Expects(s).Expects(id).Optional(s).Expects("{")
+  .Expects("struct").Expects(s).Expects(id).Optional(s).BeginScope("{")
   .ZeroOrMore(structMember)
-  .Optional(s).Expects("}").Optional(s).Expects(";")
-  .SelfHeals("}", ";");
+  .Optional(s).EndScope("}").Optional(s).Expects(";");
 
 const param = new SyntaxElement("param")
   .Optional(new SyntaxElement("inout").ExpectsOneOf("inout", "in", "out").Expects(s))
@@ -212,29 +220,26 @@ const paramList = new SyntaxElement("param_list")
 
 // Recursive block matcher for func content
 const codeBlock = new SyntaxElement("code_block");
-codeBlock.Expects("{").ZeroOrMore(new SyntaxElement("block_content").ExpectsOneOf(
+codeBlock.BeginScope("{").ZeroOrMore(new SyntaxElement("block_content").ExpectsOneOf(
     /[^{}]+/, 
     codeBlock
-)).Expects("}");
+)).EndScope("}");
 
 const funcDecl = new SyntaxElement("function")
   .Expects(hlslType).Expects(s).Expects(id).Optional(s).Expects("(").Optional(s).Optional(paramList).Optional(s).Expects(")")
   .Optional(new SyntaxElement("sem_opt").Optional(s).Expects(semantic))
-  .Optional(s).Expects(codeBlock)
-  .SelfHeals("}");
+  .Optional(s).Expects(codeBlock);
 
 const directive = new SyntaxElement("directive").Expects(/#[a-zA-Z]+[^\\r\\n]*/);
 
 const hlslContent = new SyntaxElement("hlsl_content")
   .Unexpects("ENDCG").Unexpects("ENDHLSL")
-  .ExpectsOneOf(structDecl, funcDecl, varDecl, directive).RecoverWith(";", /\\n/)
-  .SelfHeals(";", "}");
+  .ExpectsOneOf(structDecl, funcDecl, varDecl, directive);
 
 const hlslBlock = new SyntaxElement("hlsl_block")
   .ExpectsOneOf("CGPROGRAM", "HLSLPROGRAM").Optional(s)
   .ZeroOrMore(new SyntaxElement("hlsl_entry").Optional(s).Expects(hlslContent))
-  .Optional(s).ExpectsOneOf("ENDCG", "ENDHLSL")
-  .SelfHeals("ENDCG", "ENDHLSL");
+  .Optional(s).ExpectsOneOf("ENDCG", "ENDHLSL");
 
 // --- SHADERLAB ---
 const propAttr = new SyntaxElement("prop_attr").Expects("[").Optional(s).Expects(id).Optional(s).Expects("]").Optional(s);
@@ -242,28 +247,25 @@ const propType = new SyntaxElement("prop_type").ExpectsOneOf("Color", "2D", "Rec
 const propTypeArgs = new SyntaxElement("prop_type_args").Expects("(").Optional(/[^)]*/).Expects(")");
 const propValue = new SyntaxElement("prop_value").ExpectsOneOf(string, number, new SyntaxElement("tuple").Expects("(").Optional(/[^)]*/).Expects(")"), id);
 
-const propBlock = new SyntaxElement("prop_block").Expects("{").Optional(s).Expects("}");
+const propBlock = new SyntaxElement("prop_block").BeginScope("{").Optional(s).EndScope("}");
 
 const propDecl = new SyntaxElement("property")
   .Unexpects("}")
   .ZeroOrMore(propAttr)
-  .Expects(id).Optional(s).Expects("(").Optional(s).Expects(string).Optional(s).Expects(",").Optional(s).Expects(propType)
-  .Optional(propTypeArgs).Optional(s).Expects(")").Optional(s).Expects("=").Optional(s).Expects(propValue)
-  .Optional(new SyntaxElement("opt_prop_block").Optional(s).Expects(propBlock))
-  .RecoverWith(/\\n/)
-  .SelfHeals();
+  .Expects(id).Optional(s).BeginScope("(").Optional(s).Expects(string).Optional(s).Expects(",").Optional(s).Expects(propType)
+  .Optional(propTypeArgs).Optional(s).EndScope(")").Optional(s).Expects("=").Optional(s).Expects(propValue)
+  .Optional(new SyntaxElement("opt_prop_block").Optional(s).Expects(propBlock));
 
 const propertiesBlock = new SyntaxElement("properties_block")
-  .Expects("Properties").Optional(s).Expects("{")
+  .Expects("Properties").Optional(s).BeginScope("{")
   .ZeroOrMore(new SyntaxElement("prop_entry").Optional(s).Expects(propDecl))
-  .Optional(s).Expects("}")
-  .SelfHeals("}");
+  .Optional(s).EndScope("}");
 
 const tagEntry = new SyntaxElement("tag_entry").Expects(string).Optional(s).Expects("=").Optional(s).Expects(string);
 const tagsBlock = new SyntaxElement("tags_block")
-  .Expects("Tags").Optional(s).Expects("{").Optional(s)
+  .Expects("Tags").Optional(s).BeginScope("{").Optional(s)
   .ZeroOrMore(new SyntaxElement("tag_item").Expects(tagEntry).Optional(s).Optional(new SyntaxElement("c").Expects(",")).Optional(s))
-  .Expects("}");
+  .EndScope("}");
 
 const lodState = new SyntaxElement("lod_state").Expects("LOD").Expects(s).Expects(/[0-9]+/);
 const blendState = new SyntaxElement("blend_state").Expects("Blend").Expects(s).Expects(/[a-zA-Z]+/).Expects(s).Expects(/[a-zA-Z]+/);
@@ -272,36 +274,30 @@ const cullState = new SyntaxElement("cull_state").Expects("Cull").Expects(s).Exp
 
 const passState = new SyntaxElement("pass_state")
   .Unexpects("}")
-  .ExpectsOneOf(blendState, zwriteState, cullState, tagsBlock, hlslBlock).RecoverWith(";", /\\n/)
-  .SelfHeals(";", "}");
+  .ExpectsOneOf(blendState, zwriteState, cullState, tagsBlock, hlslBlock);
 
 const passBlock = new SyntaxElement("pass_block")
-  .Expects("Pass").Optional(s).Expects("{")
+  .Expects("Pass").Optional(s).BeginScope("{")
   .ZeroOrMore(new SyntaxElement("pass_entry").Optional(s).Expects(passState))
-  .Optional(s).Expects("}")
-  .SelfHeals("}");
+  .Optional(s).EndScope("}");
 
 const subshaderState = new SyntaxElement("subshader_state")
   .Unexpects("}")
-  .ExpectsOneOf(tagsBlock, blendState, zwriteState, cullState, passBlock, hlslBlock, lodState).RecoverWith("}", /\\n/)
-  .SelfHeals("}", "Pass");
+  .ExpectsOneOf(tagsBlock, blendState, zwriteState, cullState, passBlock, hlslBlock, lodState);
 
 const subshaderBlock = new SyntaxElement("subshader_block")
-  .Expects("SubShader").Optional(s).Expects("{")
+  .Expects("SubShader").Optional(s).BeginScope("{")
   .ZeroOrMore(new SyntaxElement("subshader_entry").Optional(s).Expects(subshaderState))
-  .Optional(s).Expects("}")
-  .SelfHeals("}");
+  .Optional(s).EndScope("}");
 
 const shaderBlock = new SyntaxElement("shader_block")
-  .Expects("Shader").Expects(s).Expects(string).Optional(s).Expects("{").Optional(s)
+  .Expects("Shader").Expects(s).Expects(string).Optional(s).BeginScope("{").Optional(s)
   .Optional(propertiesBlock).Optional(s)
   .ZeroOrMore(subshaderBlock).Optional(s)
-  .Expects("}")
-  .SelfHeals("}");
+  .EndScope("}");
 
 const root = new SyntaxElement("_root")
-  .Optional(s).Expects(shaderBlock).Optional(s).ExpectsEOF()
-  .SelfHeals();`;
+  .Optional(s).Expects(shaderBlock).Optional(s).ExpectsEOF();`;
 
 const DEFAULT_AST_CODE = `// --- Optional AST Transformer ---
 // Map the raw Concrete Syntax Tree (CST) into a clean, custom Abstract Syntax Tree (AST).
@@ -1914,9 +1910,11 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                       rule.type === 'optional' && "bg-teal-500/20 text-teal-400",
                       rule.type === 'zeroOrMore' && "bg-cyan-500/20 text-cyan-400",
                       rule.type === 'oneOrMore' && "bg-blue-500/20 text-blue-400",
+                      rule.type === 'beginScope' && "bg-violet-500/20 text-violet-400",
+                      rule.type === 'endScope' && "bg-purple-500/20 text-purple-400",
                       rule.type === 'eof' && "bg-zinc-500/20 text-zinc-400"
                     )}>
-                      {rule.type === 'not' ? 'Unexpects' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? 'Any' : rule.type === 'oneOrMore' ? 'Some' : rule.type === 'eof' ? 'End' : 'Expects'}
+                      {rule.type === 'not' ? 'Unexpects' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? 'Any' : rule.type === 'oneOrMore' ? 'Some' : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : 'Expects'}
                     </span>
                     
                     <code className={cn(
@@ -1924,12 +1922,15 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                       rule.type === 'regex' ? "text-emerald-400" : 
                       rule.type === 'eof' ? "text-zinc-500" :
                       rule.type === 'not' ? "text-rose-300" :
+                      rule.type === 'beginScope' ? "text-violet-300 font-bold" :
+                      rule.type === 'endScope' ? "text-purple-300 font-bold" :
                       rule.type === 'element' ? "text-indigo-300" : "text-white"
                     )}>
                       {rule.type === 'whitespace' ? 'WS' : 
                       rule.type === 'choice' ? `[ ${(rule.value as any[]).map(v => typeof v === 'string' ? `"${v}"` : v instanceof RegExp ? `Regex` : v?.name || 'Element').join(' | ')} ]` :
                       rule.type === 'regex' ? `Regex("${rule.value?.source}")` : 
                       rule.type === 'eof' ? 'EOF' :
+                      rule.type === 'beginScope' || rule.type === 'endScope' ? `${typeof rule.value === 'string' ? `"${rule.value}"` : (rule.value as any)?.name ? (rule.value as any).name : 'Pattern'}` :
                       (rule.value as any)?.name ? `${(rule.value as any).name}` :
                       `"${rule.value}"`}
                     </code>
@@ -1962,7 +1963,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       <header className="relative z-10 h-16 border-b border-white/10 backdrop-blur-md bg-white/5 px-6 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <Zap className="text-white w-5 h-5 font-bold" />
+            <SyntaxEngineLogo className="text-white w-5 h-5" />
           </div>
           <div>
             <h1 className="text-lg font-semibold tracking-tight text-white uppercase italic">
@@ -2440,9 +2441,11 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                                               rule.type === 'optional' && "bg-teal-500/10 text-teal-400 border border-teal-500/20",
                                               rule.type === 'zeroOrMore' && "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20",
                                               rule.type === 'oneOrMore' && "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+                                              rule.type === 'beginScope' && "bg-violet-500/10 text-violet-400 border border-violet-500/20",
+                                              rule.type === 'endScope' && "bg-purple-500/10 text-purple-400 border border-purple-500/20",
                                               rule.type === 'eof' && "bg-zinc-500/10 text-zinc-400 border border-zinc-500/20"
                                             )}>
-                                              {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? 'Any Count' : rule.type === 'oneOrMore' ? 'Some Count' : rule.type === 'eof' ? 'EOF Boundary' : 'Expects Match'}
+                                              {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? 'Any Count' : rule.type === 'oneOrMore' ? 'Some Count' : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : 'Expects Match'}
                                             </span>
                                           </div>
                                         </div>
@@ -2459,6 +2462,10 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                                           ) : rule.type === 'regex' ? (
                                             <code className="text-[11px] font-mono text-emerald-400 bg-emerald-500/5 px-2 py-0.5 rounded border border-emerald-500/10">
                                               Regex("/{rule.value instanceof RegExp ? rule.value.source : String(rule.value)}/")
+                                            </code>
+                                          ) : (rule.type === 'beginScope' || rule.type === 'endScope') ? (
+                                            <code className="text-[11px] font-mono text-violet-300 bg-violet-500/5 px-2 py-0.5 rounded border border-violet-500/10 font-bold">
+                                              {rule.type === 'beginScope' ? 'Begin' : 'End'}: "{String(rule.value)}"
                                             </code>
                                           ) : rule.type === 'literal' ? (
                                             <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
