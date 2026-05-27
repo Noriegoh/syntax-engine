@@ -2,7 +2,7 @@
  * Core types and utilities for SyntaxEngine.
  */
 
-export type RuleType = 'literal' | 'regex' | 'element' | 'not' | 'whitespace' | 'choice' | 'optional' | 'zeroOrMore' | 'oneOrMore' | 'eof' | 'beginScope' | 'endScope';
+export type RuleType = 'literal' | 'regex' | 'element' | 'not' | 'whitespace' | 'choice' | 'optional' | 'leadingTrivia' | 'trailingTrivia' | 'zeroOrMore' | 'oneOrMore' | 'eof' | 'beginScope' | 'endScope';
 
 let lastRuleId = 0;
 export function nextRuleId(): number {

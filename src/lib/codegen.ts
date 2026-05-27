@@ -409,26 +409,17 @@ export function generateDFACSharpMethod(methodName: string, regex: RegExp, ruleI
         const isFallback = (j === sortedTargets.length - 1 && ranges.reduce((sum, r) => sum + (r.end - r.start + 1), 0) > 30000);
         
         if (isFallback) {
-          conditions.push(`                    // Fallback transition
-                    state = ${targetId};
-                    break;`);
+          conditions.push(`                    state = ${targetId}; break; // Fallback transition`);
         } else {
           const ifKeyword = conditions.length === 0 ? 'if' : 'else if';
-          conditions.push(`                    ${ifKeyword} (${condStr})
-                    {
-                        state = ${targetId};
-                        break;
-                    }`);
+          conditions.push(`                    ${ifKeyword} (${condStr}) { state = ${targetId}; break; }`);
         }
       }
       
       if (conditions.length > 0) {
         const lastCond = conditions[conditions.length - 1];
         if (!lastCond.includes('// Fallback transition')) {
-          conditions.push(`                    else
-                    {
-                        goto end_match;
-                    }`);
+          conditions.push(`                    else goto end_match;`);
         }
       } else {
         conditions.push(`                    goto end_match;`);
@@ -463,8 +454,7 @@ ${acceptingStatesCases}
                 switch (state)
                 {
 ${transitionsCases}
-                    default:
-                        goto end_match;
+                    default:goto end_match;
                 }
                 i++;
             }
@@ -570,6 +560,8 @@ function collectElements(root: SyntaxElement): SyntaxElement[] {
         }
       } else if (
         rule.type === 'optional' ||
+        rule.type === 'leadingTrivia' ||
+        rule.type === 'trailingTrivia' ||
         rule.type === 'zeroOrMore' ||
         rule.type === 'oneOrMore' ||
         rule.type === 'not' ||
@@ -698,6 +690,7 @@ namespace ${namespaceName}
         char this[int index] { get; }
         int GetLineEnd(int offset);
         int GetLineEnding(int offset);
+        int IndexOf(int start, string pattern, int limit);
     }
     public class StringTextDocument : ITextDocument
     {
@@ -730,6 +723,13 @@ namespace ${namespaceName}
             if (offset < 0 || offset >= _text.Length) return 0;
             int end = GetLineEnd(offset);
             return end - offset;
+        }
+        public int IndexOf(int start, string pattern, int limit)
+        {
+            if (start < 0 || start >= _text.Length || string.IsNullOrEmpty(pattern)) return -1;
+            int count = Math.Min(_text.Length - start, limit);
+            if (count < pattern.Length) return -1;
+            return _text.IndexOf(pattern, start, count, StringComparison.Ordinal);
         }
         public override string ToString() => _text;
     }
@@ -2396,6 +2396,8 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         }
       } else if (
         rule.type === 'optional' ||
+        rule.type === 'leadingTrivia' ||
+        rule.type === 'trailingTrivia' ||
         rule.type === 'zeroOrMore' ||
         rule.type === 'oneOrMore' ||
         rule.type === 'not' ||
@@ -2462,7 +2464,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
       let ruleIsStructural = true;
       if (rule.type === 'whitespace') {
         ruleIsStructural = false;
-      } else if ((rule.type === 'element' || rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value instanceof SyntaxElement && rule.value.isHiddenElement) {
+      } else if ((rule.type === 'element' || rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value instanceof SyntaxElement && rule.value.isHiddenElement) {
         ruleIsStructural = false;
       }
       const structUpdate = `if (${ruleIsStructural ? 'true' : 'false'} && currentOffset > startOffset_${ruleId})
@@ -2643,7 +2645,7 @@ ${choiceChecks.join("\n")}
                 }
             }`;
       }
-      if (rule.type === 'optional') {
+      if (rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') {
         const sId = nextSpecId();
         const escErrorsVar = `optErrors_${ruleId}`;
         let specificDfaName: string | undefined;
@@ -3304,11 +3306,9 @@ ${parserMethods}
                 foreach (var boundary in recoveryBoundaries)
                 {
                     int lookaheadLimit = Math.Min(text.Length - failStartOffset, 2048);
-                    string window = text.GetText(failStartOffset, lookaheadLimit).ToString();
-                    int idxInWindow = window.IndexOf(boundary);
-                    if (idxInWindow != -1)
+                    int idx = text.IndexOf(failStartOffset, boundary, lookaheadLimit);
+                    if (idx != -1)
                     {
-                        int idx = failStartOffset + idxInWindow;
                         if (bestRecoveryOffset == -1 || idx < bestRecoveryOffset)
                         {
                             bestRecoveryOffset = idx;
@@ -3371,6 +3371,8 @@ ${elements.map(el => {
         }
       } else if (
         rule.type === 'optional' ||
+        rule.type === 'leadingTrivia' ||
+        rule.type === 'trailingTrivia' ||
         rule.type === 'zeroOrMore' ||
         rule.type === 'oneOrMore' ||
         rule.type === 'not'
@@ -3469,6 +3471,8 @@ export function generateModularCSharp(
           }
         } else if (
           rule.type === 'optional' ||
+          rule.type === 'leadingTrivia' ||
+          rule.type === 'trailingTrivia' ||
           rule.type === 'zeroOrMore' ||
           rule.type === 'oneOrMore' ||
           rule.type === 'not'

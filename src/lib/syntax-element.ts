@@ -9,6 +9,9 @@ import {
 } from './types';
 
 export class SyntaxElement {
+  static defaultLeadingTrivia?: string | RegExp | SyntaxElement;
+  static defaultTrailingTrivia?: string | RegExp | SyntaxElement;
+
   id: number;
   name: string;
   rules: Rule[];
@@ -49,38 +52,53 @@ export class SyntaxElement {
     return this;
   }
 
-  BeginScope(pattern: string | RegExp | SyntaxElement): this {
-    const id = nextRuleId();
-    if (pattern instanceof SyntaxElement) {
-      this.rules.push({ id, type: 'beginScope', value: pattern });
-    } else if (pattern instanceof RegExp) {
-      this.rules.push({ id, type: 'beginScope', value: pattern });
+  BeginScope(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
+      const inner = pattern.pattern;
+      const lead = SyntaxElement.defaultLeadingTrivia;
+      const trail = SyntaxElement.defaultTrailingTrivia;
+      if (lead) this.LeadingTrivia(lead);
+      this.BeginScope(inner as any);
+      if (trail) this.TrailingTrivia(trail);
     } else {
+      const id = nextRuleId();
       this.rules.push({ id, type: 'beginScope', value: pattern });
     }
     return this;
   }
 
-  EndScope(pattern: string | RegExp | SyntaxElement): this {
-    const id = nextRuleId();
-    if (pattern instanceof SyntaxElement) {
-      this.rules.push({ id, type: 'endScope', value: pattern });
-    } else if (pattern instanceof RegExp) {
-      this.rules.push({ id, type: 'endScope', value: pattern });
+  EndScope(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
+      const inner = pattern.pattern;
+      const lead = SyntaxElement.defaultLeadingTrivia;
+      const trail = SyntaxElement.defaultTrailingTrivia;
+      if (lead) this.LeadingTrivia(lead);
+      this.EndScope(inner as any);
+      if (trail) this.TrailingTrivia(trail);
     } else {
+      const id = nextRuleId();
       this.rules.push({ id, type: 'endScope', value: pattern });
     }
     return this;
   }
 
-  Expects(pattern: string | RegExp | SyntaxElement): this {
-    const id = nextRuleId();
-    if (pattern instanceof SyntaxElement) {
-      this.rules.push({ id, type: 'element', value: pattern });
-    } else if (pattern instanceof RegExp) {
-      this.rules.push({ id, type: 'regex', value: pattern });
+  Expects(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
+      const inner = pattern.pattern;
+      const lead = SyntaxElement.defaultLeadingTrivia;
+      const trail = SyntaxElement.defaultTrailingTrivia;
+      if (lead) this.LeadingTrivia(lead);
+      this.Expects(inner as any);
+      if (trail) this.TrailingTrivia(trail);
     } else {
-      this.rules.push({ id, type: 'literal', value: pattern });
+      const id = nextRuleId();
+      if (pattern instanceof SyntaxElement) {
+        this.rules.push({ id, type: 'element', value: pattern });
+      } else if (pattern instanceof RegExp) {
+        this.rules.push({ id, type: 'regex', value: pattern });
+      } else {
+        this.rules.push({ id, type: 'literal', value: pattern });
+      }
     }
     return this;
   }
@@ -91,42 +109,132 @@ export class SyntaxElement {
     return this;
   }
 
-  Unexpects(pattern: string | SyntaxElement): this {
+  Unexpects(pattern: string | SyntaxElement | TokenMarker): this {
+    const unwrapped = unwrapToken(pattern);
     const id = nextRuleId();
-    this.rules.push({ id, type: 'not', value: pattern });
+    this.rules.push({ id, type: 'not', value: unwrapped });
     return this;
   }
 
-  ExpectsOneOf(...patterns: (string | RegExp | SyntaxElement)[] | [(string | RegExp | SyntaxElement)[]]): this {
-    const id = nextRuleId();
+  ExpectsOneOf(...patterns: (string | RegExp | SyntaxElement | TokenMarker)[] | [(string | RegExp | SyntaxElement | TokenMarker)[]]): this {
     const flatPatterns = (patterns.length === 1 && Array.isArray(patterns[0]))
       ? patterns[0]
-      : patterns as (string | RegExp | SyntaxElement)[];
-    this.rules.push({ id, type: 'choice', value: flatPatterns });
+      : patterns as (string | RegExp | SyntaxElement | TokenMarker)[];
+      
+    let hasToken = false;
+    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    for (const p of flatPatterns) {
+      if (p && typeof p === 'object' && '__isTokenMarker' in p) {
+        hasToken = true;
+        unwrapped.push(unwrapToken(p));
+      } else {
+        unwrapped.push(p as any);
+      }
+    }
+    
+    if (hasToken) {
+      const lead = SyntaxElement.defaultLeadingTrivia;
+      const trail = SyntaxElement.defaultTrailingTrivia;
+      if (lead) this.LeadingTrivia(lead);
+      
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'choice', value: unwrapped });
+      
+      if (trail) this.TrailingTrivia(trail);
+    } else {
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'choice', value: flatPatterns as any });
+    }
     return this;
   }
 
-  Optional(pattern: string | RegExp | SyntaxElement): this {
-    const id = nextRuleId();
-    this.rules.push({ id, type: 'optional', value: pattern });
+  Optional(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
+      const inner = pattern.pattern;
+      const lead = SyntaxElement.defaultLeadingTrivia;
+      const trail = SyntaxElement.defaultTrailingTrivia;
+      if (lead) this.LeadingTrivia(lead);
+      this.Optional(inner as any);
+      if (trail) this.TrailingTrivia(trail);
+    } else {
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'optional', value: pattern });
+    }
     return this;
   }
 
-  ZeroOrMore(pattern: string | RegExp | SyntaxElement): this {
-    const id = nextRuleId();
-    this.rules.push({ id, type: 'zeroOrMore', value: pattern });
+  ZeroOrMore(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
+      const inner = pattern.pattern;
+      const lead = SyntaxElement.defaultLeadingTrivia;
+      const trail = SyntaxElement.defaultTrailingTrivia;
+      if (lead) this.LeadingTrivia(lead);
+      this.ZeroOrMore(inner as any);
+      if (trail) this.TrailingTrivia(trail);
+    } else {
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'zeroOrMore', value: pattern });
+    }
     return this;
   }
 
-  OneOrMore(pattern: string | RegExp | SyntaxElement): this {
-    const id = nextRuleId();
-    this.rules.push({ id, type: 'oneOrMore', value: pattern });
+  OneOrMore(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
+      const inner = pattern.pattern;
+      const lead = SyntaxElement.defaultLeadingTrivia;
+      const trail = SyntaxElement.defaultTrailingTrivia;
+      if (lead) this.LeadingTrivia(lead);
+      this.OneOrMore(inner as any);
+      if (trail) this.TrailingTrivia(trail);
+    } else {
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'oneOrMore', value: pattern });
+    }
     return this;
   }
 
   ExpectsEOF(): this {
     const id = nextRuleId();
     this.rules.push({ id, type: 'eof' });
+    return this;
+  }
+
+  LeadingTrivia(pattern: string | RegExp | SyntaxElement): this {
+    const id = nextRuleId();
+    this.rules.push({ id, type: 'leadingTrivia', value: pattern });
+    return this;
+  }
+
+  TrailingTrivia(pattern: string | RegExp | SyntaxElement): this {
+    const id = nextRuleId();
+    this.rules.push({ id, type: 'trailingTrivia', value: pattern });
+    return this;
+  }
+
+  Token(pattern: string | RegExp | SyntaxElement | ScopeMarker | TokenMarker, leading?: string | RegExp | SyntaxElement, trailing?: string | RegExp | SyntaxElement): this {
+    const lead = leading !== undefined ? leading : SyntaxElement.defaultLeadingTrivia;
+    const trail = trailing !== undefined ? trailing : SyntaxElement.defaultTrailingTrivia;
+    if (lead) this.LeadingTrivia(lead);
+    
+    const realPattern = (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) ? pattern.pattern : pattern;
+    
+    if (realPattern && typeof realPattern === 'object' && 'type' in realPattern && (realPattern.type === 'beginScope' || realPattern.type === 'endScope')) {
+      const id = nextRuleId();
+      this.rules.push({ id, type: realPattern.type, value: realPattern.value });
+    } else {
+      if (realPattern instanceof SyntaxElement) {
+        const id = nextRuleId();
+        this.rules.push({ id, type: 'element', value: realPattern });
+      } else if (realPattern instanceof RegExp) {
+        const id = nextRuleId();
+        this.rules.push({ id, type: 'regex', value: realPattern });
+      } else {
+        const id = nextRuleId();
+        this.rules.push({ id, type: 'literal', value: realPattern });
+      }
+    }
+    
+    if (trail) this.TrailingTrivia(trail);
     return this;
   }
 
@@ -231,7 +339,8 @@ export class SyntaxElement {
                   break;
                 }
               } else if (scopeEnd.value instanceof SyntaxElement) {
-                if (scopeEnd.value.name && (scopeEnd.value.name.toLowerCase().includes('end') || scopeEnd.value.name === '}')) {
+                const lits = scopeEnd.value.getTerminalLiterals();
+                if (lits.some(lit => char === lit[0])) {
                   isScopeEnd = true;
                   break;
                 }
@@ -413,7 +522,7 @@ export class SyntaxElement {
       let ruleIsStructural = true;
       if (rule.type === 'whitespace') {
         ruleIsStructural = false;
-      } else if ((rule.type === 'element' || rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value instanceof SyntaxElement && rule.value.isHiddenElement) {
+      } else if ((rule.type === 'element' || rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value instanceof SyntaxElement && rule.value.isHiddenElement) {
         ruleIsStructural = false;
       }
 
@@ -620,7 +729,7 @@ export class SyntaxElement {
         }
       }
 
-      else if (rule.type === 'optional') {
+      else if (rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') {
         const startOffset = currentOffset;
         const beforeOptErrorsLength = ctx.recoveredErrors.length;
         const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
@@ -739,7 +848,18 @@ export class SyntaxElement {
       }
 
       else if (rule.type === 'not') {
-        const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
+        let scanOffset = currentOffset;
+        if (SyntaxElement.defaultLeadingTrivia) {
+          const skipRes = this.parsePattern(SyntaxElement.defaultLeadingTrivia, text, scanOffset, memo, rule.id, ctx);
+          if (skipRes.success) {
+            scanOffset = skipRes.newOffset;
+          }
+        } else {
+          while (scanOffset < text.length && /\s/.test(text[scanOffset])) {
+            scanOffset++;
+          }
+        }
+        const res = this.parsePattern(rule.value, text, scanOffset, memo, rule.id, ctx);
         localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
         if (res.success) {
           return this.fail("Encountered forbidden pattern", currentOffset, rule.id, ctx);
@@ -866,7 +986,7 @@ export class SyntaxElement {
           }
         }
         break;
-      } else if (r.type === 'optional' || r.type === 'zeroOrMore') {
+      } else if (r.type === 'optional' || r.type === 'leadingTrivia' || r.type === 'trailingTrivia' || r.type === 'zeroOrMore') {
         continue;
       } else {
         break;
@@ -887,6 +1007,12 @@ export class SyntaxElement {
         if (typeof scopeEnd.value === 'string') {
           if (!patterns.includes(scopeEnd.value)) {
             patterns.push(scopeEnd.value);
+          }
+        } else if (scopeEnd.value instanceof SyntaxElement) {
+          for (const lit of scopeEnd.value.getTerminalLiterals()) {
+            if (!patterns.includes(lit)) {
+              patterns.push(lit);
+            }
           }
         }
       }
@@ -924,7 +1050,7 @@ export class SyntaxElement {
             }
           }
         }
-      } else if ((rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value) {
+      } else if ((rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value) {
         if (rule.value instanceof SyntaxElement) {
           for (const lit of rule.value.getTerminalLiterals(visited)) {
             if (!literals.includes(lit)) {
@@ -954,6 +1080,119 @@ export class SyntaxElement {
     return elements;
   }
 
+  autoInjectLoopBoundaries(visited: Set<number> = new Set()): void {
+    if (visited.has(this.id)) return;
+    visited.add(this.id);
+
+    // 1. Process all sub-elements first
+    for (const rule of this.rules) {
+      if (rule.value instanceof SyntaxElement) {
+        rule.value.autoInjectLoopBoundaries(visited);
+      } else if (rule.type === 'choice' && Array.isArray(rule.value)) {
+        for (const choice of rule.value) {
+          if (choice instanceof SyntaxElement) {
+            choice.autoInjectLoopBoundaries(visited);
+          }
+        }
+      } else if (rule.type === 'zeroOrMore' && rule.value instanceof SyntaxElement) {
+        rule.value.autoInjectLoopBoundaries(visited);
+      } else if (rule.type === 'oneOrMore' && rule.value instanceof SyntaxElement) {
+        rule.value.autoInjectLoopBoundaries(visited);
+      } else if (rule.type === 'optional' && rule.value instanceof SyntaxElement) {
+        rule.value.autoInjectLoopBoundaries(visited);
+      }
+    }
+
+    // 2. Scan for loops to inject boundaries
+    for (let i = 0; i < this.rules.length; i++) {
+      const rule = this.rules[i];
+      if ((rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && rule.value instanceof SyntaxElement) {
+        const loopChild = rule.value;
+        const followPatterns = this.gatherFollowPatterns(this.rules, i + 1, new Set());
+        if (followPatterns.length > 0) {
+          for (const rawPattern of followPatterns) {
+            const pattern = unwrapToken(rawPattern);
+            if (typeof pattern === 'string' || pattern instanceof RegExp) {
+              const alreadyHasNot = loopChild.rules.some(r => r.type === 'not' && r.value === pattern);
+              if (!alreadyHasNot) {
+                const notRuleId = nextRuleId();
+                loopChild.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private gatherFollowPatterns(rules: Rule[], startIndex: number, visitedElements: Set<number>): any[] {
+    const patterns: any[] = [];
+    for (let j = startIndex; j < rules.length; j++) {
+      const rule = rules[j];
+      const subPatterns = this.collectStartPatterns(rule, visitedElements);
+      patterns.push(...subPatterns);
+      if (!this.isOptionalRule(rule)) {
+        break;
+      }
+    }
+    return patterns;
+  }
+
+  private collectStartPatterns(rule: Rule, visitedElements: Set<number>): any[] {
+    if (!rule) return [];
+    if (rule.type === 'literal' || rule.type === 'beginScope' || rule.type === 'endScope') {
+      return [rule.value];
+    }
+    if (rule.type === 'regex') {
+      return [rule.value];
+    }
+    if (rule.type === 'choice' && Array.isArray(rule.value)) {
+      const pats: any[] = [];
+      for (const choice of rule.value) {
+        if (choice instanceof SyntaxElement) {
+          pats.push(...this.collectElementStartPatterns(choice, visitedElements));
+        } else {
+          pats.push(choice);
+        }
+      }
+      return pats;
+    }
+    if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
+      return this.collectElementStartPatterns(rule.value, visitedElements);
+    }
+    if ((rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && rule.value) {
+      if (rule.value instanceof SyntaxElement) {
+        return this.collectElementStartPatterns(rule.value, visitedElements);
+      } else {
+        return [rule.value];
+      }
+    }
+    return [];
+  }
+
+  private collectElementStartPatterns(element: SyntaxElement, visitedElements: Set<number>): any[] {
+    if (visitedElements.has(element.id)) return [];
+    visitedElements.add(element.id);
+    const pats: any[] = [];
+    for (let i = 0; i < element.rules.length; i++) {
+      const r = element.rules[i];
+      const startPats = this.collectStartPatterns(r, visitedElements);
+      pats.push(...startPats);
+      if (!this.isOptionalRule(r)) {
+        break;
+      }
+    }
+    return pats;
+  }
+
+  private isOptionalRule(rule: Rule): boolean {
+    if (!rule) return true;
+    if (rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace') {
+      return true;
+    }
+    return false;
+  }
+
 
 }
 
@@ -972,5 +1211,48 @@ export function Sort(...patterns: (string | RegExp | SyntaxElement)[] | [(string
     const lenB = typeof b === 'string' ? b.length : (b instanceof RegExp ? b.source.length : (b instanceof SyntaxElement ? b.name.length : 0));
     return lenB - lenA; // Sort descending (longest first)
   });
+}
+
+export function DefaultLeadingTrivia(pattern: string | RegExp | SyntaxElement): void {
+  SyntaxElement.defaultLeadingTrivia = pattern;
+}
+
+export function DefaultTrailingTrivia(pattern: string | RegExp | SyntaxElement): void {
+  SyntaxElement.defaultTrailingTrivia = pattern;
+}
+
+export interface ScopeMarker {
+  type: 'beginScope' | 'endScope';
+  value: string | RegExp | SyntaxElement;
+}
+
+export function BeginScope(pattern: string | RegExp | SyntaxElement): ScopeMarker {
+  return { type: 'beginScope', value: pattern };
+}
+
+export function EndScope(pattern: string | RegExp | SyntaxElement): ScopeMarker {
+  return { type: 'endScope', value: pattern };
+}
+
+export interface TokenMarker {
+  __isTokenMarker: true;
+  pattern: string | RegExp | SyntaxElement | ScopeMarker;
+}
+
+export function Token(pattern: string | RegExp | SyntaxElement | ScopeMarker): TokenMarker {
+  return {
+    __isTokenMarker: true,
+    pattern
+  };
+}
+
+export function unwrapToken(pattern: any): any {
+  if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
+    return unwrapToken(pattern.pattern);
+  }
+  if (pattern && typeof pattern === 'object' && 'type' in pattern && (pattern.type === 'beginScope' || pattern.type === 'endScope')) {
+    return unwrapToken(pattern.value);
+  }
+  return pattern;
 }
 

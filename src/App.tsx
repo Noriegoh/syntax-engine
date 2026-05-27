@@ -46,7 +46,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, wrapASTTransformerWithIncrementalCache, findDiff } from './lib/engine';
+import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, BeginScope, EndScope } from './lib/engine';
 import { cn } from './lib/utils';
 import { ParserProfiler } from './components/ParserProfiler';
 
@@ -172,132 +172,139 @@ const DEFAULT_CODE = `// Unity ShaderLab & HLSL Parser
 
 const ws = new SyntaxElement('ws').ExpectsWhitespace().Hide();
 const comment = new SyntaxElement('line_comment').Expects(/\\/\\/.*|\\/\\*[\\s\\S]*?\\*\\//).Hide();
-// The noise element matches consecutive whitespaces and comments
-const noise = new SyntaxElement('noise').ZeroOrMore(new SyntaxElement('n').ExpectsOneOf(ws, comment)).Hide();
+const lineWs = new SyntaxElement('line_ws').Expects(/[ \\t]+/).Hide();
 
-// Helper: skip noise
-const s = new SyntaxElement('s').ZeroOrMore(new SyntaxElement('n').ExpectsOneOf(ws, comment)).Hide();
+const leadingTrivia = new SyntaxElement('leading_trivia').ZeroOrMore(new SyntaxElement('n').ExpectsOneOf(ws, comment)).Hide();
+const trailingTrivia = new SyntaxElement('trailing_trivia')
+  .ZeroOrMore(new SyntaxElement('t_elem').ExpectsOneOf(lineWs, comment))
+  .Optional(/\\r?\\n/).Hide();
 
-const id = new SyntaxElement("id").Expects(/[a-zA-Z_][a-zA-Z0-9_]*/);
-const number = new SyntaxElement("number").Expects(/-?[0-9]*\\.?[0-9]+f?/);
-const string = new SyntaxElement("string").Expects(/"[^"]*"/);
+DefaultLeadingTrivia(leadingTrivia);
+DefaultTrailingTrivia(trailingTrivia);
+
+const id = Token(/[a-zA-Z_][a-zA-Z0-9_]*/);
+const number = Token(/-?[0-9]*\\.?[0-9]+f?/);
+const string = Token(new SyntaxElement("string")
+  .BeginScope('"')
+  .ZeroOrMore(new SyntaxElement("string_content").Expects(/[^"\\\\]+|\\\\./))
+  .EndScope('"'));
 
 // --- HLSL BLOCK ---
-const hlslType = new SyntaxElement("hlsl_type").ExpectsOneOf(
+const hlslType = Token(new SyntaxElement("hlsl_type").ExpectsOneOf(
   "float4x4", "float4", "float3", "float2", "float",
   "half4", "half3", "half2", "half",
   "fixed4", "fixed3", "fixed2", "fixed",
-  "int", "bool", "uint", "sampler2D", "Texture2D", "SamplerState", id
-);
+  "int", "bool", "uint", "sampler2D", "Texture2D", "SamplerState", /[a-zA-Z_][a-zA-Z0-9_]*/
+));
 
-const semantic = new SyntaxElement("semantic").Expects(":").Optional(s).Expects(/[a-zA-Z0-9_]+/);
-
-const arraySpec = new SyntaxElement("array_spec").Expects("[").Optional(s).Expects(/[0-9]*/).Optional(s).Expects("]");
+const semantic = new SyntaxElement("semantic").Token(":").Expects(id);
+const arraySpec = new SyntaxElement("array_spec").Token("[").Token(/[0-9]*/).Token("]");
 
 const varDecl = new SyntaxElement("variable")
-  .Expects(hlslType).Expects(s).Expects(id)
-  .Optional(new SyntaxElement("opt_array").Optional(s).Expects(arraySpec))
-  .Optional(new SyntaxElement("sem_opt").Optional(s).Expects(semantic))
-  .Optional(s).Expects(";");
+  .Expects(hlslType).Expects(id)
+  .Optional(arraySpec)
+  .Optional(semantic)
+  .Token(";");
 
-// Allow structMember to recover on ';' or new line comments
+// Allow structMember to recover on ';'
 const structMember = new SyntaxElement("struct_member")
-  .Unexpects("}")
-  .Optional(s).ExpectsOneOf(varDecl, comment);
+  .Unexpects(Token("}"))
+  .Expects(varDecl);
 
 const structDecl = new SyntaxElement("struct")
-  .Expects("struct").Expects(s).Expects(id).Optional(s).BeginScope("{")
+  .Token("struct").Expects(id).Token(BeginScope("{"))
   .ZeroOrMore(structMember)
-  .Optional(s).EndScope("}").Optional(s).Expects(";");
+  .Token(EndScope("}")).Token(";");
 
 const param = new SyntaxElement("param")
-  .Optional(new SyntaxElement("inout").ExpectsOneOf("inout", "in", "out").Expects(s))
-  .Expects(hlslType).Expects(s).Expects(id)
-  .Optional(new SyntaxElement("sem_opt").Optional(s).Expects(semantic));
+  .Optional(new SyntaxElement("inout").ExpectsOneOf(Token("inout"), Token("in"), Token("out")))
+  .Expects(hlslType).Expects(id)
+  .Optional(semantic);
 
 const paramList = new SyntaxElement("param_list")
-  .Optional(new SyntaxElement("params").Expects(param).ZeroOrMore(new SyntaxElement("comma_param").Optional(s).Expects(",").Optional(s).Expects(param)));
+  .Optional(new SyntaxElement("params").Expects(param).ZeroOrMore(new SyntaxElement("comma_param").Token(",").Expects(param)));
 
 // Recursive block matcher for func content
 const codeBlock = new SyntaxElement("code_block");
-codeBlock.BeginScope("{").ZeroOrMore(new SyntaxElement("block_content").ExpectsOneOf(
+codeBlock.Token(BeginScope("{")).ZeroOrMore(new SyntaxElement("block_content").ExpectsOneOf(
     /[^{}]+/, 
     codeBlock
-)).EndScope("}");
+)).Token(EndScope("}"));
 
 const funcDecl = new SyntaxElement("function")
-  .Expects(hlslType).Expects(s).Expects(id).Optional(s).Expects("(").Optional(s).Optional(paramList).Optional(s).Expects(")")
-  .Optional(new SyntaxElement("sem_opt").Optional(s).Expects(semantic))
-  .Optional(s).Expects(codeBlock);
+  .Expects(hlslType).Expects(id).Token("(").Optional(paramList).Token(")")
+  .Optional(semantic)
+  .Expects(codeBlock);
 
-const directive = new SyntaxElement("directive").Expects(/#[a-zA-Z]+[^\\r\\n]*/);
+const directive = new SyntaxElement("directive").Token(/#[a-zA-Z]+[^\\r\\n]*/);
 
 const hlslContent = new SyntaxElement("hlsl_content")
-  .Unexpects("ENDCG").Unexpects("ENDHLSL")
+  .Unexpects(Token("ENDCG")).Unexpects(Token("ENDHLSL"))
   .ExpectsOneOf(structDecl, funcDecl, varDecl, directive);
 
 const hlslBlock = new SyntaxElement("hlsl_block")
-  .ExpectsOneOf("CGPROGRAM", "HLSLPROGRAM").Optional(s)
-  .ZeroOrMore(new SyntaxElement("hlsl_entry").Optional(s).Expects(hlslContent))
-  .Optional(s).ExpectsOneOf("ENDCG", "ENDHLSL");
+  .ExpectsOneOf(Token("CGPROGRAM"), Token("HLSLPROGRAM"))
+  .ZeroOrMore(new SyntaxElement("hlsl_entry").Expects(hlslContent))
+  .ExpectsOneOf(Token("ENDCG"), Token("ENDHLSL"));
 
 // --- SHADERLAB ---
-const propAttr = new SyntaxElement("prop_attr").Expects("[").Optional(s).Expects(id).Optional(s).Expects("]").Optional(s);
-const propType = new SyntaxElement("prop_type").ExpectsOneOf("Color", "2D", "Rect", "Cube", "Float", "Int", "Range", "Vector");
-const propTypeArgs = new SyntaxElement("prop_type_args").Expects("(").Optional(/[^)]*/).Expects(")");
-const propValue = new SyntaxElement("prop_value").ExpectsOneOf(string, number, new SyntaxElement("tuple").Expects("(").Optional(/[^)]*/).Expects(")"), id);
+const propAttr = new SyntaxElement("prop_attr").Token("[").Expects(id).Token("]");
+const propType = Token(new SyntaxElement("prop_type").ExpectsOneOf("Color", "2D", "Rect", "Cube", "Float", "Int", "Range", "Vector"));
+const propTypeArgs = new SyntaxElement("prop_type_args").Token("(").Optional(/[^)]*/).Token(")");
+const propValue = new SyntaxElement("prop_value").ExpectsOneOf(string, number, new SyntaxElement("tuple").Token("(").Optional(/[^)]*/).Token(")"), id);
 
-const propBlock = new SyntaxElement("prop_block").BeginScope("{").Optional(s).EndScope("}");
+const propBlock = new SyntaxElement("prop_block").Token(BeginScope("{")).Token(EndScope("}"));
 
 const propDecl = new SyntaxElement("property")
-  .Unexpects("}")
+  .Unexpects(Token("}"))
   .ZeroOrMore(propAttr)
-  .Expects(id).Optional(s).BeginScope("(").Optional(s).Expects(string).Optional(s).Expects(",").Optional(s).Expects(propType)
-  .Optional(propTypeArgs).Optional(s).EndScope(")").Optional(s).Expects("=").Optional(s).Expects(propValue)
-  .Optional(new SyntaxElement("opt_prop_block").Optional(s).Expects(propBlock));
+  .Expects(id).Token(BeginScope("(")).Expects(string).Token(",").Expects(propType)
+  .Optional(propTypeArgs).Token(EndScope(")")).Token("=").Expects(propValue)
+  .Optional(propBlock);
 
 const propertiesBlock = new SyntaxElement("properties_block")
-  .Expects("Properties").Optional(s).BeginScope("{")
-  .ZeroOrMore(new SyntaxElement("prop_entry").Optional(s).Expects(propDecl))
-  .Optional(s).EndScope("}");
+  .Token("Properties").Token(BeginScope("{"))
+  .ZeroOrMore(new SyntaxElement("prop_entry").Expects(propDecl))
+  .Token(EndScope("}"));
 
-const tagEntry = new SyntaxElement("tag_entry").Expects(string).Optional(s).Expects("=").Optional(s).Expects(string);
+const tagEntry = new SyntaxElement("tag_entry").Expects(string).Token("=").Expects(string);
 const tagsBlock = new SyntaxElement("tags_block")
-  .Expects("Tags").Optional(s).BeginScope("{").Optional(s)
-  .ZeroOrMore(new SyntaxElement("tag_item").Expects(tagEntry).Optional(s).Optional(new SyntaxElement("c").Expects(",")).Optional(s))
-  .EndScope("}");
+  .Token("Tags").Token(BeginScope("{"))
+  .ZeroOrMore(new SyntaxElement("tag_item").Expects(tagEntry).Optional(Token(",")))
+  .Token(EndScope("}"));
 
-const lodState = new SyntaxElement("lod_state").Expects("LOD").Expects(s).Expects(/[0-9]+/);
-const blendState = new SyntaxElement("blend_state").Expects("Blend").Expects(s).Expects(/[a-zA-Z]+/).Expects(s).Expects(/[a-zA-Z]+/);
-const zwriteState = new SyntaxElement("zwrite_state").Expects("ZWrite").Expects(s).ExpectsOneOf("On", "Off");
-const cullState = new SyntaxElement("cull_state").Expects("Cull").Expects(s).ExpectsOneOf("Back", "Front", "Off");
+const lodState = new SyntaxElement("lod_state").Token("LOD").Token(/[0-9]+/);
+const blendState = new SyntaxElement("blend_state").Token("Blend").Token(/[a-zA-Z]+/).Token(/[a-zA-Z]+/);
+const zwriteState = new SyntaxElement("zwrite_state").Token("ZWrite").Token(/[a-zA-Z]+/);
+const cullState = new SyntaxElement("cull_state").Token("Cull").Token(/[a-zA-Z]+/);
 
 const passState = new SyntaxElement("pass_state")
-  .Unexpects("}")
+  .Unexpects(Token("}"))
   .ExpectsOneOf(blendState, zwriteState, cullState, tagsBlock, hlslBlock);
 
 const passBlock = new SyntaxElement("pass_block")
-  .Expects("Pass").Optional(s).BeginScope("{")
-  .ZeroOrMore(new SyntaxElement("pass_entry").Optional(s).Expects(passState))
-  .Optional(s).EndScope("}");
+  .Token("Pass").Token(BeginScope("{"))
+  .ZeroOrMore(new SyntaxElement("pass_entry").Expects(passState))
+  .Token(EndScope("}"));
 
 const subshaderState = new SyntaxElement("subshader_state")
-  .Unexpects("}")
+  .Unexpects(Token("}"))
   .ExpectsOneOf(tagsBlock, blendState, zwriteState, cullState, passBlock, hlslBlock, lodState);
 
 const subshaderBlock = new SyntaxElement("subshader_block")
-  .Expects("SubShader").Optional(s).BeginScope("{")
-  .ZeroOrMore(new SyntaxElement("subshader_entry").Optional(s).Expects(subshaderState))
-  .Optional(s).EndScope("}");
+  .Token("SubShader").Token(BeginScope("{"))
+  .ZeroOrMore(new SyntaxElement("subshader_entry").Expects(subshaderState))
+  .Token(EndScope("}"));
 
 const shaderBlock = new SyntaxElement("shader_block")
-  .Expects("Shader").Expects(s).Expects(string).Optional(s).BeginScope("{").Optional(s)
-  .Optional(propertiesBlock).Optional(s)
-  .ZeroOrMore(subshaderBlock).Optional(s)
-  .EndScope("}");
+  .LeadingTrivia(leadingTrivia).TrailingTrivia(leadingTrivia) // Add trailing trivia to root to absorb EOF whitespace
+  .Token("Shader").Expects(string).Token(BeginScope("{"))
+  .Optional(propertiesBlock)
+  .ZeroOrMore(subshaderBlock)
+  .Token(EndScope("}"));
 
 const root = new SyntaxElement("_root")
-  .Optional(s).Expects(shaderBlock).Optional(s).ExpectsEOF();`;
+  .Expects(shaderBlock).ExpectsEOF();`;
 
 const DEFAULT_AST_CODE = `// --- Optional AST Transformer ---
 // Map the raw Concrete Syntax Tree (CST) into a clean, custom Abstract Syntax Tree (AST).
@@ -1320,13 +1327,14 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       
       // Execute the grammar code
       // We provide SyntaxElement and the Sort helper to the execution context
-      const executionFunc = new Function('SyntaxElement', 'Sort', `
+      const executionFunc = new Function('SyntaxElement', 'Sort', 'Token', 'DefaultLeadingTrivia', 'DefaultTrailingTrivia', 'BeginScope', 'EndScope', `
         ${debouncedGrammarCode}
         return typeof root !== 'undefined' ? root : null;
       `);
       
-      const root = executionFunc(SyntaxElement, Sort);
+      const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, BeginScope, EndScope);
       if (root instanceof SyntaxElement) {
+        root.autoInjectLoopBoundaries();
         setRootElement(root);
         setHierarchy(root.getHierarchy());
       } else {
