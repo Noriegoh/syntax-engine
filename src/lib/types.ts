@@ -13,6 +13,8 @@ export interface Rule {
   id: number;
   type: RuleType;
   value?: any;
+  label?: string;
+  ignored?: boolean;
 }
 
 export interface ParseError {

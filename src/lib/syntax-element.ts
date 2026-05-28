@@ -27,6 +27,35 @@ export class SyntaxElement {
     this.rules = [];
   }
 
+  astNodeName?: string;
+  isEnumTarget: boolean = false;
+  enumName?: string;
+  
+  AsNode(name: string): this {
+    this.astNodeName = name;
+    return this;
+  }
+  
+  MapToEnum(name: string): this {
+    this.isEnumTarget = true;
+    this.enumName = name;
+    return this;
+  }
+  
+  As(name: string): this {
+    if (this.rules.length > 0) {
+      this.rules[this.rules.length - 1].label = name;
+    }
+    return this;
+  }
+
+  Ignore(): this {
+    if (this.rules.length > 0) {
+      this.rules[this.rules.length - 1].ignored = true;
+    }
+    return this;
+  }
+
   Prec(level: number): this {
     this.precedence = level;
     return this;
@@ -37,6 +66,16 @@ export class SyntaxElement {
   Hide(): this {
     this.isHiddenElement = true;
     return this;
+  }
+
+  isInlineElement: boolean = false;
+
+  Inline(): InlineMarker {
+    this.isInlineElement = true;
+    return {
+      __isInlineMarker: true,
+      element: this
+    };
   }
 
   RecoverWith(...patterns: (string | RegExp | SyntaxElement)[]): this {
@@ -82,7 +121,7 @@ export class SyntaxElement {
     return this;
   }
 
-  Expects(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+  Expects(pattern: string | RegExp | SyntaxElement | TokenMarker | InlineMarker): this {
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -90,10 +129,21 @@ export class SyntaxElement {
       if (lead) this.LeadingTrivia(lead);
       this.Expects(inner as any);
       if (trail) this.TrailingTrivia(trail);
+    } else if (pattern && typeof pattern === 'object' && '__isInlineMarker' in pattern) {
+      const el = pattern.element;
+      for (const rule of el.rules) {
+        this.rules.push({ ...rule, id: nextRuleId() });
+      }
     } else {
       const id = nextRuleId();
       if (pattern instanceof SyntaxElement) {
-        this.rules.push({ id, type: 'element', value: pattern });
+        if (pattern.isInlineElement) {
+          for (const rule of pattern.rules) {
+            this.rules.push({ ...rule, id: nextRuleId() });
+          }
+        } else {
+          this.rules.push({ id, type: 'element', value: pattern });
+        }
       } else if (pattern instanceof RegExp) {
         this.rules.push({ id, type: 'regex', value: pattern });
       } else {
@@ -109,23 +159,25 @@ export class SyntaxElement {
     return this;
   }
 
-  Unexpects(pattern: string | SyntaxElement | TokenMarker): this {
+  Unexpects(pattern: string | SyntaxElement | TokenMarker | InlineMarker): this {
     const unwrapped = unwrapToken(pattern);
     const id = nextRuleId();
     this.rules.push({ id, type: 'not', value: unwrapped });
     return this;
   }
 
-  ExpectsOneOf(...patterns: (string | RegExp | SyntaxElement | TokenMarker)[] | [(string | RegExp | SyntaxElement | TokenMarker)[]]): this {
+  ExpectsOneOf(...patterns: (string | RegExp | SyntaxElement | TokenMarker | InlineMarker)[] | [(string | RegExp | SyntaxElement | TokenMarker | InlineMarker)[]]): this {
     const flatPatterns = (patterns.length === 1 && Array.isArray(patterns[0]))
       ? patterns[0]
-      : patterns as (string | RegExp | SyntaxElement | TokenMarker)[];
+      : patterns as (string | RegExp | SyntaxElement | TokenMarker | InlineMarker)[];
       
     let hasToken = false;
     const unwrapped: (string | RegExp | SyntaxElement)[] = [];
     for (const p of flatPatterns) {
       if (p && typeof p === 'object' && '__isTokenMarker' in p) {
         hasToken = true;
+        unwrapped.push(unwrapToken(p));
+      } else if (p && typeof p === 'object' && '__isInlineMarker' in p) {
         unwrapped.push(unwrapToken(p));
       } else {
         unwrapped.push(p as any);
@@ -143,12 +195,12 @@ export class SyntaxElement {
       if (trail) this.TrailingTrivia(trail);
     } else {
       const id = nextRuleId();
-      this.rules.push({ id, type: 'choice', value: flatPatterns as any });
+      this.rules.push({ id, type: 'choice', value: unwrapped as any });
     }
     return this;
   }
 
-  Optional(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+  Optional(pattern: string | RegExp | SyntaxElement | TokenMarker | InlineMarker): this {
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -156,6 +208,10 @@ export class SyntaxElement {
       if (lead) this.LeadingTrivia(lead);
       this.Optional(inner as any);
       if (trail) this.TrailingTrivia(trail);
+    } else if (pattern && typeof pattern === 'object' && '__isInlineMarker' in pattern) {
+      const el = pattern.element;
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'optional', value: el });
     } else {
       const id = nextRuleId();
       this.rules.push({ id, type: 'optional', value: pattern });
@@ -163,7 +219,7 @@ export class SyntaxElement {
     return this;
   }
 
-  ZeroOrMore(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+  ZeroOrMore(pattern: string | RegExp | SyntaxElement | TokenMarker | InlineMarker): this {
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -171,6 +227,10 @@ export class SyntaxElement {
       if (lead) this.LeadingTrivia(lead);
       this.ZeroOrMore(inner as any);
       if (trail) this.TrailingTrivia(trail);
+    } else if (pattern && typeof pattern === 'object' && '__isInlineMarker' in pattern) {
+      const el = pattern.element;
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'zeroOrMore', value: el });
     } else {
       const id = nextRuleId();
       this.rules.push({ id, type: 'zeroOrMore', value: pattern });
@@ -178,7 +238,7 @@ export class SyntaxElement {
     return this;
   }
 
-  OneOrMore(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+  OneOrMore(pattern: string | RegExp | SyntaxElement | TokenMarker | InlineMarker): this {
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -186,6 +246,10 @@ export class SyntaxElement {
       if (lead) this.LeadingTrivia(lead);
       this.OneOrMore(inner as any);
       if (trail) this.TrailingTrivia(trail);
+    } else if (pattern && typeof pattern === 'object' && '__isInlineMarker' in pattern) {
+      const el = pattern.element;
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'oneOrMore', value: el });
     } else {
       const id = nextRuleId();
       this.rules.push({ id, type: 'oneOrMore', value: pattern });
@@ -396,10 +460,14 @@ export class SyntaxElement {
     text: string, 
     offset: number = 0, 
     memo: Map<string, ParseResult> = new Map(), 
-    context?: { maxOffset: number; maxError: ParseResult | null; expectedPaths: string[]; recoveredErrors: ParseError[]; activeScopeEnds?: any[]; cacheHits?: number; cacheMisses?: number; profile?: boolean; profileStack?: any[]; profileRoot?: any }
+    context?: { maxOffset?: number; maxError?: ParseResult | null; expectedPaths?: string[]; recoveredErrors?: ParseError[]; activeScopeEnds?: any[]; cacheHits?: number; cacheMisses?: number; profile?: boolean; profileStack?: any[]; profileRoot?: any }
   ): ParseResult | null {
     const memoKey = `${this.id}-${offset}`;
-    const ctx = context || { maxOffset: -1, maxError: null, expectedPaths: [], recoveredErrors: [], activeScopeEnds: [] };
+    const ctx: any = context || { maxOffset: -1, maxError: null, expectedPaths: [], recoveredErrors: [], activeScopeEnds: [] };
+    if (ctx.maxOffset === undefined) ctx.maxOffset = -1;
+    if (ctx.maxError === undefined) ctx.maxError = null;
+    if (ctx.expectedPaths === undefined) ctx.expectedPaths = [];
+    if (ctx.recoveredErrors === undefined) ctx.recoveredErrors = [];
     if (!ctx.activeScopeEnds) {
       ctx.activeScopeEnds = [];
     }
@@ -532,7 +600,11 @@ export class SyntaxElement {
         localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
         if (res.success) {
           if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
-            results.push(res.value);
+            if (rule.value instanceof SyntaxElement && rule.value.isInlineElement && Array.isArray(res.value.value)) {
+              results.push(...res.value.value);
+            } else {
+              results.push(res.value);
+            }
           }
           currentOffset = res.newOffset;
           if (currentOffset > offset) hasCommitted = true;
@@ -631,6 +703,7 @@ export class SyntaxElement {
 
         let backupMatch: { 
           resVal: any; 
+          pattern: any;
           newOffset: number; 
           errors: ParseError[]; 
           activeScopeEndsLength: number;
@@ -645,7 +718,11 @@ export class SyntaxElement {
             const branchErrorsCount = ctx.recoveredErrors.length - beforeBranchErrors;
             if (branchErrorsCount === 0) {
               if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
-                results.push(res.value);
+                if (pattern instanceof SyntaxElement && pattern.isInlineElement && Array.isArray(res.value.value)) {
+                  results.push(...res.value.value);
+                } else {
+                  results.push(res.value);
+                }
               }
               currentOffset = res.newOffset;
               if (currentOffset > offset) hasCommitted = true;
@@ -661,6 +738,7 @@ export class SyntaxElement {
               if (!backupMatch) {
                 backupMatch = {
                   resVal: res.value,
+                  pattern: pattern,
                   newOffset: res.newOffset,
                   errors: ctx.recoveredErrors.slice(beforeBranchErrors),
                   activeScopeEndsLength: ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0
@@ -685,7 +763,12 @@ export class SyntaxElement {
 
         if (!matched && backupMatch) {
           if (backupMatch.resVal && (backupMatch.resVal.width > 0 || backupMatch.resVal.type === 'eof')) {
-            results.push(backupMatch.resVal);
+            const pattern = backupMatch.pattern;
+            if (pattern instanceof SyntaxElement && pattern.isInlineElement && Array.isArray(backupMatch.resVal.value)) {
+              results.push(...backupMatch.resVal.value);
+            } else {
+              results.push(backupMatch.resVal);
+            }
           }
           currentOffset = backupMatch.newOffset;
           if (currentOffset > offset) hasCommitted = true;
@@ -736,7 +819,11 @@ export class SyntaxElement {
         localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
         if (res.success) {
           if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
-            results.push(res.value);
+            if (rule.value instanceof SyntaxElement && rule.value.isInlineElement && Array.isArray(res.value.value)) {
+              results.push(...res.value.value);
+            } else {
+              results.push(res.value);
+            }
           }
           currentOffset = res.newOffset;
           if (ruleIsStructural && currentOffset > startOffset) {
@@ -760,7 +847,11 @@ export class SyntaxElement {
             break;
           }
           if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
-            matches.push(res.value);
+            if (rule.value instanceof SyntaxElement && rule.value.isInlineElement && Array.isArray(res.value.value)) {
+              matches.push(...res.value.value);
+            } else {
+              matches.push(res.value);
+            }
           }
           currentOffset = res.newOffset;
         }
@@ -788,7 +879,11 @@ export class SyntaxElement {
             break;
           }
           if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
-            matches.push(res.value);
+            if (rule.value instanceof SyntaxElement && rule.value.isInlineElement && Array.isArray(res.value.value)) {
+              matches.push(...res.value.value);
+            } else {
+              matches.push(res.value);
+            }
           }
           currentOffset = res.newOffset;
         }
@@ -1246,9 +1341,24 @@ export function Token(pattern: string | RegExp | SyntaxElement | ScopeMarker): T
   };
 }
 
+export interface InlineMarker {
+  __isInlineMarker: true;
+  element: SyntaxElement;
+}
+
+export function Inline(element: SyntaxElement): InlineMarker {
+  return {
+    __isInlineMarker: true,
+    element
+  };
+}
+
 export function unwrapToken(pattern: any): any {
   if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
     return unwrapToken(pattern.pattern);
+  }
+  if (pattern && typeof pattern === 'object' && '__isInlineMarker' in pattern) {
+    return unwrapToken(pattern.element);
   }
   if (pattern && typeof pattern === 'object' && 'type' in pattern && (pattern.type === 'beginScope' || pattern.type === 'endScope')) {
     return unwrapToken(pattern.value);

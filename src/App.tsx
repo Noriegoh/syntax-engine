@@ -48,6 +48,7 @@ import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
 import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, BeginScope, EndScope } from './lib/engine';
 import { cn } from './lib/utils';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ParserProfiler } from './components/ParserProfiler';
 
 const SyntaxEngineLogo = ({ className }: { className?: string }) => (
@@ -190,31 +191,37 @@ const string = Token(new SyntaxElement("string")
   .EndScope('"'));
 
 // --- HLSL BLOCK ---
-const hlslType = Token(new SyntaxElement("hlsl_type").ExpectsOneOf(
+const hlslType = Token(new SyntaxElement("hlsl_type").MapToEnum("HlslType").ExpectsOneOf(
   "float4x4", "float4", "float3", "float2", "float",
   "half4", "half3", "half2", "half",
   "fixed4", "fixed3", "fixed2", "fixed",
   "int", "bool", "uint", "sampler2D", "Texture2D", "SamplerState", /[a-zA-Z_][a-zA-Z0-9_]*/
 ));
 
-const semantic = new SyntaxElement("semantic").Token(":").Expects(id);
-const arraySpec = new SyntaxElement("array_spec").Token("[").Token(/[0-9]*/).Token("]");
+const semantic = new SyntaxElement("semantic").AsNode("Semantic").Token(":").Ignore().Expects(id).As("value");
+const arraySpec = new SyntaxElement("array_spec").AsNode("ArraySpec").Token("[").Ignore().Token(/[0-9]*/).As("size").Token("]").Ignore();
 
 const varDecl = new SyntaxElement("variable")
-  .Expects(hlslType).Expects(id)
-  .Optional(arraySpec)
-  .Optional(semantic)
-  .Token(";");
+  .AsNode("VariableDeclaration")
+  .Expects(hlslType).As("type")
+  .Expects(id).As("name")
+  .Optional(arraySpec).As("array")
+  .Optional(semantic).As("semantic")
+  .Token(";").Ignore();
 
 // Allow structMember to recover on ';'
 const structMember = new SyntaxElement("struct_member")
   .Unexpects(Token("}"))
-  .Expects(varDecl);
+  .Expects(varDecl).As("declaration");
 
 const structDecl = new SyntaxElement("struct")
-  .Token("struct").Expects(id).Token(BeginScope("{"))
-  .ZeroOrMore(structMember)
-  .Token(EndScope("}")).Token(";");
+  .AsNode("StructDeclaration")
+  .Token("struct").Ignore()
+  .Expects(id).As("name")
+  .Token(BeginScope("{")).Ignore()
+  .ZeroOrMore(structMember).As("members")
+  .Token(EndScope("}")).Ignore()
+  .Token(";").Ignore();
 
 const param = new SyntaxElement("param")
   .Optional(new SyntaxElement("inout").ExpectsOneOf(Token("inout"), Token("in"), Token("out")))
@@ -1196,10 +1203,12 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
     document.addEventListener('mouseup', stopDrag);
   };
 
-  const handleEditorSelectionChange = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
-    const textarea = e.currentTarget;
-    const start = textarea.selectionStart;
-    const textBefore = textarea.value.slice(0, start);
+  const handleEditorSelectionChange = (e: any) => {
+    const textarea = (e.target || e.currentTarget) as any;
+    if (!textarea) return;
+    const start = textarea.selectionStart || 0;
+    const value = textarea.value || "";
+    const textBefore = value.slice(0, start);
     const lines = textBefore.split('\n');
     const line = lines.length;
     const col = lines[lines.length - 1].length + 1;
@@ -1354,7 +1363,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
     
     const visit = (node: any) => {
       if (!node || typeof node !== 'object') return;
-      if (node.id && node.name && !node.isLoop) {
+      if (node.id && node.name && !node.isLoop && !node.isInlineElement) {
         if (!elementsMap.has(node.id)) {
           elementsMap.set(node.id, node);
           node.rules?.forEach((rule: any) => {
@@ -1365,6 +1374,14 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
             }
           });
         }
+      } else if (node.isInlineElement || node.isLoop) {
+        node.rules?.forEach((rule: any) => {
+          if (rule.type === 'choice' && Array.isArray(rule.value)) {
+            rule.value.forEach((val: any) => visit(val));
+          } else if (rule.value && typeof rule.value === 'object') {
+            visit(rule.value);
+          }
+        });
       }
     };
     
@@ -2957,7 +2974,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                         }
                       }}
                       onBeforeInput={e => {
-                        const textarea = e.currentTarget as HTMLTextAreaElement;
+                        const textarea = (e.target || e.currentTarget) as any;
                         if (!textarea) return;
 
                         const start = textarea.selectionStart;
@@ -2994,7 +3011,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                         };
                       }}
                       onPaste={e => {
-                        const textarea = e.currentTarget as HTMLTextAreaElement;
+                        const textarea = (e.target || e.currentTarget) as any;
                         if (!textarea) return;
 
                         const start = textarea.selectionStart;
@@ -3008,7 +3025,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                         };
                       }}
                       onCut={e => {
-                        const textarea = e.currentTarget as HTMLTextAreaElement;
+                        const textarea = (e.target || e.currentTarget) as any;
                         if (!textarea) return;
 
                         const start = textarea.selectionStart;
@@ -3653,6 +3670,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                           </div>
 
                           <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
+                            <ErrorBoundary sectionName="Scope Tree Panel">
                             {scopeError ? (
                               <div className="p-4 m-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 font-mono text-center">
                                 <div className="flex items-center justify-center gap-1.5 text-[10px] font-black uppercase text-rose-400 mb-1.5 animate-pulse">
@@ -3728,13 +3746,15 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                                 No scopes resolved.
                               </div>
                             )}
+                            </ErrorBoundary>
                           </div>
                         </div>
 
                         {/* 2. Right Detail Panel */}
                         <div className="flex-1 overflow-y-auto custom-scrollbar p-4 bg-slate-950/40">
-                          {(() => {
-                            const currentScope = selectedScope || scopeChain || { name: 'None', symbols: [], references: [], type: 'global', id: 'global' };
+                          <ErrorBoundary sectionName="Scope Details Pane">
+                            {(() => {
+                              const currentScope = (selectedScope || scopeChain || { name: 'None', symbols: [], references: [], type: 'global', id: 'global', start: 0, end: 0 }) as any;
                             
                             const filteredSymbols = currentScope.symbols.filter(s => 
                               (s.name || "").toString().toLowerCase().includes(scopeSearchQuery.toLowerCase()) ||
@@ -3971,6 +3991,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                               </div>
                             );
                           })()}
+                          </ErrorBoundary>
                         </div>
                       </div>
                     ) : (

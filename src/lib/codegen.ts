@@ -2430,17 +2430,17 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
     return name || `MatchDFA_${type}_${fallbackRuleId}`;
   }
   // Core & custom nodes elements list mapping to C# NodeType enum
-  const customNodeTypes = Array.from(new Set(elements.map(el => sanitize(el.name))));
+  const customNodeTypes = Array.from(new Set(elements.map(el => el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name))));
   // Generate switch cases for RedNode mapping
   const factoryCases = elements.map(el => {
-    const elName = sanitize(el.name);
+    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
     return `                case NodeType.${elName}: return new ${elName}Node(green, parent, offset);`;
   }).join("\n");
   // Generate rule-flattened parser methods for each element
   let specIdCounter = 0;
   const nextSpecId = () => ++specIdCounter;
   const parserMethods = elements.map(el => {
-    const elName = sanitize(el.name);
+    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
     const childElements = new Set<string>();
     // Build recovery boundaries list
     const boundaries: string[] = [];
@@ -2765,12 +2765,53 @@ ${choiceChecks.join("\n")}
           specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
         }
         const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
+
+        let triviaSkipCode = "";
+        if (SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement) {
+          const triviaName = sanitize(SyntaxElement.defaultLeadingTrivia.name);
+          childElements.add(triviaName);
+          triviaSkipCode = `
+                var skipRes_${ruleId} = Parse${triviaName}(text, scanOffset_${ruleId}, memo, ctx);
+                if (skipRes_${ruleId}.Success)
+                {
+                    scanOffset_${ruleId} = skipRes_${ruleId}.NewOffset;
+                }`;
+        } else if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
+          const dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
+          triviaSkipCode = `
+                if (${dfaName}(text, scanOffset_${ruleId}, out var matchedVal_${ruleId}))
+                {
+                    scanOffset_${ruleId} += matchedVal_${ruleId}.Length;
+                }`;
+        } else if (typeof SyntaxElement.defaultLeadingTrivia === 'string') {
+          const escTrivia = escapeString(SyntaxElement.defaultLeadingTrivia);
+          triviaSkipCode = `
+                const string litTrivia_${ruleId} = "${escTrivia}";
+                if (ctx.MatchLiteral(text, scanOffset_${ruleId}, litTrivia_${ruleId}, ${SyntaxElement.defaultLeadingTrivia.length}))
+                {
+                    scanOffset_${ruleId} += ${SyntaxElement.defaultLeadingTrivia.length};
+                }`;
+        } else {
+          triviaSkipCode = `
+                while (scanOffset_${ruleId} < text.Length && char.IsWhiteSpace(text[scanOffset_${ruleId}]))
+                {
+                    scanOffset_${ruleId}++;
+                }`;
+        }
+
         return `
             // Not Lookahead Rule: (id: ${ruleId})
             if (!panicked)
             {
                 int ${escErrorsVar} = ctx.RecoveredErrors.Count;
+                int backupOffset_${ruleId} = currentOffset;
+                int scanOffset_${ruleId} = currentOffset;
+                // ----- SKIP TRIVIA START -----
+                ${triviaSkipCode.trim()}
+                // ----- SKIP TRIVIA END -----
+                currentOffset = scanOffset_${ruleId};
                 ${spec.code.trim()}
+                currentOffset = backupOffset_${ruleId};
                 if (${spec.matchedName})
                 {
                     ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
@@ -2778,7 +2819,7 @@ ${choiceChecks.join("\n")}
                     {
                         Success = false,
                         Error = "Encountered forbidden lookahead pattern",
-                        NewOffset = currentOffset,
+                        NewOffset = backupOffset_${ruleId},
                         DependencyLimit = localMaxOffset,
                         RuleId = ${ruleId}
                     };
@@ -3148,6 +3189,34 @@ namespace ${namespaceName}
                 return newNode;
             }
         }
+        public GreenNode ReplaceChild(GreenNode oldChild, GreenNode newChild)
+        {
+            if (Value is List<GreenNode> list)
+            {
+                var newList = new List<GreenNode>(list.Count);
+                int wDiff = 0;
+                bool found = false;
+                foreach (var child in list)
+                {
+                    if (!found && child == oldChild)
+                    {
+                        if (newChild != null) newList.Add(newChild);
+                        wDiff = (newChild?.Width ?? 0) - (oldChild?.Width ?? 0);
+                        found = true;
+                    }
+                    else
+                    {
+                        newList.Add(child);
+                    }
+                }
+                if (found)
+                {
+                    return GreenNode.Create(Type, newList, RuleId, Width + wDiff);
+                }
+            }
+            return this;
+        }
+
         private static void PruneCache()
         {
             var deadKeys = new List<GreenNodeKey>();
@@ -3353,43 +3422,128 @@ ${parserMethods}
  */
 export function generateStronglyTypedAstClasses(rootElement: SyntaxElement, namespaceName: string = "SyntaxEngine"): string {
   const elements = collectElements(rootElement);
-  return `using System;
-using System.Collections.Generic;
-namespace ${namespaceName}
-{
-${elements.map(el => {
-    const elName = sanitize(el.name);
-    const childrenNodeTypes = new Set<string>();
-    for (const rule of el.rules) {
-      if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
-        childrenNodeTypes.add(sanitize(rule.value.name));
-      } else if (rule.type === 'choice') {
-        for (const child of rule.value) {
-          if (child instanceof SyntaxElement) {
-            childrenNodeTypes.add(sanitize(child.name));
+  
+  // 1. Generate Enums for elements marked with MapToEnum
+  let enumsCode = "";
+  for (const el of elements) {
+    if (el.isEnumTarget && el.enumName) {
+      const enumValues = new Set<string>();
+      for (const rule of el.rules) {
+        if (rule.type === 'choice') {
+          for (const choice of rule.value) {
+            if (choice instanceof SyntaxElement) {
+              const label = choice.rules.length > 0 ? choice.rules[choice.rules.length - 1].label : null;
+              if (label) enumValues.add(label);
+              else enumValues.add(sanitize(choice.name));
+            }
           }
         }
-      } else if (
-        rule.type === 'optional' ||
-        rule.type === 'leadingTrivia' ||
-        rule.type === 'trailingTrivia' ||
-        rule.type === 'zeroOrMore' ||
-        rule.type === 'oneOrMore' ||
-        rule.type === 'not'
-      ) {
-        if (rule.value instanceof SyntaxElement) {
-          childrenNodeTypes.add(sanitize(rule.value.name));
+      }
+      
+      enumsCode += `    public enum ${el.enumName}\n    {\n        None,\n${Array.from(enumValues).map(v => `        ${v}`).join(",\n")}\n    }\n\n`;
+    }
+  }
+
+  return `using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace ${namespaceName}
+{
+${enumsCode}${elements.map(el => {
+    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+    
+    let propertiesStr = "";
+    
+    // Explicit field binding workflow (Method 2)
+    const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number }> = new Map();
+    
+    let hasExplicitBindings = false;
+    for (const rule of el.rules) {
+      if (rule.label && !rule.ignored) {
+        hasExplicitBindings = true;
+        let csharpType = "AstNode";
+        let isList = false;
+        
+        // Determine type based on rule content
+        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+          isList = true;
+          if (rule.value instanceof SyntaxElement) {
+            csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
+          }
+        } else if (rule.type === 'element' || rule.type === 'optional') {
+          if (rule.value instanceof SyntaxElement) {
+            csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
+          }
+        } else if (rule.type === 'choice') {
+          csharpType = "AstNode"; // General fallback
         }
+        
+        propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id });
       }
     }
-    const properties = Array.from(childrenNodeTypes).map(childName => `        public ${childName}Node ${childName} => FindChild<${childName}Node>();
-        public List<${childName}Node> All_${childName} => FindChildren<${childName}Node>();`).join("\n\n");
+    
+    if (hasExplicitBindings) {
+      propertiesStr = Array.from(propertyGroups.entries()).map(([label, mapping]) => {
+         const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
+         if (mapping.isList) {
+             return `        public List<${mapping.type}> ${label} => Children.OfType<${mapping.type}>().ToList();
+        public ${elName}Node With${capLabel}(List<${mapping.type}> newChildren)
+        {
+            return this;
+        }`;
+         } else {
+             return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
+        public ${elName}Node With${capLabel}(${mapping.type} newNode)
+        {
+            var oldChild = this.${label}?.Green;
+            var newGreen = Green.ReplaceChild(oldChild, newNode?.Green);
+            return new ${elName}Node(newGreen, Parent, Offset);
+        }`;
+         }
+      }).join("\n\n");
+    } else {
+      // Fallback: the old behavior for elements without explicit bindings
+      const childrenNodeTypes = new Set<string>();
+      for (const rule of el.rules) {
+        if (rule.ignored) continue;
+        
+        if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
+          childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+        } else if (rule.type === 'choice') {
+          for (const child of rule.value) {
+            if (child instanceof SyntaxElement) {
+              childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
+            }
+          }
+        } else if (
+          rule.type === 'optional' ||
+          rule.type === 'leadingTrivia' ||
+          rule.type === 'trailingTrivia' ||
+          rule.type === 'zeroOrMore' ||
+          rule.type === 'oneOrMore' ||
+          rule.type === 'not'
+        ) {
+          if (rule.value instanceof SyntaxElement) {
+            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          }
+        }
+      }
+      propertiesStr = Array.from(childrenNodeTypes).map(childName => `        public ${childName}Node ${childName} => FindChild<${childName}Node>();\n        public List<${childName}Node> All_${childName} => FindChildren<${childName}Node>();`).join("\n\n");
+    }
+
+    // Enum helper logic inside the class
+    let enumHelper = "";
+    if (el.isEnumTarget && el.enumName) {
+       enumHelper = `\n        private ${el.enumName}? _kindCache = null;\n        public ${el.enumName} Kind\n        {\n            get\n            {\n                if (_kindCache.HasValue) return _kindCache.Value;\n                string val = this.Value;\n                ${el.enumName} result = ${el.enumName}.None;\n                Enum.TryParse(val, true, out result);\n                _kindCache = result;\n                return result;\n            }\n        }\n`;
+    }
+
     return `    public class ${elName}Node : AstNode
     {
         public ${elName}Node(GreenNode green, AstNode parent, int offset) : base(green, parent, offset)
         {
         }
-${properties}
+${propertiesStr}${enumHelper}
     }`;
   }).join("\n\n")}
 }
@@ -3458,34 +3612,94 @@ export function generateModularCSharp(
   if (options.stronglyTypedAstSeparate) {
     const elements = collectElements(rootElement);
     elements.forEach(el => {
-      const elName = sanitize(el.name);
-      const childrenNodeTypes = new Set<string>();
+      const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+      
+      let propertiesStr = "";
+      
+      const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number }> = new Map();
+      
+      let hasExplicitBindings = false;
       for (const rule of el.rules) {
-        if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
-          childrenNodeTypes.add(sanitize(rule.value.name));
-        } else if (rule.type === 'choice') {
-          for (const child of rule.value) {
-            if (child instanceof SyntaxElement) {
-              childrenNodeTypes.add(sanitize(child.name));
+        if (rule.label && !rule.ignored) {
+          hasExplicitBindings = true;
+          let csharpType = "AstNode";
+          let isList = false;
+          
+          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+            isList = true;
+            if (rule.value instanceof SyntaxElement) {
+              csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
             }
+          } else if (rule.type === 'element' || rule.type === 'optional') {
+            if (rule.value instanceof SyntaxElement) {
+              csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
+            }
+          } else if (rule.type === 'choice') {
+            csharpType = "AstNode";
           }
-        } else if (
-          rule.type === 'optional' ||
-          rule.type === 'leadingTrivia' ||
-          rule.type === 'trailingTrivia' ||
-          rule.type === 'zeroOrMore' ||
-          rule.type === 'oneOrMore' ||
-          rule.type === 'not'
-        ) {
-          if (rule.value instanceof SyntaxElement) {
-            childrenNodeTypes.add(sanitize(rule.value.name));
-          }
+          
+          propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id });
         }
       }
-      const properties = Array.from(childrenNodeTypes).map(childName => `        public ${childName}Node ${childName} => FindChild<${childName}Node>();
-        public List<${childName}Node> All_${childName} => FindChildren<${childName}Node>();`).join("\n\n");
+      
+      if (hasExplicitBindings) {
+        propertiesStr = Array.from(propertyGroups.entries()).map(([label, mapping]) => {
+           // Capitalize first letter for Method names
+           const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
+           if (mapping.isList) {
+               return `        public List<${mapping.type}> ${label} => Children.OfType<${mapping.type}>().ToList();
+        public ${elName}Node With${capLabel}(List<${mapping.type}> newChildren)
+        {
+            // Simple list replacement (Warning: basic implementation for immutable mutation)
+            return this; // Placeholder for list replacements
+        }`;
+           } else {
+               return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
+        public ${elName}Node With${capLabel}(${mapping.type} newNode)
+        {
+            var oldChild = this.${label}?.Green;
+            return new ${elName}Node(Green.ReplaceChild(oldChild, newNode?.Green), Parent, Offset);
+        }`;
+           }
+        }).join("\n\n");
+      } else {
+        const childrenNodeTypes = new Set<string>();
+        for (const rule of el.rules) {
+          if (rule.ignored) continue;
+          
+          if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
+            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          } else if (rule.type === 'choice') {
+            for (const child of rule.value) {
+              if (child instanceof SyntaxElement) {
+                childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
+              }
+            }
+          } else if (
+            rule.type === 'optional' ||
+            rule.type === 'leadingTrivia' ||
+            rule.type === 'trailingTrivia' ||
+            rule.type === 'zeroOrMore' ||
+            rule.type === 'oneOrMore' ||
+            rule.type === 'not'
+          ) {
+            if (rule.value instanceof SyntaxElement) {
+              childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+            }
+          }
+        }
+        propertiesStr = Array.from(childrenNodeTypes).map(childName => `        public ${childName}Node ${childName} => FindChild<${childName}Node>();\n        public List<${childName}Node> All_${childName} => FindChildren<${childName}Node>();`).join("\n\n");
+      }
+
+      let enumHelper = "";
+      if (el.isEnumTarget && el.enumName) {
+         enumHelper = `\n        private ${el.enumName}? _kindCache = null;\n        public ${el.enumName} Kind\n        {\n            get\n            {\n                if (_kindCache.HasValue) return _kindCache.Value;\n                string val = this.Value;\n                ${el.enumName} result = ${el.enumName}.None;\n                Enum.TryParse(val, true, out result);\n                _kindCache = result;\n                return result;\n            }\n        }\n`;
+      }
+
       const nodeCode = `using System;
 using System.Collections.Generic;
+using System.Linq;
+
 namespace ${ns}
 {
     public class ${elName}Node : AstNode
@@ -3493,7 +3707,7 @@ namespace ${ns}
         public ${elName}Node(GreenNode green, AstNode parent, int offset) : base(green, parent, offset)
         {
         }
-${properties}
+${propertiesStr}${enumHelper}
     }
 }
 `;
