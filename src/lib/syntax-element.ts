@@ -16,6 +16,8 @@ export type RuleType =
   | 'trailingTrivia' 
   | 'zeroOrMore' 
   | 'oneOrMore' 
+  | 'zeroOrMoreOneOf'
+  | 'oneOrMoreOneOf'
   | 'eof' 
   | 'beginScope' 
   | 'endScope';
@@ -358,7 +360,11 @@ export class SyntaxElement {
     return this;
   }
 
-  ZeroOrMore(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+  ZeroOrMore(pattern: any, ...additional: any[]): this {
+    if (additional.length > 0 || Array.isArray(pattern)) {
+      const all = Array.isArray(pattern) ? pattern : [pattern, ...additional];
+      return this.ZeroOrMoreOneOf(...all);
+    }
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -373,7 +379,53 @@ export class SyntaxElement {
     return this;
   }
 
-  OneOrMore(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+  ZeroOrMoreOneOf(...patterns: any[]): this {
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const item of arr) {
+        if (Array.isArray(item)) {
+          res.push(...flatten(item));
+        } else {
+          res.push(item);
+        }
+      }
+      return res;
+    };
+    
+    const flatPatterns = flatten(patterns);
+      
+    let hasToken = false;
+    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    for (const p of flatPatterns) {
+      if (p && typeof p === 'object' && '__isTokenMarker' in p) {
+        hasToken = true;
+        unwrapped.push(unwrapToken(p));
+      } else {
+        unwrapped.push(p as any);
+      }
+    }
+    
+    if (hasToken) {
+      const lead = SyntaxElement.defaultLeadingTrivia;
+      const trail = SyntaxElement.defaultTrailingTrivia;
+      if (lead) this.LeadingTrivia(lead);
+      
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'zeroOrMoreOneOf', value: unwrapped });
+      
+      if (trail) this.TrailingTrivia(trail);
+    } else {
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'zeroOrMoreOneOf', value: unwrapped as any });
+    }
+    return this;
+  }
+
+  OneOrMore(pattern: any, ...additional: any[]): this {
+    if (additional.length > 0 || Array.isArray(pattern)) {
+      const all = Array.isArray(pattern) ? pattern : [pattern, ...additional];
+      return this.OneOrMoreOneOf(...all);
+    }
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -384,6 +436,48 @@ export class SyntaxElement {
     } else {
       const id = nextRuleId();
       this.rules.push({ id, type: 'oneOrMore', value: pattern });
+    }
+    return this;
+  }
+
+  OneOrMoreOneOf(...patterns: any[]): this {
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const item of arr) {
+        if (Array.isArray(item)) {
+          res.push(...flatten(item));
+        } else {
+          res.push(item);
+        }
+      }
+      return res;
+    };
+    
+    const flatPatterns = flatten(patterns);
+      
+    let hasToken = false;
+    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    for (const p of flatPatterns) {
+      if (p && typeof p === 'object' && '__isTokenMarker' in p) {
+        hasToken = true;
+        unwrapped.push(unwrapToken(p));
+      } else {
+        unwrapped.push(p as any);
+      }
+    }
+    
+    if (hasToken) {
+      const lead = SyntaxElement.defaultLeadingTrivia;
+      const trail = SyntaxElement.defaultTrailingTrivia;
+      if (lead) this.LeadingTrivia(lead);
+      
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'oneOrMoreOneOf', value: unwrapped });
+      
+      if (trail) this.TrailingTrivia(trail);
+    } else {
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'oneOrMoreOneOf', value: unwrapped as any });
     }
     return this;
   }
@@ -443,7 +537,7 @@ export class SyntaxElement {
       name: this.name,
       rules: this.rules.map(r => {
         let val = r.value;
-        if (r.type === 'choice') {
+        if (r.type === 'choice' || r.type === 'zeroOrMoreOneOf' || r.type === 'oneOrMoreOneOf') {
            val = (r.value as any[]).map(p => p instanceof SyntaxElement ? p.getHierarchy(nextVisited) : p);
         } else if (r.value instanceof SyntaxElement) {
            val = r.value.getHierarchy(nextVisited);
@@ -487,6 +581,12 @@ export class SyntaxElement {
         rule.value.autoInjectLoopBoundaries(visited);
       } else if (rule.type === 'oneOrMore' && rule.value instanceof SyntaxElement) {
         rule.value.autoInjectLoopBoundaries(visited);
+      } else if ((rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') && Array.isArray(rule.value)) {
+        for (const choice of rule.value) {
+          if (choice instanceof SyntaxElement) {
+            choice.autoInjectLoopBoundaries(visited);
+          }
+        }
       } else if (rule.type === 'optional' && rule.value instanceof SyntaxElement) {
         rule.value.autoInjectLoopBoundaries(visited);
       }
@@ -506,6 +606,24 @@ export class SyntaxElement {
               if (!alreadyHasNot) {
                 const notRuleId = nextRuleId();
                 loopChild.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+              }
+            }
+          }
+        }
+      } else if ((rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') && Array.isArray(rule.value)) {
+        const followPatterns = this.gatherFollowPatterns(this.rules, i + 1, new Set());
+        if (followPatterns.length > 0) {
+          for (const rawPattern of followPatterns) {
+            const pattern = unwrapToken(rawPattern);
+            if (typeof pattern === 'string' || pattern instanceof RegExp) {
+              for (const choice of rule.value) {
+                if (choice instanceof SyntaxElement) {
+                  const alreadyHasNot = choice.rules.some(r => r.type === 'not' && r.value === pattern);
+                  if (!alreadyHasNot) {
+                    const notRuleId = nextRuleId();
+                    choice.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+                  }
+                }
               }
             }
           }
@@ -546,6 +664,17 @@ export class SyntaxElement {
       }
       return pats;
     }
+    if ((rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') && Array.isArray(rule.value)) {
+      const pats: any[] = [];
+      for (const choice of rule.value) {
+        if (choice instanceof SyntaxElement) {
+          pats.push(...this.collectElementStartPatterns(choice, visitedElements));
+        } else {
+          pats.push(choice);
+        }
+      }
+      return pats;
+    }
     if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
       return this.collectElementStartPatterns(rule.value, visitedElements);
     }
@@ -576,7 +705,7 @@ export class SyntaxElement {
 
   private isOptionalRule(rule: Rule): boolean {
     if (!rule) return true;
-    if (rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace') {
+    if (rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace') {
       return true;
     }
     return false;
@@ -822,19 +951,9 @@ export class SyntaxElement {
   }
 
   private isRuleStructural(rule: Rule): boolean {
-    if (rule.type === 'whitespace') return false;
-    if (
-      (rule.type === 'element' || 
-       rule.type === 'optional' || 
-       rule.type === 'leadingTrivia' || 
-       rule.type === 'trailingTrivia' || 
-       rule.type === 'zeroOrMore' || 
-       rule.type === 'oneOrMore' || 
-       rule.type === 'not') && 
-      rule.value instanceof SyntaxElement
-    ) {
-      return false;
-    }
+    if (rule.type === 'whitespace' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') return false;
+    if (rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'zeroOrMoreOneOf') return false;
+    if (rule.type === 'not') return false;
     return true;
   }
 
@@ -898,8 +1017,16 @@ export class SyntaxElement {
           res = this.evaluateZeroOrMoreRule(rule, text, currentOffset, memo, ctx, results);
           break;
 
+        case 'zeroOrMoreOneOf':
+          res = this.evaluateZeroOrMoreOneOfRule(rule, text, currentOffset, memo, ctx, results);
+          break;
+
         case 'oneOrMore':
           res = this.evaluateOneOrMoreRule(rule, text, currentOffset, memo, ctx, results);
+          break;
+
+        case 'oneOrMoreOneOf':
+          res = this.evaluateOneOrMoreOneOfRule(rule, text, currentOffset, memo, ctx, results);
           break;
 
         case 'eof':
@@ -919,7 +1046,7 @@ export class SyntaxElement {
       
       if (res.success) {
         currentOffset = res.newOffset;
-        if (res.hasCommittedUpdate || currentOffset > offset) {
+        if (ruleIsStructural && (res.hasCommittedUpdate || currentOffset > startOffset)) {
           hasCommitted = true;
         }
 
@@ -1186,6 +1313,61 @@ export class SyntaxElement {
     return { success: true, newOffset: currentOffset, dependencyLimit: localMaxOffset };
   }
 
+  private evaluateZeroOrMoreOneOfRule(
+    rule: Rule,
+    text: string,
+    currentOffset: number,
+    memo: Map<string, ParseResult>,
+    ctx: any,
+    results: any[]
+  ) {
+    const matches = [];
+    const loopStartOffset = currentOffset;
+    let localMaxOffset = currentOffset;
+    const patterns = rule.value as (string | RegExp | SyntaxElement)[];
+
+    while (currentOffset < text.length) {
+      let matchedBranch = false;
+      let matchedRes: any = null;
+      let branchNewOffset = currentOffset;
+      const beforeLoopErrorsLength = ctx.recoveredErrors.length;
+      const baseActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
+
+      for (const pattern of patterns) {
+        const res = this.parsePattern(pattern, text, currentOffset, memo, rule.id, ctx);
+        localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
+        if (res.success && res.newOffset > currentOffset) {
+          matchedBranch = true;
+          matchedRes = res.value;
+          branchNewOffset = res.newOffset;
+          break;
+        } else {
+          ctx.recoveredErrors.length = beforeLoopErrorsLength;
+          if (ctx.activeScopeEnds) {
+            ctx.activeScopeEnds.length = baseActiveScopeEndsLength;
+          }
+        }
+      }
+
+      if (!matchedBranch) {
+        break;
+      }
+
+      if (matchedRes && (matchedRes.width > 0 || matchedRes.type === 'eof')) {
+        matches.push(matchedRes);
+      }
+      currentOffset = branchNewOffset;
+    }
+
+    if (matches.length > 0) {
+      const loopWidth = currentOffset - loopStartOffset;
+      if (loopWidth > 0) {
+        results.push(GreenNode.create('zeroOrMoreOneOf', matches, rule.id, loopWidth));
+      }
+    }
+    return { success: true, newOffset: currentOffset, dependencyLimit: localMaxOffset };
+  }
+
   private evaluateOneOrMoreRule(
     rule: Rule,
     text: string,
@@ -1217,6 +1399,63 @@ export class SyntaxElement {
       const loopWidth = currentOffset - loopStartOffset;
       if (loopWidth > 0) {
         results.push(GreenNode.create('oneOrMore', matches, rule.id, loopWidth));
+      }
+      return { success: true, newOffset: currentOffset, dependencyLimit: localMaxOffset, hasCommittedUpdate: true };
+    } else {
+      return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: "Expected at least one match" };
+    }
+  }
+
+  private evaluateOneOrMoreOneOfRule(
+    rule: Rule,
+    text: string,
+    currentOffset: number,
+    memo: Map<string, ParseResult>,
+    ctx: any,
+    results: any[]
+  ) {
+    const matches = [];
+    const loopStartOffset = currentOffset;
+    let localMaxOffset = currentOffset;
+    const patterns = rule.value as (string | RegExp | SyntaxElement)[];
+
+    while (currentOffset < text.length) {
+      let matchedBranch = false;
+      let matchedRes: any = null;
+      let branchNewOffset = currentOffset;
+      const beforeLoopErrorsLength = ctx.recoveredErrors.length;
+      const baseActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
+
+      for (const pattern of patterns) {
+        const res = this.parsePattern(pattern, text, currentOffset, memo, rule.id, ctx);
+        localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
+        if (res.success && res.newOffset > currentOffset) {
+          matchedBranch = true;
+          matchedRes = res.value;
+          branchNewOffset = res.newOffset;
+          break;
+        } else {
+          ctx.recoveredErrors.length = beforeLoopErrorsLength;
+          if (ctx.activeScopeEnds) {
+            ctx.activeScopeEnds.length = baseActiveScopeEndsLength;
+          }
+        }
+      }
+
+      if (!matchedBranch) {
+        break;
+      }
+
+      if (matchedRes && (matchedRes.width > 0 || matchedRes.type === 'eof')) {
+        matches.push(matchedRes);
+      }
+      currentOffset = branchNewOffset;
+    }
+
+    if (matches.length > 0) {
+      const loopWidth = currentOffset - loopStartOffset;
+      if (loopWidth > 0) {
+        results.push(GreenNode.create('oneOrMoreOneOf', matches, rule.id, loopWidth));
       }
       return { success: true, newOffset: currentOffset, dependencyLimit: localMaxOffset, hasCommittedUpdate: true };
     } else {

@@ -23,10 +23,12 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     for (const rule of el.rules) {
       if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
         visit(rule.value);
-      } else if (rule.type === 'choice') {
-        for (const choice of rule.value) {
-          if (choice instanceof SyntaxElement) {
-            visit(choice);
+      } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
+        if (Array.isArray(rule.value)) {
+          for (const choice of rule.value) {
+            if (choice instanceof SyntaxElement) {
+              visit(choice);
+            }
           }
         }
       } else if (
@@ -140,6 +142,105 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
         message: `Mismatched Scope block helpers: ${hasBegin ? "BeginScope is used without an EndScope" : "EndScope is used without a BeginScope"}.`,
         suggestion: "Ensure scope nodes declare both BeginScope and EndScope to reliably maintain the scope boundaries."
       });
+    }
+
+    // Rule F: Scope End Boundary Conflict (Warning)
+    const beginScopeIdx = el.rules.findIndex(r => r.type === 'beginScope');
+    const endScopeIdx = el.rules.findIndex(r => r.type === 'endScope');
+    if (beginScopeIdx !== -1 && endScopeIdx !== -1 && beginScopeIdx < endScopeIdx) {
+      const endRule = el.rules[endScopeIdx];
+      const endPattern = endRule.value; // string, RegExp, or token marker
+      
+      // Extract delimiter string if possible
+      let delimStr: string | null = null;
+      if (typeof endPattern === 'string') {
+        delimStr = endPattern;
+      } else if (endPattern && typeof endPattern === 'object' && 'pattern' in endPattern) {
+        const unwrapped = (endPattern as any).pattern;
+        if (typeof unwrapped === 'string') {
+          delimStr = unwrapped;
+        }
+      } else if (endPattern instanceof SyntaxElement) {
+        const lits = endPattern.getTerminalLiterals();
+        if (lits.length > 0) {
+          delimStr = lits[0];
+        }
+      }
+
+      if (delimStr) {
+        // Collect patterns inside body elements between begin and end scope
+        const getReachablePatterns = (rule: any): any[] => {
+          const patterns: any[] = [];
+          const vis = new Set<SyntaxElement>();
+          
+          function collect(val: any) {
+            if (!val) return;
+            if (val instanceof SyntaxElement) {
+              if (vis.has(val)) return;
+              vis.add(val);
+              // Avoid scanning inside elements that have bounded balanced scopes
+              if (val.rules) {
+                const hasBegin = val.rules.some((r: any) => r.type === 'beginScope');
+                const hasEnd = val.rules.some((r: any) => r.type === 'endScope');
+                if (hasBegin && hasEnd) {
+                  return;
+                }
+              }
+              for (const r of val.rules) {
+                collect(r.value);
+              }
+            } else if (Array.isArray(val)) {
+              for (const item of val) {
+                collect(item);
+              }
+            } else if (typeof val === 'string' || val instanceof RegExp) {
+              patterns.push(val);
+            } else if (val && typeof val === 'object' && 'pattern' in val) {
+              patterns.push(val.pattern);
+            }
+          }
+          
+          if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
+            collect(rule.value);
+          } else if (rule.type !== 'beginScope' && rule.type !== 'endScope') {
+            collect(rule.value);
+          }
+          return patterns;
+        };
+
+        for (let i = beginScopeIdx + 1; i < endScopeIdx; i++) {
+          const bodyRule = el.rules[i];
+          const bodyPatterns = getReachablePatterns(bodyRule);
+          for (const pat of bodyPatterns) {
+            let conflict = false;
+            let reason = "";
+            
+            if (typeof pat === 'string') {
+              if (pat === delimStr || delimStr.startsWith(pat)) {
+                conflict = true;
+                reason = `literal pattern "${pat}" directly matches or overlaps with EndScope delimiter "${delimStr}"`;
+              }
+            } else if (pat instanceof RegExp) {
+              try {
+                // If the regex can match the close delimiter
+                if (pat.test(delimStr)) {
+                  conflict = true;
+                  reason = `regular expression ${pat.source} matches the EndScope delimiter "${delimStr}"`;
+                }
+              } catch (e) {}
+            }
+            
+            if (conflict) {
+              diagnostics.push({
+                type: "warning",
+                nodeName: elName,
+                message: `Potential infinite loop or boundary overlap: Sibling rule between BeginScope and EndScope can consume the EndScope delimiter. (${reason}).`,
+                suggestion: `To prevent parser lockup or eating the close delimiter, refine your body regex (e.g. use [^${delimStr}] instead of wildcard matching) or prefix your body block with a negative lookahead "Unexpects(Token('${delimStr}'))" guard.`
+              });
+            }
+          }
+        }
+      }
     }
   }
 

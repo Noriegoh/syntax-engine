@@ -36,7 +36,9 @@ import {
   ChevronsLeftRight,
   MapPin,
   Check,
-  ExternalLink
+  ExternalLink,
+  Sparkles,
+  MousePointer
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactJson from 'react-json-view';
@@ -167,21 +169,25 @@ interface SavedProject {
   activeFileName?: string;
 }
 
-const DEFAULT_CODE = `// Unity ShaderLab & HLSL Parser
-// 💡 PRECEDENCE: Use .Prec(level) to resolve ambiguities (higher = priority).
-// 💡 GREEDY CHOICE: ExpectsOneOf tries all branches and picks the best one 
-//    (highest precedence, then longest consumed match).
-// 💡 AUTOMATED RECOVERY: The parser automatically derives recovery boundaries from ending literals 
-//    and dynamically heals malformed blocks using active EndScope boundaries!
+const DEFAULT_CODE = `/* 
+Unity ShaderLab & HLSL Parser
+💡 GREEDY CHOICE: ExpectsOneOf picks the first match. 
+    NOTE : This selects the first immediate match, e.g If 'int' preceeds 'integer', 'integer' would
+    never be matched.
+    You can use the 'Sort' helper function to sort literals.
+    
+💡 AUTOMATED RECOVERY: The parser automatically derives recovery boundaries from ending literals 
+    and dynamically heals malformed blocks using active EndScope boundaries!
+*/
 
-const ws = new SyntaxElement('ws').ExpectsWhitespace().Hide();
-const comment = new SyntaxElement('line_comment').Expects(/\\/\\/.*|\\/\\*[\\s\\S]*?\\*\\//).Hide();
-const lineWs = new SyntaxElement('line_ws').Expects(/[ \\t]+/).Hide();
+const ws = new SyntaxElement('ws').ExpectsWhitespace();
+const comment = /\\/\\/.*|\\/\\*[\\s\\S]*?\\*\\//;
+const lineWs = /[ \\t]+/;
 
-const leadingTrivia = new SyntaxElement('leading_trivia').ZeroOrMore(new SyntaxElement('n').ExpectsOneOf(ws, comment)).Hide();
+const leadingTrivia = new SyntaxElement('leading_trivia').ZeroOrMore(new SyntaxElement('n').ExpectsOneOf(ws, comment));
 const trailingTrivia = new SyntaxElement('trailing_trivia')
   .ZeroOrMore(new SyntaxElement('t_elem').ExpectsOneOf(lineWs, comment))
-  .Optional(/\\r?\\n/).Hide();
+  .Optional(/\\r?\\n/);
 
 DefaultLeadingTrivia(leadingTrivia);
 DefaultTrailingTrivia(trailingTrivia);
@@ -190,25 +196,24 @@ const id = Token(/[a-zA-Z_][a-zA-Z0-9_]*/);
 const number = Token(/-?[0-9]*\\.?[0-9]+f?/);
 const string = Token(new SyntaxElement("string")
   .BeginScope('"')
-  .ZeroOrMore(new SyntaxElement("string_content").Expects(/[^"\\\\]+|\\\\./))
+  .Expects(/([^"\\\\]|\\\\.)*/)
   .EndScope('"'));
 
 // --- HLSL BLOCK ---
-const hlslType = Token(new SyntaxElement("hlsl_type").MapToEnum("HlslType").ExpectsOneOf(
-  Sort("float4x4", "float4", "float3", "float2", "float",
+const hlslType = Token(new SyntaxElement("hlsl_type").MapToEnum("HlslType").ExpectsOneOf(Sort(
+  "float4x4", "float4", "float3", "float2", "float",
   "half4", "half3", "half2", "half",
   "fixed4", "fixed3", "fixed2", "fixed",
-  "int", "bool", "uint", "sampler2D", "Texture2D", "SamplerState")
-));
-
-const dataType = new SyntaxElement("data_type").AsNode("DataType").ExpectsOneOf(hlslType, id);
+  "int", "bool", "uint", "sampler2D", "Texture2D", "SamplerState"
+)));
+const type = new SyntaxElement("type").ExpectsOneOf(hlslType, id);
 
 const semantic = new SyntaxElement("semantic").AsNode("Semantic").Token(":").Ignore().Expects(id).As("value");
 const arraySpec = new SyntaxElement("array_spec").AsNode("ArraySpec").Token("[").Ignore().Token(/[0-9]*/).As("size").Token("]").Ignore();
 
 const varDecl = new SyntaxElement("variable")
   .AsNode("VariableDeclaration")
-  .Expects(dataType).As("type")
+  .Expects(type).As("type")
   .Expects(id).As("name")
   .Optional(arraySpec).As("array")
   .Optional(semantic).As("semantic")
@@ -216,7 +221,6 @@ const varDecl = new SyntaxElement("variable")
 
 // Allow structMember to recover on ';'
 const structMember = new SyntaxElement("struct_member")
-  .Unexpects(Token("}"))
   .Expects(varDecl).As("declaration");
 
 const structDecl = new SyntaxElement("struct")
@@ -230,7 +234,7 @@ const structDecl = new SyntaxElement("struct")
 
 const param = new SyntaxElement("param")
   .Optional(new SyntaxElement("inout").ExpectsOneOf(Token("inout"), Token("in"), Token("out")))
-  .Expects(dataType).Expects(id)
+  .Expects(type).Expects(id)
   .Optional(semantic);
 
 const paramList = new SyntaxElement("param_list")
@@ -244,14 +248,13 @@ codeBlock.Token(BeginScope("{")).ZeroOrMore(new SyntaxElement("block_content").E
 )).Token(EndScope("}"));
 
 const funcDecl = new SyntaxElement("function")
-  .Expects(dataType).Expects(id).Token("(").Optional(paramList).Token(")")
+  .Expects(type).Expects(id).Token("(").Optional(paramList).Token(")")
   .Optional(semantic)
   .Expects(codeBlock);
 
 const directive = new SyntaxElement("directive").Token(/#[a-zA-Z]+[^\\r\\n]*/);
 
 const hlslContent = new SyntaxElement("hlsl_content")
-  .Unexpects(Token("ENDCG")).Unexpects(Token("ENDHLSL"))
   .ExpectsOneOf(structDecl, funcDecl, varDecl, directive);
 
 const hlslBlock = new SyntaxElement("hlsl_block")
@@ -268,7 +271,6 @@ const propValue = new SyntaxElement("prop_value").ExpectsOneOf(string, number, n
 const propBlock = new SyntaxElement("prop_block").Token(BeginScope("{")).Token(EndScope("}"));
 
 const propDecl = new SyntaxElement("property")
-  .Unexpects(Token("}"))
   .ZeroOrMore(propAttr)
   .Expects(id).Token(BeginScope("(")).Expects(string).Token(",").Expects(propType)
   .Optional(propTypeArgs).Token(EndScope(")")).Token("=").Expects(propValue)
@@ -291,7 +293,6 @@ const zwriteState = new SyntaxElement("zwrite_state").Token("ZWrite").Token(/[a-
 const cullState = new SyntaxElement("cull_state").Token("Cull").Token(/[a-zA-Z]+/);
 
 const passState = new SyntaxElement("pass_state")
-  .Unexpects(Token("}"))
   .ExpectsOneOf(blendState, zwriteState, cullState, tagsBlock, hlslBlock);
 
 const passBlock = new SyntaxElement("pass_block")
@@ -300,7 +301,6 @@ const passBlock = new SyntaxElement("pass_block")
   .Token(EndScope("}"));
 
 const subshaderState = new SyntaxElement("subshader_state")
-  .Unexpects(Token("}"))
   .ExpectsOneOf(tagsBlock, blendState, zwriteState, cullState, passBlock, hlslBlock, lodState);
 
 const subshaderBlock = new SyntaxElement("subshader_block")
@@ -308,15 +308,11 @@ const subshaderBlock = new SyntaxElement("subshader_block")
   .ZeroOrMore(new SyntaxElement("subshader_entry").Expects(subshaderState))
   .Token(EndScope("}"));
 
-const shaderBlock = new SyntaxElement("shader_block")
-  .LeadingTrivia(leadingTrivia).TrailingTrivia(leadingTrivia) // Add trailing trivia to root to absorb EOF whitespace
+const root = new SyntaxElement("_root")
   .Token("Shader").Expects(string).Token(BeginScope("{"))
   .Optional(propertiesBlock)
   .ZeroOrMore(subshaderBlock)
-  .Token(EndScope("}"));
-
-const root = new SyntaxElement("_root")
-  .Expects(shaderBlock).ExpectsEOF();`;
+  .Token(EndScope("}"));`;
 
 const DEFAULT_AST_CODE = `// --- Optional AST Transformer ---
 // Map the raw Concrete Syntax Tree (CST) into a clean, custom Abstract Syntax Tree (AST).
@@ -400,8 +396,135 @@ builder.defineReference("(id @name)", "{name}");
 return builder.build(ast, fullText);
 `;
 
+interface SuggestionItem {
+  label: string; 
+  insertText: string; 
+  type: 'method' | 'class' | 'variable' | 'keyword';
+  description: string;
+}
+
+const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
+  { label: 'Expects', insertText: 'Expects(', type: 'method', description: 'Schedule standard terminal literal / sub-element rule' },
+  { label: 'ExpectsOneOf', insertText: 'ExpectsOneOf(', type: 'method', description: 'Schedule a speculative choice selection (any matched pattern)' },
+  { label: 'Token', insertText: 'Token(', type: 'method', description: 'Inject clean terminal lexical Token marker (wraps literals/regexes)' },
+  { label: 'Optional', insertText: 'Optional(', type: 'method', description: 'Mark element rule as fully optional' },
+  { label: 'ZeroOrMore', insertText: 'ZeroOrMore(', type: 'method', description: 'Repetition: loop consecutive matches. Overloaded to support choices if passed array/multiple parameters' },
+  { label: 'OneOrMore', insertText: 'OneOrMore(', type: 'method', description: 'Repetition: loop consecutive matches requires at least 1 match. Overloaded to support choices if passed array/multiple parameters' },
+  { label: 'ZeroOrMoreOneOf', insertText: 'ZeroOrMoreOneOf(', type: 'method', description: 'Repetition: matches zero or more occurrences of any pattern in the list' },
+  { label: 'OneOrMoreOneOf', insertText: 'OneOrMoreOneOf(', type: 'method', description: 'Repetition: matches one or more occurrences of any pattern in the list' },
+  { label: 'LeadingTrivia', insertText: 'LeadingTrivia(', type: 'method', description: 'Define expected default preceding layout whitespaces or comments' },
+  { label: 'TrailingTrivia', insertText: 'TrailingTrivia(', type: 'method', description: 'Define expected default trailing layout whitespaces or comments' },
+  { label: 'Whitespace', insertText: 'Whitespace()', type: 'method', description: 'Consume contiguous space layouts' },
+  { label: 'EnumTarget', insertText: 'EnumTarget()', type: 'method', description: 'Flag elements for C# enum compilation structures' },
+  { label: 'BeginScope', insertText: 'BeginScope(', type: 'method', description: 'Signal local lexical namespace creation (e.g., matching brace "{" )' },
+  { label: 'EndScope', insertText: 'EndScope(', type: 'method', description: 'Signal local lexical namespace termination (e.g., matching brace "}" )' },
+  { label: 'ExpectsEOF', insertText: 'ExpectsEOF()', type: 'method', description: 'Enforce complete final end-of-file condition' },
+  { label: 'AsASTNode', insertText: 'AsASTNode(', type: 'method', description: 'Re-bind generated visual abstract type identifier' },
+  { label: 'SyntaxElement', insertText: 'SyntaxElement', type: 'class', description: 'Compiler blueprint construct initializer' },
+  { label: 'Sort', insertText: 'Sort(', type: 'keyword', description: 'Sort array inputs descending by pattern length' },
+  { label: 'DefaultLeadingTrivia', insertText: 'DefaultLeadingTrivia', type: 'variable', description: 'Pre-registered standard spacer elements container' },
+  { label: 'DefaultTrailingTrivia', insertText: 'DefaultTrailingTrivia', type: 'variable', description: 'Pre-registered standard spacer elements container' },
+];
+
 export default function App() {
   const [grammarCode, setGrammarCode] = useState(DEFAULT_CODE);
+  const [autocomplete, setAutocomplete] = useState<{
+    show: boolean;
+    suggestions: SuggestionItem[];
+    activeIndex: number;
+    word: string;
+    cursorOffset: number;
+    lineIndex: number;
+    lineText: string;
+  } | null>(null);
+
+  const getCustomVars = (code: string): SuggestionItem[] => {
+    try {
+      const matchVars = [...code.matchAll(/(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=/g)];
+      return Array.from(new Set(matchVars.map(m => m[1]))).map(v => ({
+        label: v,
+        insertText: v,
+        type: 'variable' as const,
+        description: 'User-defined SyntaxElement in grammar code'
+      }));
+    } catch (e) {
+      return [];
+    }
+  };
+
+  const handleAutocompleteCheck = (textarea: HTMLTextAreaElement) => {
+    const value = textarea.value;
+    const offset = textarea.selectionStart;
+    
+    const textBefore = value.slice(0, offset);
+    const lines = textBefore.split('\n');
+    const lineIndex = lines.length - 1;
+    const currentLineText = lines[lineIndex] || '';
+    
+    const wordMatch = textBefore.match(/([a-zA-Z0-9_$]*)$/);
+    const word = wordMatch ? wordMatch[1] : '';
+    
+    if (word && word.length > 0) {
+      const matched = [...GRAMMAR_SUGGESTIONS, ...getCustomVars(value)].filter(s => 
+        s.label.toLowerCase().startsWith(word.toLowerCase()) && s.label.toLowerCase() !== word.toLowerCase()
+      );
+      
+      if (matched.length > 0) {
+        setAutocomplete({
+          show: true,
+          suggestions: matched,
+          activeIndex: 0,
+          word,
+          cursorOffset: offset,
+          lineIndex,
+          lineText: currentLineText
+        });
+        return;
+      }
+    }
+    setAutocomplete(null);
+  };
+
+  const insertSuggestion = (item: SuggestionItem) => {
+    const textarea = document.querySelector('.grammar-editor-container textarea') as HTMLTextAreaElement;
+    if (!textarea || !autocomplete) return;
+    
+    const value = textarea.value;
+    const offset = autocomplete.cursorOffset;
+    const wordLen = autocomplete.word.length;
+    
+    const before = value.slice(0, offset - wordLen);
+    const after = value.slice(offset);
+    const insertText = item.insertText;
+    
+    const newValue = before + insertText + after;
+    setGrammarCode(newValue);
+    setAutocomplete(null);
+    
+    setTimeout(() => {
+      textarea.focus();
+      const newCursor = offset - wordLen + insertText.length;
+      textarea.setSelectionRange(newCursor, newCursor);
+    }, 10);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (autocomplete && autocomplete.show) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setAutocomplete(prev => prev ? { ...prev, activeIndex: (prev.activeIndex + 1) % prev.suggestions.length } : null);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setAutocomplete(prev => prev ? { ...prev, activeIndex: (prev.activeIndex - 1 + prev.suggestions.length) % prev.suggestions.length } : null);
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        insertSuggestion(autocomplete.suggestions[autocomplete.activeIndex]);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setAutocomplete(null);
+      }
+    }
+  };
   const [workspaceFiles, setWorkspaceFiles] = useState<Record<string, string>>(() => {
     return {
       "main.hlsl": [
@@ -599,8 +722,19 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
   };
 
   const [activeTab, setActiveTab] = useState<'designer' | 'playground'>('designer');
-  const [cstViewMode, setCstViewMode] = useState<'json' | 'visual' | 'query' | 'scopes' | 'performance'>('json');
+  const [cstViewMode, setCstViewMode] = useState<'json' | 'visual' | 'query' | 'scopes' | 'performance' | 'investigate'>('json');
   const [visualizeMode, setVisualizeMode] = useState<'cst' | 'ast'>('cst');
+  const [hoveredOffset, setHoveredOffset] = useState<number | null>(null);
+  const [pinnedOffset, setPinnedOffset] = useState<number | null>(null);
+  const [investigateHoveredNode, setInvestigateHoveredNode] = useState<any | null>(null);
+  const [debouncedInvestigateOffset, setDebouncedInvestigateOffset] = useState<number | null>(null);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedInvestigateOffset(hoveredOffset);
+    }, 40);
+    return () => clearTimeout(handler);
+  }, [hoveredOffset]);
   const [selectedSymbol, setSelectedSymbol] = useState<SymbolDefinition | null>(null);
   const [hoveredSymbol, setHoveredSymbol] = useState<SymbolDefinition | null>(null);
   const [selectedReference, setSelectedReference] = useState<SymbolReference | null>(null);
@@ -2125,17 +2259,6 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                       <FileCode className="w-3.5 h-3.5 text-indigo-400" /> Grammar Rules
                     </button>
                     <button
-                      onClick={() => setDesignerEditorTab('ast')}
-                      className={cn(
-                        "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
-                        designerEditorTab === 'ast'
-                          ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
-                          : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
-                      )}
-                    >
-                      <Layers className="w-3.5 h-3.5 text-indigo-400" /> AST Gen
-                    </button>
-                    <button
                       onClick={() => setDesignerEditorTab('scope')}
                       className={cn(
                         "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
@@ -2253,32 +2376,190 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                         )}
                       </div>
                     ) : (
-                      <Editor
-                        value={
-                          designerEditorTab === 'grammar' 
-                            ? grammarCode 
-                            : designerEditorTab === 'ast'
-                            ? astCode
-                            : scopeResolverCode
-                        }
-                        onValueChange={code => {
-                          if (designerEditorTab === 'grammar') {
-                            setGrammarCode(code);
-                          } else if (designerEditorTab === 'ast') {
-                            setAstCode(code);
-                          } else {
-                            setScopeResolverCode(code);
-                          }
-                        }}
-                        highlight={code => Prism.highlight(code, Prism.languages.javascript, 'javascript')}
-                        padding={20}
-                        style={{
-                          fontFamily: '"Fira Code", monospace',
-                          fontSize: 13,
-                          minHeight: '100%',
-                        }}
-                        className="outline-none"
-                      />
+                      <div className="flex h-full min-h-[500px] divide-x divide-white/5 relative items-stretch">
+                        <div className="flex-1 overflow-auto custom-scrollbar relative grammar-editor-container">
+                          <Editor
+                            value={
+                              designerEditorTab === 'grammar' 
+                                ? grammarCode 
+                                : designerEditorTab === 'ast'
+                                ? astCode
+                                : scopeResolverCode
+                            }
+                            onValueChange={code => {
+                              if (designerEditorTab === 'grammar') {
+                                setGrammarCode(code);
+                                setTimeout(() => {
+                                  const textarea = document.querySelector('.grammar-editor-container textarea') as HTMLTextAreaElement;
+                                  if (textarea) handleAutocompleteCheck(textarea);
+                                }, 10);
+                              } else if (designerEditorTab === 'ast') {
+                                setAstCode(code);
+                              } else {
+                                setScopeResolverCode(code);
+                              }
+                            }}
+                            onKeyDown={handleKeyDown as any}
+                            onKeyUp={e => {
+                              if (designerEditorTab === 'grammar') {
+                                handleAutocompleteCheck(e.target as HTMLTextAreaElement);
+                              }
+                            }}
+                            onClick={e => {
+                              if (designerEditorTab === 'grammar') {
+                                handleAutocompleteCheck(e.target as HTMLTextAreaElement);
+                              }
+                            }}
+                            highlight={code => Prism.highlight(code, Prism.languages.javascript, 'javascript')}
+                            padding={20}
+                            style={{
+                              fontFamily: '"Fira Code", monospace',
+                              fontSize: 13,
+                              minHeight: '100%',
+                            }}
+                            className="outline-none"
+                          />
+                          
+                          {/* FLOATING DROPDOWN FOR ACTIVE INTELLISENSE */}
+                          {designerEditorTab === 'grammar' && autocomplete && autocomplete.show && (
+                            <div 
+                              className="absolute bg-slate-900/95 border border-indigo-500/30 rounded-lg shadow-xl shadow-black/80 z-50 p-1 min-w-[280px] max-w-[360px] flex flex-col gap-0.5 font-sans"
+                              style={{
+                                bottom: '20px',
+                                right: '20px'
+                              }}
+                            >
+                              <div className="flex items-center justify-between border-b border-white/5 pb-1 mb-1 px-1.5 pt-0.5 shrink-0">
+                                <span className="text-[9px] uppercase tracking-wider font-extrabold text-indigo-400 flex items-center gap-1">
+                                  <Terminal className="w-3 h-3 animate-pulse" /> Keys: ↑ ↓ Enter
+                                </span>
+                                <span className="text-[8px] font-mono text-slate-500">
+                                  {autocomplete.suggestions.length} suggestion(s)
+                                </span>
+                              </div>
+                              <div className="max-h-[220px] overflow-auto custom-scrollbar flex flex-col gap-0.5">
+                                {autocomplete.suggestions.map((item, idx) => {
+                                  const isActive = idx === autocomplete.activeIndex;
+                                  return (
+                                    <button
+                                      key={idx}
+                                      onClick={() => insertSuggestion(item)}
+                                      className={cn(
+                                        "w-full text-left px-2 py-1.5 rounded flex flex-col gap-1 text-xs cursor-pointer transition-all",
+                                        isActive 
+                                          ? "bg-indigo-600 text-white" 
+                                          : "hover:bg-white/[0.04] text-slate-300"
+                                      )}
+                                    >
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className={cn(
+                                          "font-mono font-bold",
+                                          isActive ? "text-white" : "text-indigo-300"
+                                        )}>
+                                          {item.label}
+                                        </span>
+                                        <span className={cn(
+                                          "text-[7px] uppercase font-bold tracking-widest px-1 py-0.2 rounded border",
+                                          isActive 
+                                            ? "bg-white/20 border-white/30 text-white" 
+                                            : item.type === 'method' 
+                                            ? "bg-indigo-500/10 border-indigo-500/20 text-indigo-400" 
+                                            : "bg-amber-500/10 border-amber-500/20 text-amber-400"
+                                        )}>
+                                          {item.type}
+                                        </span>
+                                      </div>
+                                      <span className={cn(
+                                        "text-[10px] leading-relaxed",
+                                        isActive ? "text-indigo-100" : "text-slate-400"
+                                      )}>
+                                        {item.description}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* COMPANION SIDEBAR INTELLISENSE */}
+                        {designerEditorTab === 'grammar' && (
+                          <div className="w-80 shrink-0 bg-slate-900/60 p-4 flex flex-col gap-4 overflow-auto custom-scrollbar border-l border-white/5 text-slate-200">
+                            <div className="flex items-center gap-2 border-b border-white/5 pb-2.5 shrink-0">
+                              <Sparkles className="w-4 h-4 text-indigo-400" />
+                              <span className="text-xs font-bold uppercase tracking-wider text-slate-200 font-sans">
+                                Intellisense & Helper
+                              </span>
+                            </div>
+
+                            {/* Active typing segment */}
+                            {autocomplete && autocomplete.show ? (
+                              <div className="bg-indigo-600/15 border border-indigo-500/20 p-3.5 rounded-xl flex flex-col gap-2 shrink-0 animate-fadeIn">
+                                <h4 className="text-[11px] font-extrabold uppercase tracking-widest text-indigo-400 flex items-center gap-1.5">
+                                  <ChevronRight className="w-3.5 h-3.5 animate-pulse" /> Active Match
+                                </h4>
+                                <div className="text-xs font-mono font-bold text-slate-200">
+                                  {autocomplete.word}...
+                                </div>
+                                <p className="text-[11px] text-slate-300 leading-relaxed">
+                                  Use <kbd className="px-1.5 py-0.5 rounded bg-white/10 border border-white/15 text-[9px]">Tab</kbd> or <kbd className="px-1.5 py-0.5 rounded bg-white/10 border border-white/15 text-[9px]">Enter</kbd> to insert the selected autocompletion.
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="bg-gradient-to-br from-indigo-500/5 to-slate-500/5 border border-white/5 p-4 rounded-xl flex flex-col gap-2 shrink-0 text-center">
+                                <FileCode className="w-7 h-7 text-indigo-400/50 mx-auto" />
+                                <h4 className="text-xs font-bold text-slate-300">Live API Intellisense</h4>
+                                <p className="text-[11px] text-slate-400 leading-relaxed">
+                                  Start typing methods or variable names in the Editor to trigger live autocomplete suggestions and definitions!
+                                </p>
+                              </div>
+                            )}
+
+                            {/* Full API Catalog with interactive insertion */}
+                            <div className="flex flex-col gap-2.5">
+                              <h5 className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider shrink-0">
+                                API Commands Catalog
+                              </h5>
+                              <div className="flex flex-col gap-2">
+                                {GRAMMAR_SUGGESTIONS.map((item, idx) => (
+                                  <button
+                                    key={idx}
+                                    onClick={() => {
+                                      const textarea = document.querySelector('.grammar-editor-container textarea') as HTMLTextAreaElement;
+                                      if (textarea) {
+                                        const value = textarea.value;
+                                        const offset = textarea.selectionStart;
+                                        const before = value.slice(0, offset);
+                                        const after = value.slice(offset);
+                                        setGrammarCode(before + item.insertText + after);
+                                        setTimeout(() => {
+                                          textarea.focus();
+                                          const newCursor = offset + item.insertText.length;
+                                          textarea.setSelectionRange(newCursor, newCursor);
+                                        }, 10);
+                                      }
+                                    }}
+                                    className="w-full text-left p-2.5 rounded-xl border border-white/5 bg-white/[0.01] hover:bg-indigo-600/10 hover:border-indigo-500/20 transition-all cursor-pointer flex flex-col gap-1 group"
+                                  >
+                                    <div className="flex items-center justify-between gap-1.5">
+                                      <span className="font-mono text-xs font-bold text-slate-200 group-hover:text-indigo-300">
+                                        .{item.label}
+                                      </span>
+                                      <span className="text-[7.5px] uppercase font-extrabold tracking-widest text-indigo-400 group-hover:bg-indigo-500/10 px-1 py-0.2 rounded border border-indigo-500/10">
+                                        insert
+                                      </span>
+                                    </div>
+                                    <span className="text-[10.5px] text-slate-400 leading-relaxed font-sans font-medium">
+                                      {item.description}
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
 
@@ -3289,93 +3570,81 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                       >
                         <PanelRightClose className="w-4 h-4 text-indigo-400" />
                       </button>
+                      <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#a5b4fc] bg-[#4f46e5]/10 px-2.5 py-1 rounded-md border border-[#4f46e5]/20 flex items-center gap-1.5 shadow-sm">
+                        <FileCode className="w-3.5 h-3.5" /> CST Parser Tree
+                      </span>
+                    </div>
+                    
+                    <div className="flex items-center gap-3">
                       <div className="flex bg-white/5 rounded-md border border-white/10 p-0.5 font-mono">
-                        <button
-                          onClick={() => setVisualizeMode('cst')}
+                        <button 
+                          onClick={() => setCstViewMode('json')}
                           className={cn(
-                            "px-2 py-0.5 text-[8px] font-bold transition-all rounded uppercase flex items-center gap-1 border",
-                            visualizeMode === 'cst' 
-                              ? "bg-indigo-600/20 border-indigo-500/30 text-indigo-300 font-extrabold"
-                              : "bg-transparent border-transparent text-slate-500 hover:text-slate-300"
+                            "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded",
+                            cstViewMode === 'json' ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300"
                           )}
                         >
-                          <FileCode className="w-3 h-3" /> CST
+                          JSON
                         </button>
-                        <button
-                          onClick={() => setVisualizeMode('ast')}
+                        <button 
+                          onClick={() => setCstViewMode('visual')}
                           className={cn(
-                            "px-2 py-0.5 text-[8px] font-bold transition-all rounded uppercase flex items-center gap-1 border",
-                            visualizeMode === 'ast' 
-                              ? "bg-indigo-600/20 border-indigo-500/30 text-indigo-300 font-extrabold"
-                              : "bg-transparent border-transparent text-slate-500 hover:text-slate-300"
+                            "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded",
+                            cstViewMode === 'visual' ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300"
                           )}
                         >
-                          <Layers className="w-3 h-3" /> AST
+                          VISUAL
+                        </button>
+                        <button 
+                          onClick={() => setCstViewMode('query')}
+                          className={cn(
+                            "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded",
+                            cstViewMode === 'query' ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300"
+                          )}
+                        >
+                          QUERY
+                        </button>
+                        <button 
+                          onClick={() => setCstViewMode('scopes')}
+                          className={cn(
+                            "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded",
+                            cstViewMode === 'scopes' ? "bg-indigo-500 text-white" : "text-slate-500 hover:text-slate-300"
+                          )}
+                        >
+                          SCOPES
+                        </button>
+                        <button 
+                          onClick={() => setCstViewMode('investigate')}
+                          className={cn(
+                            "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded",
+                            cstViewMode === 'investigate' ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/35 font-black shadow-sm" : "text-slate-500 hover:text-slate-300"
+                          )}
+                        >
+                          🔍 INVESTIGATE
+                        </button>
+                        <button 
+                          onClick={() => setCstViewMode('performance')}
+                          className={cn(
+                            "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded flex items-center gap-0.5",
+                            cstViewMode === 'performance' ? "bg-orange-600/20 text-orange-400 border border-orange-500/25 font-black shadow-sm" : "text-slate-500 hover:text-slate-300"
+                          )}
+                        >
+                          ⚡ PERF
                         </button>
                       </div>
-                    
-                    <div className="flex bg-white/5 rounded-md border border-white/10 p-0.5 font-mono">
+
                       <button 
-                        onClick={() => setCstViewMode('json')}
-                        className={cn(
-                          "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded",
-                          cstViewMode === 'json' ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300"
-                        )}
+                        onClick={() => {
+                          const targetData = parseResult;
+                          navigator.clipboard.writeText(JSON.stringify(targetData, null, 2));
+                          alert(`CST JSON copied!`);
+                        }}
+                        className="text-[9px] font-bold p-1.5 hover:bg-white/5 rounded border border-white/10 text-indigo-400 hover:text-white transition-all uppercase tracking-widest flex items-center gap-1.5 shadow-sm"
                       >
-                        JSON
-                      </button>
-                      <button 
-                        onClick={() => setCstViewMode('visual')}
-                        className={cn(
-                          "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded",
-                          cstViewMode === 'visual' ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300"
-                        )}
-                      >
-                        VISUAL
-                      </button>
-                      <button 
-                        onClick={() => setCstViewMode('query')}
-                        className={cn(
-                          "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded",
-                          cstViewMode === 'query' ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300"
-                        )}
-                      >
-                        QUERY
-                      </button>
-                      <button 
-                        onClick={() => setCstViewMode('scopes')}
-                        className={cn(
-                          "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded",
-                          cstViewMode === 'scopes' ? "bg-indigo-500 text-white" : "text-slate-500 hover:text-slate-300"
-                        )}
-                      >
-                        SCOPES
-                      </button>
-                      <button 
-                        onClick={() => setCstViewMode('performance')}
-                        className={cn(
-                          "px-1.5 py-0.5 text-[8px] font-bold transition-all rounded flex items-center gap-0.5",
-                          cstViewMode === 'performance' ? "bg-orange-600/20 text-orange-400 border border-orange-500/25 font-black shadow-sm" : "text-slate-500 hover:text-slate-300"
-                        )}
-                      >
-                        ⚡ PERF
+                        <Copy className="w-3 h-3" /> Copy JSON
                       </button>
                     </div>
                   </div>
-                  
-                  <div className="flex items-center gap-2">
-                    <button 
-                      onClick={() => {
-                        const targetData = visualizeMode === 'ast' ? astResult : parseResult;
-                        navigator.clipboard.writeText(JSON.stringify(targetData, null, 2));
-                        alert(`${visualizeMode.toUpperCase()} JSON copied!`);
-                      }}
-                      className="text-[9px] font-bold p-1.5 hover:bg-white/5 rounded border border-white/10 text-indigo-400 hover:text-white transition-all uppercase tracking-widest flex items-center gap-1.5 shadow-sm"
-                    >
-                      <Copy className="w-3 h-3" /> Copy JSON
-                    </button>
-                  </div>
-                </div>
                 <div className="flex-1 overflow-hidden p-0 custom-scrollbar relative bg-[#0a0a0a] bg-[radial-gradient(#ffffff05_1px,transparent_1px)] [background-size:20px_20px]">
                   {parseResult ? (
                     cstViewMode === 'json' ? (
@@ -3761,6 +4030,226 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                               );
                             }
                           })()}
+                        </div>
+                      </div>
+                    ) : cstViewMode === 'investigate' ? (
+                      <div className="h-full flex flex-col md:flex-row overflow-hidden text-slate-300 bg-[#0e0e11]/80 backdrop-blur-xl">
+                        {/* Left Side: Interactive Char Monospace Grid */}
+                        <div className="w-full md:w-1/2 border-b md:border-b-0 md:border-r border-white/5 flex flex-col overflow-hidden bg-black/50">
+                          <div className="p-3 bg-white/[0.01] border-b border-white/5 flex items-center justify-between select-none">
+                            <div className="flex items-center gap-1.5 flex-1">
+                              <Search className="w-3.5 h-3.5 text-emerald-400" />
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                Hover Code Matrix
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {pinnedOffset !== null && (
+                                <button
+                                  onClick={() => setPinnedOffset(null)}
+                                  className="px-2 py-0.5 text-[8.5px] font-bold bg-indigo-500/20 text-indigo-300 rounded border border-indigo-500/30 hover:bg-indigo-500/30 transition-all flex items-center gap-1 cursor-pointer"
+                                >
+                                  Unpin Offset ({pinnedOffset})
+                                </button>
+                              )}
+                              <span className="text-[9.5px] font-mono text-slate-500">
+                                Offset: <strong className="text-emerald-400 font-bold">{pinnedOffset ?? hoveredOffset ?? 0}</strong>
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex-1 p-3 overflow-auto custom-scrollbar font-mono bg-black/20 select-none">
+                            {(() => {
+                              const code = debouncedTestInput || "";
+                              const lines = code.split("\n");
+                              let absoluteOffset = 0;
+
+                              // Highlight ranges of nodes hovered in investigator sidebar
+                              const extraHighlightStart = investigateHoveredNode?.offset ?? -1;
+                              const extraHighlightEnd = extraHighlightStart + (investigateHoveredNode?.width ?? 0);
+
+                              return lines.map((line, lineIdx) => {
+                                const chars = Array.from(line);
+                                const lineStartOffset = absoluteOffset;
+                                absoluteOffset += line.length + 1; // including \n
+
+                                return (
+                                  <div key={lineIdx} className="flex hover:bg-white/[0.02] py-[1.5px] leading-relaxed transition-all min-h-[22px]">
+                                    {/* Line Gutter */}
+                                    <div className="w-8 shrink-0 text-[10px] font-mono text-slate-600 border-r border-white/5 pr-2 select-none text-right">
+                                      {lineIdx + 1}
+                                    </div>
+                                    <div className="flex pl-2.5 font-mono text-[12.5px] flex-wrap">
+                                      {chars.map((char, charIdx) => {
+                                        const charOffset = lineStartOffset + charIdx;
+                                        const isHovered = charOffset === hoveredOffset;
+                                        const isPinned = charOffset === pinnedOffset;
+                                        const isInInvestigateRange = charOffset >= extraHighlightStart && charOffset < extraHighlightEnd;
+
+                                        return (
+                                          <span
+                                            key={charIdx}
+                                            onMouseEnter={() => setHoveredOffset(charOffset)}
+                                            onMouseLeave={() => setHoveredOffset(null)}
+                                            onClick={() => {
+                                              if (pinnedOffset === charOffset) {
+                                                setPinnedOffset(null);
+                                              } else {
+                                                setPinnedOffset(charOffset);
+                                              }
+                                            }}
+                                            className={cn(
+                                              "cursor-crosshair font-mono px-[0.5px] rounded transition-all select-none",
+                                              isPinned 
+                                                ? "bg-amber-500/40 text-amber-100 ring-2 ring-amber-500 outline-none font-bold"
+                                                : isHovered 
+                                                ? "bg-indigo-500/30 text-indigo-100 outline outline-1 outline-indigo-500 font-bold scale-[1.05] relative z-10 shadow-lg"
+                                                : isInInvestigateRange
+                                                ? "bg-emerald-500/25 text-emerald-200 border-b-2 border-emerald-400"
+                                                : "text-slate-300 hover:bg-white/10"
+                                            )}
+                                          >
+                                            {char === ' ' ? '\u00A0' : char}
+                                          </span>
+                                        );
+                                      })}
+                                      {line.length === 0 && (
+                                        <span 
+                                          onMouseEnter={() => setHoveredOffset(lineStartOffset)}
+                                          onMouseLeave={() => setHoveredOffset(null)}
+                                          onClick={() => {
+                                            if (pinnedOffset === lineStartOffset) setPinnedOffset(null);
+                                            else setPinnedOffset(lineStartOffset);
+                                          }}
+                                          className={cn(
+                                            "text-slate-600/35 italic text-[10px] select-none cursor-crosshair pl-1 transition-all rounded",
+                                            pinnedOffset === lineStartOffset ? "bg-amber-500/20 text-amber-300" :
+                                            hoveredOffset === lineStartOffset ? "bg-white/10 text-slate-400" : ""
+                                          )}
+                                        >
+                                          ¶
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              });
+                            })()}
+                          </div>
+                        </div>
+
+                        {/* Right Side: Resolved Rule Stack */}
+                        <div className="flex-1 flex flex-col overflow-hidden bg-slate-950/40 p-3">
+                          <div className="p-1 mb-2 select-none">
+                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 mb-1.5">
+                              <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                              Rule Stack Encompassed
+                            </div>
+                            <p className="text-[10px] text-slate-500 leading-normal">
+                              Move cursor over characters or click to pin. The rule hierarchy matching that position is resolved bottom-up.
+                            </p>
+                          </div>
+
+                          <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 mt-2">
+                            {(() => {
+                              const currentOffset = pinnedOffset ?? debouncedInvestigateOffset;
+                              if (currentOffset === null) {
+                                return (
+                                  <div className="h-full flex flex-col items-center justify-center p-6 text-slate-500/60 font-mono text-[11px] text-center italic leading-relaxed border border-dashed border-white/5 rounded-xl m-2 bg-black/10 select-none">
+                                    <MousePointer className="w-5 h-5 text-indigo-400/40 animate-bounce mb-2" />
+                                    <span>Hover over the code matrix to trace matching rules!</span>
+                                  </div>
+                                );
+                              }
+
+                              // Recursive rule gatherer
+                              const matching: any[] = [];
+                              const findMatching = (node: any) => {
+                                if (!node || typeof node !== 'object') return;
+                                const start = node.offset;
+                                const width = node.width;
+                                if (typeof start !== 'number' || typeof width !== 'number') return;
+                                const end = start + width;
+                                if (currentOffset >= start && currentOffset < end) {
+                                  matching.push(node);
+                                  const val = node.value;
+                                  if (Array.isArray(val)) {
+                                    for (const child of val) {
+                                      findMatching(child);
+                                    }
+                                  } else if (val && typeof val === 'object') {
+                                    findMatching(val);
+                                  }
+                                }
+                              };
+
+                              if (parseResult) {
+                                findMatching(parseResult);
+                              }
+
+                              if (matching.length === 0) {
+                                return (
+                                  <div className="p-4 rounded-xl bg-slate-900 border border-white/5 text-slate-500 font-mono text-[10.5px] italic text-center select-none">
+                                    No grammatical rules matched at offset {currentOffset}.
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <div className="space-y-2 select-text p-1">
+                                  {matching.map((node, index) => {
+                                    const length = node.width;
+                                    const snippet = debouncedTestInput.substring(node.offset, node.offset + length);
+                                    const collapsedSnippet = snippet.length > 120 ? snippet.substring(0, 120) + "..." : snippet;
+                                    const isLeaf = !Array.isArray(node.value) && typeof node.value !== 'object';
+
+                                    return (
+                                      <div 
+                                        key={index}
+                                        onMouseEnter={() => setInvestigateHoveredNode(node)}
+                                        onMouseLeave={() => setInvestigateHoveredNode(null)}
+                                        onClick={() => {
+                                          setSelectedCstNode(node);
+                                        }}
+                                        className={cn(
+                                          "group p-3 rounded-xl border font-mono transition-all flex flex-col gap-2 cursor-pointer relative shadow-sm",
+                                          isLeaf ? "bg-emerald-500/5 hover:bg-emerald-500/10 border-emerald-500/15" : "bg-black/30 hover:bg-white/[0.02] border-white/5 hover:border-indigo-500/30"
+                                        )}
+                                      >
+                                        <div className="flex items-center justify-between">
+                                          <div className="flex items-center gap-2">
+                                            <span className={cn(
+                                              "text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border leading-none shadow-sm",
+                                              isLeaf 
+                                                ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300" 
+                                                : "bg-[#4f46e5]/15 border-[#4f46e5]/30 text-indigo-300"
+                                            )}>
+                                              {node.type || `rule-${node.ruleId}`}
+                                            </span>
+                                            <span className="text-[10px] text-slate-600 font-extrabold select-none">
+                                              #{node.green?.id || node.id || ''}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 select-none">
+                                            <span className="text-[8.5px] font-mono text-indigo-400 bg-indigo-400/5 px-2 py-0.5 border border-indigo-400/15 rounded-md">
+                                              range: {node.offset} - {node.offset + length}
+                                            </span>
+                                            <span className="text-[8.5px] font-mono text-slate-500 bg-black/40 px-1.5 py-0.5 border border-white/5 rounded-md">
+                                              width: {length}
+                                            </span>
+                                          </div>
+                                        </div>
+
+                                        <div className="text-[10.5px] font-mono text-slate-300 bg-black/40 px-2 py-1 border border-white/5 rounded-md leading-relaxed whitespace-pre truncate max-h-[85px] overflow-hidden">
+                                          {collapsedSnippet}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
+                          </div>
                         </div>
                       </div>
                     ) : cstViewMode === 'scopes' ? (

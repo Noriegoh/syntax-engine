@@ -552,7 +552,7 @@ function collectElements(root: SyntaxElement): SyntaxElement[] {
     for (const rule of el.rules) {
       if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
         visit(rule.value);
-      } else if (rule.type === 'choice') {
+      } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
         for (const child of rule.value) {
           if (child instanceof SyntaxElement) {
             visit(child);
@@ -1637,7 +1637,7 @@ namespace ${namespaceName}
             var result = new List<AstNode>();
             if (node == null) return result;
             
-            if (node.Type != NodeType.Whitespace && node.Type != NodeType.Optional && node.Type != NodeType.ZeroOrMore && node.Type != NodeType.OneOrMore)
+            if (node.Type != NodeType.Whitespace && node.Type != NodeType.Optional && node.Type != NodeType.ZeroOrMore && node.Type != NodeType.OneOrMore && node.Type != NodeType.ZeroOrMoreOneOf && node.Type != NodeType.OneOrMoreOneOf)
             {
                 result.Add(node);
             }
@@ -2387,7 +2387,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
       const ruleId = rule.id;
       if (rule.type === 'regex') {
         registerPattern(rule.value, ruleId, 'Rule');
-      } else if (rule.type === 'choice') {
+      } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
         const patterns = rule.value as any[];
         for (const p of patterns) {
           if (p instanceof RegExp) {
@@ -2462,9 +2462,15 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
     const ruleBlocks = el.rules.map(rule => {
       const ruleId = rule.id;
       let ruleIsStructural = true;
-      if (rule.type === 'whitespace') {
-        ruleIsStructural = false;
-      } else if ((rule.type === 'element' || rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value instanceof SyntaxElement) {
+      if (
+        rule.type === 'whitespace' ||
+        rule.type === 'leadingTrivia' ||
+        rule.type === 'trailingTrivia' ||
+        rule.type === 'optional' ||
+        rule.type === 'zeroOrMore' ||
+        rule.type === 'zeroOrMoreOneOf' ||
+        rule.type === 'not'
+      ) {
         ruleIsStructural = false;
       }
       const structUpdate = `if (${ruleIsStructural ? 'true' : 'false'} && currentOffset > startOffset_${ruleId})
@@ -2551,7 +2557,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
             if (!panicked)
             {
                 int startOffset_${ruleId} = currentOffset;
-                var res = Parse${subName}(text, currentOffset, memo, ctx);
+                ParseResult res = Parse${subName}(text, currentOffset, memo, ctx);
                 localMaxOffset = Math.Max(localMaxOffset, res.DependencyLimit);
                 if (res.Success)
                 {
@@ -2753,6 +2759,154 @@ ${choiceChecks.join("\n")}
                 else
                 {
                     if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes;
+                }
+            }`;
+      }
+      if (rule.type === 'zeroOrMoreOneOf') {
+        const patterns = rule.value as any[];
+        const escErrorsVar = `loopErrors_${ruleId}`;
+        const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
+        
+        const branchChecks: string[] = [];
+        patterns.forEach((p, idx) => {
+          const sId = nextSpecId();
+          let specificDfaName: string | undefined;
+          if (p instanceof RegExp) {
+            specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+          }
+          const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+          branchChecks.push(`
+                    {
+                        int beforeBranchOffset = currentOffset;
+                        int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
+                        int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
+                        ${spec.code.trim()}
+                        if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
+                        {
+                            matchedBranch = true;
+                            matchedAst = ${spec.parsedAstName};
+                            branchNewOffset = ${spec.newOffsetName};
+                        }
+                        else
+                        {
+                            ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
+                            if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
+                            {
+                                ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
+                            }
+                        }
+                    }
+                    if (matchedBranch) goto matched_branch_${ruleId};
+          `);
+        });
+
+        return `
+            // Zero Or More One Of Rule (id: ${ruleId})
+            if (!panicked)
+            {
+                int startOffset_${ruleId} = currentOffset;
+                int startLoopOffset = currentOffset;
+                var loopResults = new List<GreenNode>();
+                while (currentOffset < text.Length)
+                {
+                    bool matchedBranch = false;
+                    GreenNode matchedAst = null;
+                    int branchNewOffset = currentOffset;
+
+                    ${branchChecks.join("\n").trim()}
+
+                    matched_branch_${ruleId}:
+                    if (matchedBranch)
+                    {
+                        loopResults.Add(matchedAst);
+                        currentOffset = branchNewOffset;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                if (loopResults.Count > 0)
+                {
+                    results.Add(GreenNode.Create(NodeType.ZeroOrMoreOneOf, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                    ${structUpdate}
+                }
+            }`;
+      }
+      if (rule.type === 'oneOrMoreOneOf') {
+        const patterns = rule.value as any[];
+        const escErrorsVar = `loopErrors_${ruleId}`;
+        const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
+        
+        const branchChecks: string[] = [];
+        patterns.forEach((p, idx) => {
+          const sId = nextSpecId();
+          let specificDfaName: string | undefined;
+          if (p instanceof RegExp) {
+            specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+          }
+          const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+          branchChecks.push(`
+                    {
+                        int beforeBranchOffset = currentOffset;
+                        int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
+                        int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
+                        ${spec.code.trim()}
+                        if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
+                        {
+                            matchedBranch = true;
+                            matchedAst = ${spec.parsedAstName};
+                            branchNewOffset = ${spec.newOffsetName};
+                        }
+                        else
+                        {
+                            ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
+                            if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
+                            {
+                                ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
+                            }
+                        }
+                    }
+                    if (matchedBranch) goto matched_branch_${ruleId};
+          `);
+        });
+
+        return `
+            // One Or More One Of Rule (id: ${ruleId})
+            if (!panicked)
+            {
+                int startOffset_${ruleId} = currentOffset;
+                int startLoopOffset = currentOffset;
+                var loopResults = new List<GreenNode>();
+                while (currentOffset < text.Length)
+                {
+                    bool matchedBranch = false;
+                    GreenNode matchedAst = null;
+                    int branchNewOffset = currentOffset;
+
+                    ${branchChecks.join("\n").trim()}
+
+                    matched_branch_${ruleId}:
+                    if (matchedBranch)
+                    {
+                        loopResults.Add(matchedAst);
+                        currentOffset = branchNewOffset;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                if (loopResults.Count > 0)
+                {
+                    results.Add(GreenNode.Create(NodeType.OneOrMoreOneOf, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                    hasCommitted = true;
+                    ${structUpdate}
+                }
+                else
+                {
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one match for OneOrMoreOneOf", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
             }`;
@@ -3073,6 +3227,8 @@ namespace ${namespaceName}
         ErrorNode,
         ZeroOrMore,
         OneOrMore,
+        ZeroOrMoreOneOf,
+        OneOrMoreOneOf,
         ${customNodeTypes.join(",\n        ")}
     }
     public struct GreenNodeKey : IEquatable<GreenNodeKey>
@@ -3473,10 +3629,22 @@ ${enumsCode}${elements.map(el => {
         let isList = false;
         
         // Determine type based on rule content
-        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
           isList = true;
           if (rule.value instanceof SyntaxElement) {
             csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
+          } else if (Array.isArray(rule.value)) {
+            const elNames = rule.value.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
+            if (elNames.length > 0) {
+              const uniqueNames = Array.from(new Set(elNames));
+              if (uniqueNames.length === 1) {
+                csharpType = uniqueNames[0];
+              } else {
+                csharpType = "AstNode";
+              }
+            } else {
+              csharpType = "AstNode";
+            }
           }
         } else if (rule.type === 'element' || rule.type === 'optional') {
           if (rule.value instanceof SyntaxElement) {
@@ -3529,10 +3697,18 @@ ${enumsCode}${elements.map(el => {
           rule.type === 'trailingTrivia' ||
           rule.type === 'zeroOrMore' ||
           rule.type === 'oneOrMore' ||
+          rule.type === 'zeroOrMoreOneOf' ||
+          rule.type === 'oneOrMoreOneOf' ||
           rule.type === 'not'
         ) {
           if (rule.value instanceof SyntaxElement) {
             childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          } else if (Array.isArray(rule.value)) {
+            for (const sub of rule.value) {
+              if (sub instanceof SyntaxElement) {
+                childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
+              }
+            }
           }
         }
       }
@@ -3632,10 +3808,22 @@ export function generateModularCSharp(
           let csharpType = "AstNode";
           let isList = false;
           
-          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
             isList = true;
             if (rule.value instanceof SyntaxElement) {
               csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
+            } else if (Array.isArray(rule.value)) {
+              const elNames = rule.value.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
+              if (elNames.length > 0) {
+                const uniqueNames = Array.from(new Set(elNames));
+                if (uniqueNames.length === 1) {
+                  csharpType = uniqueNames[0];
+                } else {
+                  csharpType = "AstNode";
+                }
+              } else {
+                csharpType = "AstNode";
+              }
             }
           } else if (rule.type === 'element' || rule.type === 'optional') {
             if (rule.value instanceof SyntaxElement) {
@@ -3688,10 +3876,18 @@ export function generateModularCSharp(
             rule.type === 'trailingTrivia' ||
             rule.type === 'zeroOrMore' ||
             rule.type === 'oneOrMore' ||
+            rule.type === 'zeroOrMoreOneOf' ||
+            rule.type === 'oneOrMoreOneOf' ||
             rule.type === 'not'
           ) {
             if (rule.value instanceof SyntaxElement) {
               childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+            } else if (Array.isArray(rule.value)) {
+              for (const sub of rule.value) {
+                if (sub instanceof SyntaxElement) {
+                  childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
+                }
+              }
             }
           }
         }
