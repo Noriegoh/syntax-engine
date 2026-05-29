@@ -1,4 +1,5 @@
-import { ParseResult, findDiff, ParseError, RedNode } from './types';
+import { ParseResult, ParseError, RedNode } from './syntax-element';
+import { findDiff } from './utils';
 import { SyntaxElement } from './syntax-element';
 
 export interface CSTNode {
@@ -212,9 +213,9 @@ export class IncrementalParser {
       
       const res = root.parse(newText, 0, this.memo, ctx);
       this.lastText = newText;
-      this.lastResult = res || { ast: null, newOffset: 0, error: "Parsing failed" };
+      this.lastResult = res || { ast: null, newOffset: 0, error: "Parsing failed", dependencyLimit: 0 };
       this.lastContext = ctx;
-      return this.lastResult.ast ? { ...this.lastResult, ast: new RedNode(this.lastResult.ast, null, 0) } : this.lastResult;
+      return this.lastResult.ast ? ({ ...this.lastResult, ast: new RedNode(this.lastResult.ast, null, 0) } as any) : this.lastResult;
     }
 
     if (edits && edits.length > 0) {
@@ -241,8 +242,8 @@ export class IncrementalParser {
     const res = root.parse(newText, 0, this.memo, ctx);
     
     this.lastText = newText;
-    this.lastResult = res || { ast: null, newOffset: 0, error: "Parsing failed" };
+    this.lastResult = res || { ast: null, newOffset: 0, error: "Parsing failed", dependencyLimit: 0 };
     this.lastContext = ctx;
-    return this.lastResult.ast ? { ...this.lastResult, ast: new RedNode(this.lastResult.ast, null, 0) } : this.lastResult;
+    return this.lastResult.ast ? ({ ...this.lastResult, ast: new RedNode(this.lastResult.ast, null, 0) } as any) : this.lastResult;
   }
 }

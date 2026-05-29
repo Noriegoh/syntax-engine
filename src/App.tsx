@@ -48,8 +48,11 @@ import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
 import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, BeginScope, EndScope } from './lib/engine';
 import { cn } from './lib/utils';
+import { runGrammarDiagnostics, Diagnostic } from './lib/diagnostics';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ParserProfiler } from './components/ParserProfiler';
+import { ProjectLibraryModal } from './components/ProjectLibraryModal';
+import { CSharpExportModal } from './components/CSharpExportModal';
 
 const SyntaxEngineLogo = ({ className }: { className?: string }) => (
   <svg viewBox="0 0 24 24" fill="none" className={className} xmlns="http://www.w3.org/2000/svg">
@@ -192,18 +195,20 @@ const string = Token(new SyntaxElement("string")
 
 // --- HLSL BLOCK ---
 const hlslType = Token(new SyntaxElement("hlsl_type").MapToEnum("HlslType").ExpectsOneOf(
-  "float4x4", "float4", "float3", "float2", "float",
+  Sort("float4x4", "float4", "float3", "float2", "float",
   "half4", "half3", "half2", "half",
   "fixed4", "fixed3", "fixed2", "fixed",
-  "int", "bool", "uint", "sampler2D", "Texture2D", "SamplerState", /[a-zA-Z_][a-zA-Z0-9_]*/
+  "int", "bool", "uint", "sampler2D", "Texture2D", "SamplerState")
 ));
+
+const dataType = new SyntaxElement("data_type").AsNode("DataType").ExpectsOneOf(hlslType, id);
 
 const semantic = new SyntaxElement("semantic").AsNode("Semantic").Token(":").Ignore().Expects(id).As("value");
 const arraySpec = new SyntaxElement("array_spec").AsNode("ArraySpec").Token("[").Ignore().Token(/[0-9]*/).As("size").Token("]").Ignore();
 
 const varDecl = new SyntaxElement("variable")
   .AsNode("VariableDeclaration")
-  .Expects(hlslType).As("type")
+  .Expects(dataType).As("type")
   .Expects(id).As("name")
   .Optional(arraySpec).As("array")
   .Optional(semantic).As("semantic")
@@ -225,7 +230,7 @@ const structDecl = new SyntaxElement("struct")
 
 const param = new SyntaxElement("param")
   .Optional(new SyntaxElement("inout").ExpectsOneOf(Token("inout"), Token("in"), Token("out")))
-  .Expects(hlslType).Expects(id)
+  .Expects(dataType).Expects(id)
   .Optional(semantic);
 
 const paramList = new SyntaxElement("param_list")
@@ -239,7 +244,7 @@ codeBlock.Token(BeginScope("{")).ZeroOrMore(new SyntaxElement("block_content").E
 )).Token(EndScope("}"));
 
 const funcDecl = new SyntaxElement("function")
-  .Expects(hlslType).Expects(id).Token("(").Optional(paramList).Token(")")
+  .Expects(dataType).Expects(id).Token("(").Optional(paramList).Token(")")
   .Optional(semantic)
   .Expects(codeBlock);
 
@@ -538,6 +543,9 @@ export default function App() {
   const [renameInput, setRenameInput] = useState("");
 
   const [rootElement, setRootElement] = useState<SyntaxElement | null>(null);
+  const grammarDiagnostics = useMemo(() => {
+    return runGrammarDiagnostics(rootElement);
+  }, [rootElement]);
   const [hierarchy, setHierarchy] = useState<any>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
   const [parseResult, setParseResult] = useState<any>(null);
@@ -602,7 +610,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
   const [scopeSearchQuery, setScopeSearchQuery] = useState<string>("");
   const [scopeResolverCode, setScopeResolverCode] = useState<string>(DEFAULT_SCOPE_RESOLVER_CODE);
   const [scopeError, setScopeError] = useState<string | null>(null);
-  const [designerEditorTab, setDesignerEditorTab] = useState<'grammar' | 'ast' | 'scope'>('grammar');
+  const [designerEditorTab, setDesignerEditorTab] = useState<'grammar' | 'ast' | 'scope' | 'console'>('grammar');
 
   const [astCode, setAstCode] = useState<string>(DEFAULT_AST_CODE);
   const [debouncedAstCode, setDebouncedAstCode] = useState<string>(DEFAULT_AST_CODE);
@@ -2138,34 +2146,140 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                     >
                       <GitBranch className="w-3.5 h-3.5 text-indigo-400" /> Scope Resolver
                     </button>
+                    <button
+                      id="diag-console-tab-btn"
+                      onClick={() => setDesignerEditorTab('console')}
+                      className={cn(
+                        "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm relative",
+                        designerEditorTab === 'console'
+                          ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
+                          : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
+                      )}
+                    >
+                      <Terminal className="w-3.5 h-3.5 text-indigo-400" /> Console
+                      {grammarDiagnostics.length > 0 && (
+                        <span className={cn(
+                          "absolute -top-1.5 -right-1.5 flex h-4 min-w-4 px-1 items-center justify-center rounded-full text-[8.5px] font-extrabold text-white shadow-lg shadow-black animate-pulse border border-slate-900",
+                          grammarDiagnostics.some(d => d.type === 'error') ? "bg-rose-500" : "bg-amber-500"
+                        )}>
+                          {grammarDiagnostics.length}
+                        </span>
+                      )}
+                    </button>
                   </div>
-                           <div className="flex-1 overflow-auto custom-scrollbar bg-[#1a1a1a]/50 relative">
-                    <Editor
-                      value={
-                        designerEditorTab === 'grammar' 
-                          ? grammarCode 
-                          : designerEditorTab === 'ast'
-                          ? astCode
-                          : scopeResolverCode
-                      }
-                      onValueChange={code => {
-                        if (designerEditorTab === 'grammar') {
-                          setGrammarCode(code);
-                        } else if (designerEditorTab === 'ast') {
-                          setAstCode(code);
-                        } else {
-                          setScopeResolverCode(code);
+                  <div className="flex-1 overflow-auto custom-scrollbar bg-[#1a1a1a]/55 relative">
+                    {designerEditorTab === 'console' ? (
+                      <div className="p-4 flex flex-col gap-4 h-full overflow-auto custom-scrollbar bg-[#1e1e24] text-slate-200">
+                        <div className="flex items-center justify-between border-b border-white/5 pb-3">
+                          <div className="flex items-center gap-2">
+                            <Terminal className="w-4 h-4 text-indigo-400" />
+                            <span className="text-xs font-bold text-slate-200 tracking-wider uppercase font-sans">
+                              Grammar Diagnostics Console
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 uppercase font-bold tracking-widest bg-white/5 px-2 py-0.5 rounded border border-white/5">
+                            {grammarDiagnostics.length} issue{grammarDiagnostics.length !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+
+                        {grammarDiagnostics.length === 0 ? (
+                          <div className="flex flex-col items-center justify-center py-12 px-4 border border-emerald-500/10 bg-emerald-500/5 rounded-xl text-center">
+                            <div className="w-12 h-12 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mb-3 shadow-lg shadow-emerald-500/5">
+                              <CheckCircle2 className="w-6 h-6 animate-pulse" />
+                            </div>
+                            <h4 className="text-sm font-bold text-emerald-300 mb-1">Grammar is Pristine!</h4>
+                            <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
+                              No shadowing, left recursions, empty elements, or scope mismatched diagnostics were detected. Your compiler blueprint is fully optimized!
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-3 pb-8">
+                            {grammarDiagnostics.map((diag, index) => {
+                              const isError = diag.type === 'error';
+                              const isWarning = diag.type === 'warning';
+                              return (
+                                <div 
+                                  key={index} 
+                                  className={cn(
+                                    "p-4 border rounded-xl flex flex-col gap-2.5 transition-all relative overflow-hidden backdrop-blur-md",
+                                    isError 
+                                      ? "bg-rose-500/5 border-rose-500/20 hover:border-rose-500/35 shadow-sm" 
+                                      : isWarning 
+                                      ? "bg-amber-500/5 border-amber-500/20 hover:border-amber-500/35 shadow-sm" 
+                                      : "bg-blue-500/5 border-blue-500/20 hover:border-blue-500/35 shadow-sm"
+                                  )}
+                                >
+                                  <div className="flex items-center justify-between gap-2 shrink-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className={cn(
+                                        "px-2 py-0.5 rounded text-[8px] font-extrabold uppercase tracking-widest border",
+                                        isError 
+                                          ? "bg-rose-500/25 text-rose-300 border-rose-500/40" 
+                                          : isWarning 
+                                          ? "bg-amber-500/25 text-amber-300 border-amber-500/40" 
+                                          : "bg-blue-500/25 text-blue-300 border-blue-500/40"
+                                      )}>
+                                        {diag.type}
+                                      </span>
+                                      <span className="font-mono text-[9px] text-indigo-300 bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20 uppercase tracking-wider font-extrabold">
+                                        node: {diag.nodeName}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <p className="text-xs text-slate-200 leading-relaxed font-sans">
+                                    {diag.message}
+                                  </p>
+
+                                  <div className={cn(
+                                    "p-3 rounded-lg text-xs leading-relaxed font-sans border flex flex-col gap-1",
+                                    isError
+                                      ? "bg-rose-500/10 border-rose-500/10 text-rose-200"
+                                      : isWarning
+                                      ? "bg-amber-500/10 border-amber-500/10 text-amber-200"
+                                      : "bg-blue-500/10 border-blue-500/10 text-blue-200"
+                                  )}>
+                                    <span className="font-extrabold uppercase tracking-wider text-[8px] opacity-80">
+                                      Recommendation / Fix:
+                                    </span>
+                                    <span>
+                                      {diag.suggestion}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <Editor
+                        value={
+                          designerEditorTab === 'grammar' 
+                            ? grammarCode 
+                            : designerEditorTab === 'ast'
+                            ? astCode
+                            : scopeResolverCode
                         }
-                      }}
-                      highlight={code => Prism.highlight(code, Prism.languages.javascript, 'javascript')}
-                      padding={20}
-                      style={{
-                        fontFamily: '"Fira Code", monospace',
-                        fontSize: 13,
-                        minHeight: '100%',
-                      }}
-                      className="outline-none"
-                    />
+                        onValueChange={code => {
+                          if (designerEditorTab === 'grammar') {
+                            setGrammarCode(code);
+                          } else if (designerEditorTab === 'ast') {
+                            setAstCode(code);
+                          } else {
+                            setScopeResolverCode(code);
+                          }
+                        }}
+                        highlight={code => Prism.highlight(code, Prism.languages.javascript, 'javascript')}
+                        padding={20}
+                        style={{
+                          fontFamily: '"Fira Code", monospace',
+                          fontSize: 13,
+                          minHeight: '100%',
+                        }}
+                        className="outline-none"
+                      />
+                    )}
                   </div>
 
                   {designerEditorTab === 'grammar' && codeError && (
@@ -4052,294 +4166,33 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       </footer>
 
       {/* Library Modal Overlay */}
-      <AnimatePresence>
-        {showLibrary && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-6"
-            onClick={() => setShowLibrary(false)}
-          >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.9, y: 20 }}
-              className="w-full max-w-2xl bg-slate-900 border border-white/10 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
-                 <div className="flex items-center gap-3">
-                   <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center border border-indigo-500/30">
-                     <FolderOpen className="text-indigo-400 w-5 h-5" />
-                   </div>
-                   <div>
-                     <h2 className="text-xl font-bold text-white tracking-tight leading-none mb-1">Project Library</h2>
-                     <p className="text-xs text-slate-500 font-medium uppercase tracking-widest">Saved Grammar Engines</p>
-                   </div>
-                 </div>
-                 <button 
-                  onClick={() => setShowLibrary(false)}
-                  className="w-8 h-8 rounded-full hover:bg-white/5 flex items-center justify-center text-slate-400 transition-colors"
-                 >
-                   <X className="w-5 h-5" />
-                 </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-3">
-                {savedProjects.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-20 text-slate-600 gap-4 opacity-50">
-                    <Database className="w-12 h-12" />
-                    <p className="text-sm font-medium">No projects saved yet.</p>
-                  </div>
-                ) : (
-                  savedProjects.map((project) => (
-                    <div 
-                      key={project.id}
-                      onClick={() => loadProject(project)}
-                      className="group p-4 bg-white/5 border border-white/10 rounded-2xl hover:border-indigo-500/50 hover:bg-white/[0.08] transition-all cursor-pointer flex items-center justify-between shadow-sm"
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center group-hover:bg-indigo-500/20 group-hover:border-indigo-500/30 transition-all">
-                           <FileCode className="w-6 h-6 text-slate-400 group-hover:text-indigo-400" />
-                        </div>
-                        <div>
-                          <h3 className="text-sm font-bold text-slate-200 mb-0.5 group-hover:text-white transition-colors">{project.name}</h3>
-                          <div className="flex items-center gap-3 text-[10px] text-slate-500 font-medium uppercase tracking-widest">
-                            <span className="flex items-center gap-1"><Terminal className="w-3 h-3" /> {project.grammar.length} chars</span>
-                            <span className="flex items-center gap-1"><Settings className="w-3 h-3" /> {new Date(project.updatedAt).toLocaleDateString()}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={(e) => deleteProject(project.id, e)}
-                        className="p-2 rounded-lg text-slate-600 hover:text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100 transition-all"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div className="p-4 border-t border-white/5 bg-white/[0.01] flex justify-center">
-                 <button 
-                  onClick={newProject}
-                  className="px-6 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-bold uppercase tracking-widest border border-white/10 transition-all flex items-center gap-2"
-                 >
-                   <Plus className="w-4 h-4" /> Start New Project
-                 </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ProjectLibraryModal
+        showLibrary={showLibrary}
+        setShowLibrary={setShowLibrary}
+        savedProjects={savedProjects}
+        loadProject={loadProject}
+        deleteProject={deleteProject}
+        newProject={newProject}
+      />
 
       {/* C# Export Modal */}
-      <AnimatePresence>
-        {showCSharpModal && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-slate-950/85 backdrop-blur-lg flex items-center justify-center p-6"
-            onClick={() => setShowCSharpModal(false)}
-          >
-            <motion.div 
-              initial={{ scale: 0.95, y: 15 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.95, y: 15 }}
-              className="w-full max-w-6xl bg-slate-900 border border-white/10 rounded-3xl shadow-2xl overflow-hidden flex flex-col h-[85vh]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Header */}
-              <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center border border-indigo-500/30">
-                    <Code2 className="text-indigo-400 w-5 h-5" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-white tracking-tight leading-none mb-1">C# Engine Export</h2>
-                    <p className="text-xs text-slate-500 font-medium uppercase tracking-widest font-mono">Compiler Codegen & Export Options</p>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => setShowCSharpModal(false)}
-                  className="w-8 h-8 rounded-full hover:bg-white/5 flex items-center justify-center text-slate-400 hover:text-white transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Main Split Layout */}
-              <div className="flex-1 flex overflow-hidden">
-                {/* Left Drawer: Configuration Panel */}
-                <div className="w-80 border-r border-white/5 bg-black/10 overflow-y-auto p-6 space-y-6 shrink-0">
-                  <div>
-                    <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2 font-mono">Namespace</label>
-                    <input 
-                      type="text" 
-                      value={csNamespace}
-                      onChange={(e) => setCsNamespace(e.target.value.replace(/[^a-zA-Z0-9_.]/g, ''))}
-                      className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 transition-colors font-mono"
-                      placeholder="SyntaxEngine"
-                    />
-                  </div>
-
-                  <div>
-                    <span className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2 font-mono">Export Mode</span>
-                    <div className="grid grid-cols-1 gap-2">
-                      <button 
-                        onClick={() => { setCsExportMode('bundle'); setCsSelectedFileIndex(0); }}
-                        className={cn(
-                          "p-3 rounded-xl border text-left transition-all cursor-pointer",
-                          csExportMode === 'bundle' 
-                            ? "bg-indigo-500/10 border-indigo-500 text-white font-bold ring-1 ring-indigo-500/30" 
-                            : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10 hover:text-slate-200"
-                        )}
-                      >
-                        <div className="text-xs mb-1">Single File Bundle</div>
-                        <div className="text-[10px] text-slate-400 font-normal leading-relaxed">Everything consolidated in a single C# file. Ready for drag-and-drop.</div>
-                      </button>
-
-                      <button 
-                        onClick={() => { setCsExportMode('modular'); setCsSelectedFileIndex(0); }}
-                        className={cn(
-                          "p-3 rounded-xl border text-left transition-all cursor-pointer",
-                          csExportMode === 'modular' 
-                            ? "bg-indigo-500/10 border-indigo-500 text-white font-bold ring-1 ring-indigo-500/30" 
-                            : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10 hover:text-slate-200"
-                        )}
-                      >
-                        <div className="text-xs mb-1">Modular Core & Engine</div>
-                        <div className="text-[10px] text-slate-400 font-normal leading-relaxed">Splits code into Core structures and separate Parser + Nodes files. Ideal for multi-parser projects.</div>
-                      </button>
-                    </div>
-                  </div>
-
-                  {csExportMode === 'modular' && (
-                    <div className="pt-2">
-                      <span className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400 mb-2 font-mono">AST Nodes Style</span>
-                      <div className="grid grid-cols-1 gap-2">
-                        <button 
-                          onClick={() => { setCsAstSeparate(false); setCsSelectedFileIndex(0); }}
-                          className={cn(
-                            "p-3 rounded-xl border text-left transition-all cursor-pointer",
-                            !csAstSeparate 
-                              ? "bg-indigo-500/10 border-indigo-500 text-white font-bold ring-1 ring-indigo-500/30" 
-                              : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10 hover:text-slate-200"
-                          )}
-                        >
-                          <div className="text-xs mb-1">Single AST File</div>
-                          <div className="text-[10px] text-slate-400 font-normal leading-relaxed">Contains all strongly-typed AST node classes in SyntaxEngine.AstNodes.cs.</div>
-                        </button>
-
-                        <button 
-                          onClick={() => { setCsAstSeparate(true); setCsSelectedFileIndex(0); }}
-                          className={cn(
-                            "p-3 rounded-xl border text-left transition-all cursor-pointer",
-                            csAstSeparate 
-                              ? "bg-indigo-500/10 border-indigo-500 text-white font-bold ring-1 ring-indigo-500/30" 
-                              : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10 hover:text-slate-200"
-                          )}
-                        >
-                          <div className="text-xs mb-1">Separate Node Files</div>
-                          <div className="text-[10px] text-slate-400 font-normal leading-relaxed">Generates individual C# file for every AST element (e.g. ProgramNode.cs, StatementNode.cs) sequentially.</div>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="pt-4 border-t border-white/5 space-y-3">
-                    <span className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400 font-mono">Engine Enhancements</span>
-                    <div className="flex items-start gap-2.5 p-3 bg-slate-950/50 rounded-xl border border-white/5 text-[11px] text-slate-400 leading-relaxed font-sans">
-                      <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                      <span><strong>Allman Braces</strong>: Every curly brace resides on a clean newline.</span>
-                    </div>
-                    <div className="flex items-start gap-2.5 p-3 bg-slate-950/50 rounded-xl border border-white/5 text-[11px] text-slate-400 leading-relaxed font-sans">
-                      <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                      <span><strong>Typed Node Enum</strong>: Fast Enum matching avoids slow runtime string routing.</span>
-                    </div>
-                    <div className="flex items-start gap-2.5 p-3 bg-slate-950/50 rounded-xl border border-white/5 text-[11px] text-slate-400 leading-relaxed font-sans">
-                      <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                      <span><strong>String-Free Cache Key</strong>: Hash struct cache lookup bypasses allocations completely!</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right Area: Code Tabs & Content Preview */}
-                <div className="flex-1 flex flex-col overflow-hidden bg-slate-950/40">
-                  {/* File Tabs Bar */}
-                  <div className="flex items-center justify-between border-b border-white/5 px-6 py-2 shrink-0 bg-black/15">
-                    <div className="flex items-center gap-2 overflow-x-auto max-w-[65%] pb-1 pt-1.5 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-white/10">
-                      {csGeneratedFiles.map((file, idx) => (
-                        <button 
-                          key={file.name}
-                          onClick={() => setCsSelectedFileIndex(idx)}
-                          className={cn(
-                            "px-3 py-1.5 rounded-lg text-[11px] font-mono font-medium transition-all flex items-center gap-1.5 shrink-0 border cursor-pointer",
-                            csSelectedFileIndex === idx 
-                              ? "bg-white/10 border-white/10 text-white shadow-md font-bold" 
-                              : "bg-transparent border-transparent text-slate-500 hover:text-slate-300"
-                          )}
-                        >
-                          <FileCode className="w-3.5 h-3.5 text-slate-400" />
-                          {file.name}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      {csGeneratedFiles.length > 1 && (
-                        <button 
-                          onClick={downloadAllFiles}
-                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 hover:shadow-lg hover:shadow-indigo-500/20 text-white text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
-                        >
-                          <Rocket className="w-3.5 h-3.5" /> Download All
-                        </button>
-                      )}
-                      <button 
-                        onClick={() => {
-                          const file = csGeneratedFiles[csSelectedFileIndex];
-                          if (file) {
-                            navigator.clipboard.writeText(file.content);
-                            setCopiedFileIndex(csSelectedFileIndex);
-                            setTimeout(() => setCopiedFileIndex(null), 1500);
-                          }
-                        }}
-                        className="px-3 py-1.5 bg-white/5 border border-white/15 hover:bg-white/10 text-slate-200 hover:text-white text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
-                      >
-                        {copiedFileIndex === csSelectedFileIndex ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                        {copiedFileIndex === csSelectedFileIndex ? 'Copied' : 'Copy'}
-                      </button>
-                      <button 
-                        onClick={() => {
-                          const file = csGeneratedFiles[csSelectedFileIndex];
-                          if (file) downloadSingleFile(file.name, file.content);
-                        }}
-                        className="px-3 py-1.5 bg-white/5 border border-white/15 hover:bg-white/10 text-slate-200 hover:text-white text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <FileCode className="w-3.5 h-3.5 text-indigo-400" /> Download
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Code Viewer Viewport */}
-                  <div className="flex-1 overflow-auto p-6 font-mono text-[11px] text-slate-300 select-text leading-relaxed bg-slate-950/80 custom-scrollbar">
-                    {csGeneratedFiles[csSelectedFileIndex] ? (
-                      <pre className="whitespace-pre overflow-auto font-mono text-[11px] select-all">
-                        <code>{csGeneratedFiles[csSelectedFileIndex].content}</code>
-                      </pre>
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-slate-600">No content available</div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <CSharpExportModal
+        showCSharpModal={showCSharpModal}
+        setShowCSharpModal={setShowCSharpModal}
+        csNamespace={csNamespace}
+        setCsNamespace={setCsNamespace}
+        csExportMode={csExportMode}
+        setCsExportMode={setCsExportMode}
+        csAstSeparate={csAstSeparate}
+        setCsAstSeparate={setCsAstSeparate}
+        csGeneratedFiles={csGeneratedFiles}
+        csSelectedFileIndex={csSelectedFileIndex}
+        setCsSelectedFileIndex={setCsSelectedFileIndex}
+        downloadAllFiles={downloadAllFiles}
+        downloadSingleFile={downloadSingleFile}
+        copiedFileIndex={copiedFileIndex}
+        setCopiedFileIndex={setCopiedFileIndex}
+      />
     </div>
   );
 }

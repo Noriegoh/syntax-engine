@@ -3,7 +3,6 @@
  * Aggregates and re-exports the modular parser components.
  */
 
-export * from './types';
 export * from './syntax-element';
 export * from './spatial-index';
 export * from './query';

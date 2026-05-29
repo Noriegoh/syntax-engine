@@ -2464,7 +2464,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
       let ruleIsStructural = true;
       if (rule.type === 'whitespace') {
         ruleIsStructural = false;
-      } else if ((rule.type === 'element' || rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value instanceof SyntaxElement && rule.value.isHiddenElement) {
+      } else if ((rule.type === 'element' || rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value instanceof SyntaxElement) {
         ruleIsStructural = false;
       }
       const structUpdate = `if (${ruleIsStructural ? 'true' : 'false'} && currentOffset > startOffset_${ruleId})
@@ -3078,19 +3078,17 @@ namespace ${namespaceName}
     public struct GreenNodeKey : IEquatable<GreenNodeKey>
     {
         public NodeType Type { get; }
-        public int RuleId { get; }
         public int Width { get; }
         public object Value { get; }
-        public GreenNodeKey(NodeType type, int ruleId, int width, object value)
+        public GreenNodeKey(NodeType type, int width, object value)
         {
             Type = type;
-            RuleId = ruleId;
             Width = width;
             Value = value;
         }
         public bool Equals(GreenNodeKey other)
         {
-            if (Type != other.Type || RuleId != other.RuleId || Width != other.Width)
+            if (Type != other.Type || Width != other.Width)
             {
                 return false;
             }
@@ -3124,7 +3122,6 @@ namespace ${namespaceName}
             {
                 int hash = 17;
                 hash = hash * 23 + (int)Type;
-                hash = hash * 23 + RuleId;
                 hash = hash * 23 + Width;
                 if (Value is string s)
                 {
@@ -3166,7 +3163,7 @@ namespace ${namespaceName}
         }
         public static GreenNode Create(NodeType type, object value, int ruleId, int width)
         {
-            GreenNodeKey key = new GreenNodeKey(type, ruleId, width, value);
+            GreenNodeKey key = new GreenNodeKey(type, width, value);
             
             lock (_cacheLock)
             {
@@ -3244,6 +3241,11 @@ namespace ${namespaceName}
             Green = green;
             Parent = parent;
             Offset = offset;
+        }
+        public static AstNode CreateTerminal(string text, NodeType type = NodeType.Token)
+        {
+            var green = GreenNode.Create(type, text, 0, text.Length);
+            return new AstNode(green, null, 0);
         }
         public NodeType Type => Green.Type;
         public int RuleId => Green.RuleId;
@@ -3431,7 +3433,12 @@ export function generateStronglyTypedAstClasses(rootElement: SyntaxElement, name
       for (const rule of el.rules) {
         if (rule.type === 'choice') {
           for (const choice of rule.value) {
-            if (choice instanceof SyntaxElement) {
+            if (typeof choice === 'string') {
+              const sanitized = sanitize(choice);
+              if (sanitized && sanitized !== "_") {
+                enumValues.add(sanitized);
+              }
+            } else if (choice instanceof SyntaxElement) {
               const label = choice.rules.length > 0 ? choice.rules[choice.rules.length - 1].label : null;
               if (label) enumValues.add(label);
               else enumValues.add(sanitize(choice.name));

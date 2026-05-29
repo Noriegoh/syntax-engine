@@ -1,4 +1,4 @@
-import { GreenNode, RedNode } from './types';
+import { GreenNode, RedNode } from './syntax-element';
 
 export interface QueryCapture {
   name: string;
