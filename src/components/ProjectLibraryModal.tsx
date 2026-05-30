@@ -10,8 +10,6 @@ interface SavedProject {
   scopeResolver?: string;
   ast?: string;
   updatedAt: number;
-  workspaceFiles?: Record<string, string>;
-  activeFileName?: string;
 }
 
 interface ProjectLibraryModalProps {

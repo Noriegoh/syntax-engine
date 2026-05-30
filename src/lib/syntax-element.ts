@@ -9,6 +9,8 @@ export type RuleType =
   | 'regex' 
   | 'element' 
   | 'not' 
+  | 'assert'
+  | 'separatedBy'
   | 'whitespace' 
   | 'choice' 
   | 'optional' 
@@ -500,6 +502,27 @@ export class SyntaxElement {
     return this;
   }
 
+  SeparatedBy(item: any, separator: any): this {
+    const id = nextRuleId();
+    let unwrappedItem = item;
+    let unwrappedSep = separator;
+    if (item && typeof item === 'object' && '__isTokenMarker' in item) {
+      unwrappedItem = unwrapToken(item);
+    }
+    if (separator && typeof separator === 'object' && '__isTokenMarker' in separator) {
+      unwrappedSep = unwrapToken(separator);
+    }
+    this.rules.push({ id, type: 'separatedBy', value: { item: unwrappedItem, separator: unwrappedSep } });
+    return this;
+  }
+
+  Assert(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    const unwrapped = unwrapToken(pattern);
+    const id = nextRuleId();
+    this.rules.push({ id, type: 'assert', value: unwrapped });
+    return this;
+  }
+
   Token(pattern: string | RegExp | SyntaxElement | ScopeMarker | TokenMarker, leading?: string | RegExp | SyntaxElement, trailing?: string | RegExp | SyntaxElement): this {
     const lead = leading !== undefined ? leading : SyntaxElement.defaultLeadingTrivia;
     const trail = trailing !== undefined ? trailing : SyntaxElement.defaultTrailingTrivia;
@@ -567,6 +590,44 @@ export class SyntaxElement {
     if (visited.has(this.id)) return;
     visited.add(this.id);
 
+    const patternOverlaps = (startPat: any, followPat: any): boolean => {
+      if (!startPat || !followPat) return false;
+      
+      const sp = unwrapToken(startPat);
+      const fp = unwrapToken(followPat);
+      
+      if (typeof sp === 'string' && typeof fp === 'string') {
+        return sp === fp || fp.startsWith(sp) || sp.startsWith(fp);
+      }
+      
+      if (sp instanceof RegExp && typeof fp === 'string') {
+        try {
+          const anchored = new RegExp('^(?:' + sp.source + ')');
+          const m = anchored.exec(fp);
+          return m !== null && m[0].length > 0;
+        } catch (_) {
+          return true;
+        }
+      }
+      
+      if (typeof sp === 'string' && fp instanceof RegExp) {
+        try {
+          const anchored = new RegExp('^(?:' + fp.source + ')');
+          const m = anchored.exec(sp);
+          return m !== null && m[0].length > 0;
+        } catch (_) {
+          return true;
+        }
+      }
+      
+      if (sp instanceof RegExp && fp instanceof RegExp) {
+        if (sp.source === fp.source) return true;
+        return true;
+      }
+      
+      return false;
+    };
+
     // 1. Process all sub-elements first
     for (const rule of this.rules) {
       if (rule.value instanceof SyntaxElement) {
@@ -592,6 +653,16 @@ export class SyntaxElement {
       }
     }
 
+    const someStartPatternOverlaps = (loopElement: SyntaxElement, followPat: any): boolean => {
+      const startingPats = this.collectElementStartPatterns(loopElement, new Set());
+      for (const startPat of startingPats) {
+        if (patternOverlaps(startPat, followPat)) {
+          return true;
+        }
+      }
+      return false;
+    };
+
     // 2. Scan for loops to inject boundaries
     for (let i = 0; i < this.rules.length; i++) {
       const rule = this.rules[i];
@@ -602,10 +673,12 @@ export class SyntaxElement {
           for (const rawPattern of followPatterns) {
             const pattern = unwrapToken(rawPattern);
             if (typeof pattern === 'string' || pattern instanceof RegExp) {
-              const alreadyHasNot = loopChild.rules.some(r => r.type === 'not' && r.value === pattern);
-              if (!alreadyHasNot) {
-                const notRuleId = nextRuleId();
-                loopChild.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+              if (someStartPatternOverlaps(loopChild, pattern)) {
+                const alreadyHasNot = loopChild.rules.some(r => r.type === 'not' && r.value === pattern);
+                if (!alreadyHasNot) {
+                  const notRuleId = nextRuleId();
+                  loopChild.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+                }
               }
             }
           }
@@ -618,10 +691,12 @@ export class SyntaxElement {
             if (typeof pattern === 'string' || pattern instanceof RegExp) {
               for (const choice of rule.value) {
                 if (choice instanceof SyntaxElement) {
-                  const alreadyHasNot = choice.rules.some(r => r.type === 'not' && r.value === pattern);
-                  if (!alreadyHasNot) {
-                    const notRuleId = nextRuleId();
-                    choice.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+                  if (someStartPatternOverlaps(choice, pattern)) {
+                    const alreadyHasNot = choice.rules.some(r => r.type === 'not' && r.value === pattern);
+                    if (!alreadyHasNot) {
+                      const notRuleId = nextRuleId();
+                      choice.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+                    }
                   }
                 }
               }
@@ -970,9 +1045,6 @@ export class SyntaxElement {
     let hasCommitted = false;
     const initialActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
 
-    let lastStructuralOffset = offset;
-    let lastStructuralResultsCount = 0;
-
     for (const rule of this.rules) {
       if (panicked) break;
 
@@ -1037,6 +1109,14 @@ export class SyntaxElement {
           res = this.evaluateNotRule(rule, text, currentOffset, memo, ctx);
           break;
 
+        case 'assert':
+          res = this.evaluateAssertRule(rule, text, currentOffset, memo, ctx);
+          break;
+
+        case 'separatedBy':
+          res = this.evaluateSeparatedByRule(rule, text, currentOffset, memo, ctx, results);
+          break;
+
         default:
           res = { success: false, newOffset: currentOffset, dependencyLimit: currentOffset + 1, error: `Unknown rule type: ${rule.type}` };
           break;
@@ -1048,11 +1128,6 @@ export class SyntaxElement {
         currentOffset = res.newOffset;
         if (ruleIsStructural && (res.hasCommittedUpdate || currentOffset > startOffset)) {
           hasCommitted = true;
-        }
-
-        if (ruleIsStructural && currentOffset > startOffset) {
-          lastStructuralOffset = currentOffset;
-          lastStructuralResultsCount = results.length;
         }
       } else {
         if (res.panicked) {
@@ -1066,14 +1141,10 @@ export class SyntaxElement {
           ctx.activeScopeEnds.length = initialActiveScopeEndsLength;
         }
 
-        const startOffsetForFailure = ruleIsStructural && lastStructuralOffset < currentOffset ? lastStructuralOffset : currentOffset;
-        const rec = this.handleFailure(text, startOffsetForFailure, rule.id, res.error || "Match failed", memo, ctx, hasCommitted, localMaxOffset);
+        const rec = this.handleFailure(text, currentOffset, rule.id, res.error || "Match failed", memo, ctx, hasCommitted, localMaxOffset);
         localMaxOffset = Math.max(localMaxOffset, rec.dependencyLimit);
 
         if (rec.action === 'break') {
-          if (startOffsetForFailure < currentOffset) {
-            results.length = lastStructuralResultsCount;
-          }
           results.push(rec.res.node);
           currentOffset = rec.res.newOffset;
           panicked = true;
@@ -1500,6 +1571,96 @@ export class SyntaxElement {
       return { success: false, newOffset: currentOffset, dependencyLimit: res.dependencyLimit, error: "Encountered forbidden pattern" };
     }
     return { success: true, newOffset: currentOffset, dependencyLimit: res.dependencyLimit };
+  }
+
+  private evaluateAssertRule(
+    rule: Rule,
+    text: string,
+    currentOffset: number,
+    memo: Map<string, ParseResult>,
+    ctx: any
+  ) {
+    let scanOffset = currentOffset;
+    if (SyntaxElement.defaultLeadingTrivia) {
+      const skipRes = this.parsePattern(SyntaxElement.defaultLeadingTrivia, text, scanOffset, memo, rule.id, ctx);
+      if (skipRes.success) {
+        scanOffset = skipRes.newOffset;
+      }
+    } else {
+      while (scanOffset < text.length && /\s/.test(text[scanOffset])) {
+        scanOffset++;
+      }
+    }
+    const res = this.parsePattern(rule.value, text, scanOffset, memo, rule.id, ctx);
+    if (res.success) {
+      return { success: true, newOffset: currentOffset, dependencyLimit: res.dependencyLimit };
+    }
+    return { success: false, newOffset: currentOffset, dependencyLimit: res.dependencyLimit, error: "Assertion failed" };
+  }
+
+  private evaluateSeparatedByRule(
+    rule: Rule,
+    text: string,
+    currentOffset: number,
+    memo: Map<string, ParseResult>,
+    ctx: any,
+    results: any[]
+  ) {
+    const { item, separator } = rule.value;
+    const matches = [];
+    const loopStartOffset = currentOffset;
+    let localMaxOffset = currentOffset;
+
+    // Parse first item
+    const res1 = this.parsePattern(item, text, currentOffset, memo, rule.id, ctx);
+    localMaxOffset = Math.max(localMaxOffset, res1.dependencyLimit);
+    if (!res1.success) {
+      return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: "Expected first item in separated list" };
+    }
+
+    if (res1.value && (res1.value.width > 0 || res1.value.type === 'eof')) {
+      matches.push(res1.value);
+    }
+    currentOffset = res1.newOffset;
+
+    // Loop for (separator item)*
+    while (currentOffset < text.length) {
+      const beforeSepOffset = currentOffset;
+      const beforeSepErrorsLength = ctx.recoveredErrors.length;
+
+      // Parse separator
+      const resSep = this.parsePattern(separator, text, currentOffset, memo, rule.id, ctx);
+      localMaxOffset = Math.max(localMaxOffset, resSep.dependencyLimit);
+      if (!resSep.success) {
+        ctx.recoveredErrors.length = beforeSepErrorsLength;
+        break;
+      }
+
+      // Parse subsequent item
+      const resItem = this.parsePattern(item, text, resSep.newOffset, memo, rule.id, ctx);
+      localMaxOffset = Math.max(localMaxOffset, resItem.dependencyLimit);
+      if (!resItem.success) {
+        ctx.recoveredErrors.length = beforeSepErrorsLength;
+        break;
+      }
+
+      // Succeeded matching both!
+      if (resSep.value && (resSep.value.width > 0 || resSep.value.type === 'eof')) {
+        matches.push(resSep.value);
+      }
+      if (resItem.value && (resItem.value.width > 0 || resItem.value.type === 'eof')) {
+        matches.push(resItem.value);
+      }
+      currentOffset = resItem.newOffset;
+    }
+
+    if (matches.length > 0) {
+      const loopWidth = currentOffset - loopStartOffset;
+      if (loopWidth > 0) {
+        results.push(GreenNode.create('zeroOrMore', matches, rule.id, loopWidth));
+      }
+    }
+    return { success: true, newOffset: currentOffset, dependencyLimit: localMaxOffset };
   }
 
   private attemptRecovery(

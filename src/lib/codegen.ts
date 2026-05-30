@@ -350,6 +350,115 @@ export function generateDFACSharpMethod(methodName: string, regex: RegExp, ruleI
         }
       }
     }
+
+    // ==========================================
+    // DFA STATE MINIMIZATION (MOORE'S ALGORITHM)
+    // ==========================================
+    // This optimization refactors the DFA to identify and merge identical/equivalent states.
+    // Equivalent states are those that:
+    // 1. Share the same acceptance capability (both accepting or both non-accepting).
+    // 2. For all possible character intervals, transition to states that are also equivalent.
+    // By partitioning states iteratively until stable and rebuilding the DFA, we significantly
+    // reduce the number of switch-case branches in the compiled C# code, optimizing file size and performance.
+
+    let partition: DFAState[][] = [];
+    const nonAccepting = dfaStates.filter(s => !s.isAccepting);
+    const accepting = dfaStates.filter(s => s.isAccepting);
+    if (nonAccepting.length > 0) partition.push(nonAccepting);
+    if (accepting.length > 0) partition.push(accepting);
+
+    const stateToGroupId = new Map<number, number>();
+    function updateGroupIds() {
+      stateToGroupId.clear();
+      for (let gId = 0; gId < partition.length; gId++) {
+        for (const state of partition[gId]) {
+          stateToGroupId.set(state.id, gId);
+        }
+      }
+    }
+    updateGroupIds();
+
+    let partitionChanged = true;
+    while (partitionChanged) {
+      partitionChanged = false;
+      const newPartition: DFAState[][] = [];
+      for (const group of partition) {
+        if (group.length <= 1) {
+          newPartition.push(group);
+          continue;
+        }
+
+        // Group states within the division by their transition signature.
+        // A state's signature maps each character interval to the target state's partition group ID.
+        const sigMap = new Map<string, DFAState[]>();
+        for (const s of group) {
+          const sig = Array.from({ length: intervals.length }, (_, idx) => {
+            const target = s.transitions.get(idx);
+            return target ? stateToGroupId.get(target.id)! : -1;
+          }).join(',');
+
+          if (!sigMap.has(sig)) {
+            sigMap.set(sig, []);
+          }
+          sigMap.get(sig)!.push(s);
+        }
+
+        if (sigMap.size > 1) {
+          partitionChanged = true;
+        }
+        for (const subset of sigMap.values()) {
+          newPartition.push(subset);
+        }
+      }
+      partition = newPartition;
+      updateGroupIds();
+    }
+
+    // Identify the partition group containing the starting state (original ID 0)
+    // and move it to index 0 of the partition. This ensures the minimized start state is always 0.
+    const startGroupIdx = partition.findIndex(group => group.some(s => s.id === 0));
+    if (startGroupIdx !== -1 && startGroupIdx !== 0) {
+      const [startGroup] = partition.splice(startGroupIdx, 1);
+      partition.unshift(startGroup);
+    }
+
+    // Establish a mapping from original DFAState ID to the new minimized state ID.
+    const originalIdToMinId = new Map<number, number>();
+    for (let minId = 0; minId < partition.length; minId++) {
+      for (const s of partition[minId]) {
+        originalIdToMinId.set(s.id, minId);
+      }
+    }
+
+    // Reconstruct the minimized DFAState objects.
+    const minDFAStates: DFAState[] = [];
+    for (let minId = 0; minId < partition.length; minId++) {
+      const rep = partition[minId][0];
+      const combinedNFAStates = new Set<NState>();
+      for (const s of partition[minId]) {
+        for (const ns of s.nfaStates) {
+          combinedNFAStates.add(ns);
+        }
+      }
+      const minState = new DFAState(minId, combinedNFAStates);
+      // Explicitly set isAccepting in case of empty internal NFA states list differences
+      minState.isAccepting = rep.isAccepting;
+      minDFAStates.push(minState);
+    }
+
+    // Link transitions between minimized states.
+    for (let minId = 0; minId < partition.length; minId++) {
+      const minState = minDFAStates[minId];
+      const rep = partition[minId][0];
+      for (const [intervalIdx, targetState] of rep.transitions.entries()) {
+        const targetMinId = originalIdToMinId.get(targetState.id)!;
+        minState.transitions.set(intervalIdx, minDFAStates[targetMinId]);
+      }
+    }
+
+    // Replace the original, verbose dfaStates array with our newly optimized, minimized set.
+    dfaStates.length = 0;
+    dfaStates.push(...minDFAStates);
     
     const acceptingCases: string[] = [];
     for (const dState of dfaStates) {
@@ -566,10 +675,18 @@ function collectElements(root: SyntaxElement): SyntaxElement[] {
         rule.type === 'oneOrMore' ||
         rule.type === 'not' ||
         rule.type === 'beginScope' ||
-        rule.type === 'endScope'
+        rule.type === 'endScope' ||
+        rule.type === 'assert'
       ) {
         if (rule.value instanceof SyntaxElement) {
           visit(rule.value);
+        }
+      } else if (rule.type === 'separatedBy' && rule.value) {
+        if (rule.value.item instanceof SyntaxElement) {
+          visit(rule.value.item);
+        }
+        if (rule.value.separator instanceof SyntaxElement) {
+          visit(rule.value.separator);
         }
       }
     }
@@ -2402,10 +2519,18 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         rule.type === 'oneOrMore' ||
         rule.type === 'not' ||
         rule.type === 'beginScope' ||
-        rule.type === 'endScope'
+        rule.type === 'endScope' ||
+        rule.type === 'assert'
       ) {
         if (rule.value instanceof RegExp) {
           registerPattern(rule.value, ruleId, 'Spec');
+        }
+      } else if (rule.type === 'separatedBy' && rule.value) {
+        if (rule.value.item instanceof RegExp) {
+          registerPattern(rule.value.item, ruleId, 'Spec');
+        }
+        if (rule.value.separator instanceof RegExp) {
+          registerPattern(rule.value.separator, ruleId, 'Spec');
         }
       }
     }
@@ -2469,16 +2594,13 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         rule.type === 'optional' ||
         rule.type === 'zeroOrMore' ||
         rule.type === 'zeroOrMoreOneOf' ||
-        rule.type === 'not'
+        rule.type === 'not' ||
+        rule.type === 'assert'
       ) {
         ruleIsStructural = false;
       }
-      const structUpdate = `if (${ruleIsStructural ? 'true' : 'false'} && currentOffset > startOffset_${ruleId})
-                    {
-                        lastStructuralOffset = currentOffset;
-                        lastStructuralResultsCount = results.Count;
-                    }`;
-      const startOffsetForFailure = `(${ruleIsStructural ? 'true' : 'false'} && lastStructuralOffset < currentOffset ? lastStructuralOffset : currentOffset)`;
+      const structUpdate = ``;
+      const startOffsetForFailure = `currentOffset`;
       if (rule.type === 'literal') {
         const esc = escapeString(rule.value);
         return `
@@ -2981,6 +3103,163 @@ ${choiceChecks.join("\n")}
                 else
                 {
                     ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
+                }
+            }`;
+      }
+      if (rule.type === 'assert') {
+        const sId = nextSpecId();
+        const escErrorsVar = `assertErrors_${ruleId}`;
+        let specificDfaName: string | undefined;
+        if (rule.value instanceof RegExp) {
+          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+        }
+        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
+
+        let triviaSkipCode = "";
+        if (SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement) {
+          const triviaName = sanitize(SyntaxElement.defaultLeadingTrivia.name);
+          childElements.add(triviaName);
+          triviaSkipCode = `
+                var skipRes_${ruleId} = Parse${triviaName}(text, scanOffset_${ruleId}, memo, ctx);
+                if (skipRes_${ruleId}.Success)
+                {
+                    scanOffset_${ruleId} = skipRes_${ruleId}.NewOffset;
+                }`;
+        } else if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
+          const dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
+          triviaSkipCode = `
+                if (${dfaName}(text, scanOffset_${ruleId}, out var matchedVal_${ruleId}))
+                {
+                    scanOffset_${ruleId} += matchedVal_${ruleId}.Length;
+                }`;
+        } else if (typeof SyntaxElement.defaultLeadingTrivia === 'string') {
+          const escTrivia = escapeString(SyntaxElement.defaultLeadingTrivia);
+          triviaSkipCode = `
+                const string litTrivia_${ruleId} = "${escTrivia}";
+                if (ctx.MatchLiteral(text, scanOffset_${ruleId}, litTrivia_${ruleId}, ${SyntaxElement.defaultLeadingTrivia.length}))
+                {
+                    scanOffset_${ruleId} += ${SyntaxElement.defaultLeadingTrivia.length};
+                }`;
+        } else {
+          triviaSkipCode = `
+                while (scanOffset_${ruleId} < text.Length && char.IsWhiteSpace(text[scanOffset_${ruleId}]))
+                {
+                    scanOffset_${ruleId}++;
+                }`;
+        }
+
+        return `
+            // Assert Lookahead Rule (id: ${ruleId})
+            if (!panicked)
+            {
+                int ${escErrorsVar} = ctx.RecoveredErrors.Count;
+                int backupOffset_${ruleId} = currentOffset;
+                int scanOffset_${ruleId} = currentOffset;
+                // ----- SKIP TRIVIA START -----
+                ${triviaSkipCode.trim()}
+                // ----- SKIP TRIVIA END -----
+                currentOffset = scanOffset_${ruleId};
+                ${spec.code.trim()}
+                currentOffset = backupOffset_${ruleId};
+                if (!${spec.matchedName})
+                {
+                    ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Assertion failed: expected positive lookahead pattern", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes;
+                }
+                else
+                {
+                    ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
+                }
+            }`;
+      }
+      if (rule.type === 'separatedBy') {
+        const { item, separator } = rule.value;
+        const sIdItem = nextSpecId();
+        const sIdSep = nextSpecId();
+        const escErrorsVar = `listErrors_${ruleId}`;
+
+        let itemDfaName: string | undefined;
+        if (item instanceof RegExp) {
+          itemDfaName = getOrCreateDfaMethod(item, 'Spec', ruleId);
+        }
+        let sepDfaName: string | undefined;
+        if (separator instanceof RegExp) {
+          sepDfaName = getOrCreateDfaMethod(separator, 'Spec', ruleId);
+        }
+
+        const specItem = compileSpeculativeMatch(item, ruleId, sIdItem, childElements, itemDfaName);
+        const specSep = compileSpeculativeMatch(separator, ruleId, sIdSep, childElements, sepDfaName);
+
+        return `
+            // Separated By List Rule (id: ${ruleId})
+            if (!panicked)
+            {
+                int startOffset_${ruleId} = currentOffset;
+                var listResults = new List<GreenNode>();
+                
+                int ${escErrorsVar}_first = ctx.RecoveredErrors.Count;
+                ${specItem.code.trim()}
+                if (${specItem.matchedName})
+                {
+                    if (${specItem.parsedAstName} != null && (${specItem.parsedAstName}.Width > 0 || ${specItem.parsedAstName}.Type == NodeType.Eof))
+                    {
+                        listResults.Add(${specItem.parsedAstName});
+                    }
+                    currentOffset = ${specItem.newOffsetName};
+                    ${structUpdate}
+
+                    while (currentOffset < text.Length)
+                    {
+                        int beforeSepOffset = currentOffset;
+                        int ${escErrorsVar}_sep = ctx.RecoveredErrors.Count;
+
+                        ${specSep.code.trim()}
+                        if (${specSep.matchedName})
+                        {
+                            int postSepOffset = ${specSep.newOffsetName};
+                            int ${escErrorsVar}_item = ctx.RecoveredErrors.Count;
+
+                            int orig_currentOffset = currentOffset;
+                            currentOffset = postSepOffset;
+                            ${specItem.code.trim()}
+                            currentOffset = orig_currentOffset;
+
+                            if (${specItem.matchedName})
+                            {
+                                if (${specSep.parsedAstName} != null && (${specSep.parsedAstName}.Width > 0 || ${specSep.parsedAstName}.Type == NodeType.Eof))
+                                {
+                                    listResults.Add(${specSep.parsedAstName});
+                                }
+                                if (${specItem.parsedAstName} != null && (${specItem.parsedAstName}.Width > 0 || ${specItem.parsedAstName}.Type == NodeType.Eof))
+                                {
+                                    listResults.Add(${specItem.parsedAstName});
+                                }
+                                currentOffset = ${specItem.newOffsetName};
+                            }
+                            else
+                            {
+                                ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_sep, ctx.RecoveredErrors.Count - ${escErrorsVar}_sep);
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_sep, ctx.RecoveredErrors.Count - ${escErrorsVar}_sep);
+                            break;
+                        }
+                    }
+
+                    if (listResults.Count > 0)
+                    {
+                        results.Add(GreenNode.Create(NodeType.ZeroOrMore, listResults, ${ruleId}, currentOffset - startOffset_${ruleId}));
+                    }
+                }
+                else
+                {
+                    ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_first, ctx.RecoveredErrors.Count - ${escErrorsVar}_first);
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected first item in separated list", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes;
                 }
             }`;
       }
@@ -3550,10 +3829,6 @@ ${parserMethods}
                     string msg = $"Syntax Error in parser: {errorMsg} at offset {failStartOffset}. Skipped \\\"{snippet}\\\" to sync.";
                     ctx.RecoveredErrors.Add(new ParseError { Message = msg, Offset = failStartOffset });
                     var errNode = GreenNode.Create(NodeType.ErrorNode, msg, 0, bestRecoveryOffset - failStartOffset);
-                    if (truncateResultsCount >= 0 && truncateResultsCount < results.Count)
-                    {
-                        results.RemoveRange(truncateResultsCount, results.Count - truncateResultsCount);
-                    }
                     results.Add(errNode);
                     currentOffsetRef = bestRecoveryOffset;
                     panicked = true;
@@ -3629,12 +3904,13 @@ ${enumsCode}${elements.map(el => {
         let isList = false;
         
         // Determine type based on rule content
-        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
+        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy') {
           isList = true;
-          if (rule.value instanceof SyntaxElement) {
-            csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
-          } else if (Array.isArray(rule.value)) {
-            const elNames = rule.value.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
+          const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
+          if (leafValue instanceof SyntaxElement) {
+            csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+          } else if (Array.isArray(leafValue)) {
+            const elNames = leafValue.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
             if (elNames.length > 0) {
               const uniqueNames = Array.from(new Set(elNames));
               if (uniqueNames.length === 1) {
@@ -3646,9 +3922,10 @@ ${enumsCode}${elements.map(el => {
               csharpType = "AstNode";
             }
           }
-        } else if (rule.type === 'element' || rule.type === 'optional') {
-          if (rule.value instanceof SyntaxElement) {
-            csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
+        } else if (rule.type === 'element' || rule.type === 'optional' || rule.type === 'assert') {
+          const leafValue = rule.type === 'assert' ? rule.value : rule.value;
+          if (leafValue instanceof SyntaxElement) {
+            csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
           }
         } else if (rule.type === 'choice') {
           csharpType = "AstNode"; // General fallback
@@ -3699,7 +3976,8 @@ ${enumsCode}${elements.map(el => {
           rule.type === 'oneOrMore' ||
           rule.type === 'zeroOrMoreOneOf' ||
           rule.type === 'oneOrMoreOneOf' ||
-          rule.type === 'not'
+          rule.type === 'not' ||
+          rule.type === 'assert'
         ) {
           if (rule.value instanceof SyntaxElement) {
             childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
@@ -3709,6 +3987,13 @@ ${enumsCode}${elements.map(el => {
                 childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
               }
             }
+          }
+        } else if (rule.type === 'separatedBy' && rule.value) {
+          if (rule.value.item instanceof SyntaxElement) {
+            childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
+          }
+          if (rule.value.separator instanceof SyntaxElement) {
+            childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
           }
         }
       }
@@ -3808,12 +4093,13 @@ export function generateModularCSharp(
           let csharpType = "AstNode";
           let isList = false;
           
-          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
+          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy') {
             isList = true;
-            if (rule.value instanceof SyntaxElement) {
-              csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
-            } else if (Array.isArray(rule.value)) {
-              const elNames = rule.value.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
+            const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
+            if (leafValue instanceof SyntaxElement) {
+              csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+            } else if (Array.isArray(leafValue)) {
+              const elNames = leafValue.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
               if (elNames.length > 0) {
                 const uniqueNames = Array.from(new Set(elNames));
                 if (uniqueNames.length === 1) {
@@ -3825,9 +4111,10 @@ export function generateModularCSharp(
                 csharpType = "AstNode";
               }
             }
-          } else if (rule.type === 'element' || rule.type === 'optional') {
-            if (rule.value instanceof SyntaxElement) {
-              csharpType = (rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name)) + "Node";
+          } else if (rule.type === 'element' || rule.type === 'optional' || rule.type === 'assert') {
+            const leafValue = rule.type === 'assert' ? rule.value : rule.value;
+            if (leafValue instanceof SyntaxElement) {
+              csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
             }
           } else if (rule.type === 'choice') {
             csharpType = "AstNode";
@@ -3878,7 +4165,8 @@ export function generateModularCSharp(
             rule.type === 'oneOrMore' ||
             rule.type === 'zeroOrMoreOneOf' ||
             rule.type === 'oneOrMoreOneOf' ||
-            rule.type === 'not'
+            rule.type === 'not' ||
+            rule.type === 'assert'
           ) {
             if (rule.value instanceof SyntaxElement) {
               childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
@@ -3888,6 +4176,13 @@ export function generateModularCSharp(
                   childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
                 }
               }
+            }
+          } else if (rule.type === 'separatedBy' && rule.value) {
+            if (rule.value.item instanceof SyntaxElement) {
+              childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
+            }
+            if (rule.value.separator instanceof SyntaxElement) {
+              childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
             }
           }
         }

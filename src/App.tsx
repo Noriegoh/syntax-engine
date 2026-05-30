@@ -55,6 +55,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ParserProfiler } from './components/ParserProfiler';
 import { ProjectLibraryModal } from './components/ProjectLibraryModal';
 import { CSharpExportModal } from './components/CSharpExportModal';
+const workbenchLogo = new URL('./assets/images/workbench_logo_1780160579859.png', import.meta.url).href;
 
 const SyntaxEngineLogo = ({ className }: { className?: string }) => (
   <svg viewBox="0 0 24 24" fill="none" className={className} xmlns="http://www.w3.org/2000/svg">
@@ -65,6 +66,7 @@ const SyntaxEngineLogo = ({ className }: { className?: string }) => (
     <circle cx="17" cy="16" r="2.5" fill="currentColor"/>
   </svg>
 );
+
 
 const STYLE_PLAIN_ID = 0;
 const STYLE_COMMENT_ID = 1;
@@ -165,8 +167,6 @@ interface SavedProject {
   scopeResolver?: string;
   ast?: string;
   updatedAt: number;
-  workspaceFiles?: Record<string, string>;
-  activeFileName?: string;
 }
 
 const DEFAULT_CODE = `/* 
@@ -265,7 +265,7 @@ const hlslBlock = new SyntaxElement("hlsl_block")
 // --- SHADERLAB ---
 const propAttr = new SyntaxElement("prop_attr").Token("[").Expects(id).Token("]");
 const propType = Token(new SyntaxElement("prop_type").ExpectsOneOf("Color", "2D", "Rect", "Cube", "Float", "Int", "Range", "Vector"));
-const propTypeArgs = new SyntaxElement("prop_type_args").Token("(").Optional(/[^)]*/).Token(")");
+const propTypeArgs = new SyntaxElement("prop_type_args").Token(BeginScope("(")).Optional(/[^)]*/).Token(EndScope(")"));
 const propValue = new SyntaxElement("prop_value").ExpectsOneOf(string, number, new SyntaxElement("tuple").Token("(").Optional(/[^)]*/).Token(")"), id);
 
 const propBlock = new SyntaxElement("prop_block").Token(BeginScope("{")).Token(EndScope("}"));
@@ -525,129 +525,57 @@ export default function App() {
       }
     }
   };
-  const [workspaceFiles, setWorkspaceFiles] = useState<Record<string, string>>(() => {
-    return {
-      "main.hlsl": [
-        "Shader \"Custom/MyAwesomeShader\" {",
-        "    Properties {",
-        "        _Color (\"Main Color\", Color) = (1,1,1,1)",
-        "        _MainTex (\"Texture\", 2D) = \"white\" {}",
-        "        [HDR] _Emission (\"Emission\", Color) = (0,0,0,1)",
-        "    }",
-        "    SubShader {",
-        "        Tags { \"RenderType\"=\"Opaque\" \"Queue\"=\"Geometry\" }",
-        "        LOD 100",
-        "        ",
-        "        Pass {",
-        "            ZWrite On",
-        "            Blend SrcAlpha OneMinusSrcAlpha",
-        "            Cull Back",
-        "",
-        "            CGPROGRAM",
-        "            #pragma vertex vert",
-        "            #pragma fragment frag",
-        "            #include \"UnityCG.cginc\"",
-        "",
-        "            struct appdata {",
-        "                float4 vertex : POSITION;",
-        "                float2 uv : TEXCOORD0;",
-        "            };",
-        "",
-        "            struct v2f {",
-        "                float2 uv : TEXCOORD0;",
-        "                float4 vertex : SV_POSITION;",
-        "            };",
-        "",
-        "            sampler2D _MainTex;",
-        "            float4 _Color;",
-        "",
-        "            v2f vert (appdata v) {",
-        "                v2f o;",
-        "                o.vertex = UnityObjectToClipPos(v.vertex);",
-        "                o.uv = v.uv;",
-        "                return o;",
-        "            }",
-        "",
-        "            fixed4 frag (v2f i) : SV_Target {",
-        "                fixed4 col = tex2D(_MainTex, i.uv) * _Color;",
-        "                return col;",
-        "            }",
-        "            ENDCG",
-        "        }",
-        "    }",
-        "}"
-      ].join("\n"),
-      "UnityCG.cginc": [
-        "// UnityCG.cginc - Common Unity Shader Helper Functions",
-        "",
-        "float4 UnityObjectToClipPos(float4 pos) {",
-        "    // Model-view-projection transform helper",
-        "    return mul(UNITY_MATRIX_MVP, pos);",
-        "}",
-        "",
-        "fixed4 tex2D(sampler2D s, float2 uv) {",
-        "    // Texture lookup helper",
-        "    return fixed4(1, 1, 1, 1);",
-        "}"
-      ].join("\n")
-    };
-  });
-  const [activeFileName, setActiveFileName] = useState<string>("main.hlsl");
-
   const [testInput, setTestInput] = useState<string>(() => {
-    const initialFiles = {
-      "main.hlsl": [
-        "Shader \"Custom/MyAwesomeShader\" {",
-        "    Properties {",
-        "        _Color (\"Main Color\", Color) = (1,1,1,1)",
-        "        _MainTex (\"Texture\", 2D) = \"white\" {}",
-        "        [HDR] _Emission (\"Emission\", Color) = (0,0,0,1)",
-        "    }",
-        "    SubShader {",
-        "        Tags { \"RenderType\"=\"Opaque\" \"Queue\"=\"Geometry\" }",
-        "        LOD 100",
-        "        ",
-        "        Pass {",
-        "            ZWrite On",
-        "            Blend SrcAlpha OneMinusSrcAlpha",
-        "            Cull Back",
-        "",
-        "            CGPROGRAM",
-        "            #pragma vertex vert",
-        "            #pragma fragment frag",
-        "            #include \"UnityCG.cginc\"",
-        "",
-        "            struct appdata {",
-        "                float4 vertex : POSITION;",
-        "                float2 uv : TEXCOORD0;",
-        "            };",
-        "",
-        "            struct v2f {",
-        "                float2 uv : TEXCOORD0;",
-        "                float4 vertex : SV_POSITION;",
-        "            };",
-        "",
-        "            sampler2D _MainTex;",
-        "            float4 _Color;",
-        "",
-        "            v2f vert (appdata v) {",
-        "                v2f o;",
-        "                o.vertex = UnityObjectToClipPos(v.vertex);",
-        "                o.uv = v.uv;",
-        "                return o;",
-        "            }",
-        "",
-        "            fixed4 frag (v2f i) : SV_Target {",
-        "                fixed4 col = tex2D(_MainTex, i.uv) * _Color;",
-        "                return col;",
-        "            }",
-        "            ENDCG",
-        "        }",
-        "    }",
-        "}"
-      ].join("\n")
-    };
-    return initialFiles["main.hlsl"];
+    return [
+      "Shader \"Custom/MyAwesomeShader\" {",
+      "    Properties {",
+      "        _Color (\"Main Color\", Color) = (1,1,1,1)",
+      "        _MainTex (\"Texture\", 2D) = \"white\" {}",
+      "        [HDR] _Emission (\"Emission\", Color) = (0,0,0,1)",
+      "    }",
+      "    SubShader {",
+      "        Tags { \"RenderType\"=\"Opaque\" \"Queue\"=\"Geometry\" }",
+      "        LOD 100",
+      "        ",
+      "        Pass {",
+      "            ZWrite On",
+      "            Blend SrcAlpha OneMinusSrcAlpha",
+      "            Cull Back",
+      "",
+      "            CGPROGRAM",
+      "            #pragma vertex vert",
+      "            #pragma fragment frag",
+      "            #include \"UnityCG.cginc\"",
+      "",
+      "            struct appdata {",
+      "                float4 vertex : POSITION;",
+      "                float2 uv : TEXCOORD0;",
+      "            };",
+      "",
+      "            struct v2f {",
+      "                float2 uv : TEXCOORD0;",
+      "                float4 vertex : SV_POSITION;",
+      "            };",
+      "",
+      "            sampler2D _MainTex;",
+      "            float4 _Color;",
+      "",
+      "            v2f vert (appdata v) {",
+      "                v2f o;",
+      "                o.vertex = UnityObjectToClipPos(v.vertex);",
+      "                o.uv = v.uv;",
+      "                return o;",
+      "            }",
+      "",
+      "            fixed4 frag (v2f i) : SV_Target {",
+      "                fixed4 col = tex2D(_MainTex, i.uv) * _Color;",
+      "                return col;",
+      "            }",
+      "            ENDCG",
+      "        }",
+      "    }",
+      "}"
+    ].join("\n");
   });
 
   // Debounced input states to reduce keystroke latency
@@ -796,132 +724,15 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
     return includes;
   };
 
-  const backgroundAstCacheRef = useRef<Record<string, { content: string; rootElement: any; debouncedAstCode: string; ast: any }>>({});
-
-  // Build ASTs for all workspace files. Reuses the active file's compile result directly
-  const computedWorkspaceASTs = useMemo(() => {
-    const asts: Record<string, any> = {};
-    if (!rootElement) return asts;
-    
-    for (const [filename, content] of Object.entries(workspaceFiles)) {
-      if (filename === activeFileName) {
-        asts[filename] = astResult;
-        continue;
-      }
-      
-      const cached = backgroundAstCacheRef.current[filename];
-      if (
-        cached && 
-        cached.content === content && 
-        cached.rootElement === rootElement && 
-        cached.debouncedAstCode === debouncedAstCode
-      ) {
-        asts[filename] = cached.ast;
-        continue;
-      }
-      
-      const context = {
-        cacheHits: 0,
-        cacheMisses: 0,
-        maxError: null as any,
-        expectedPaths: [] as string[],
-        recoveredErrors: [] as { message: string; offset: number }[]
-      };
-      
-      try {
-        const result = rootElement.parse(content, 0, new Map(), context);
-        if (result && !result.error) {
-          let ast = result.ast;
-          if (debouncedAstCode && debouncedAstCode.trim()) {
-            const wrappedBody = wrapASTTransformerWithIncrementalCache(debouncedAstCode);
-            const customTransform = new Function('cst', 'fullText', wrappedBody);
-            ast = customTransform(result.ast, content) || result.ast;
-          }
-          asts[filename] = ast;
-          
-          backgroundAstCacheRef.current[filename] = {
-            content,
-            rootElement,
-            debouncedAstCode,
-            ast
-          };
-        } else {
-          asts[filename] = null;
-        }
-      } catch (e) {
-        console.error(`Error parsing background file ${filename}:`, e);
-        asts[filename] = null;
-      }
-    }
-    return asts;
-  }, [workspaceFiles, activeFileName, astResult, rootElement, debouncedAstCode]);
-
   const [resolverErrorMsg, setResolverErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     setScopeError(resolverErrorMsg);
   }, [resolverErrorMsg]);
 
-  const backgroundScopesCacheRef = useRef<Record<string, { ast: any; content: string; debouncedScopeResolverCode: string; scope: LexicalScope }>>({});
-
-  // Build local scopes and resolve cross-file references on top of workspace ASTs
-  const resolvedWorkspaceScopes = useMemo(() => {
-    const scopes: Record<string, LexicalScope> = {};
-    if (!debouncedScopeResolverCode || !rootElement) return scopes;
-
-    const cloneLexicalScope = (scope: LexicalScope): LexicalScope => {
-      const cloned: LexicalScope = {
-        id: scope.id,
-        name: scope.name,
-        type: scope.type,
-        start: scope.start,
-        end: scope.end,
-        node: scope.node,
-        parentId: scope.parentId,
-        fileName: scope.fileName,
-        children: [],
-        symbols: [],
-        references: []
-      };
-
-      if (scope.symbols) {
-        cloned.symbols = scope.symbols.map(sym => ({
-          id: sym.id,
-          name: sym.name,
-          kind: sym.kind,
-          datatype: sym.datatype,
-          start: sym.start,
-          end: sym.end,
-          node: sym.node,
-          scopeId: sym.scopeId,
-          fileName: sym.fileName,
-          references: []
-        }));
-      }
-
-      if (scope.references) {
-        cloned.references = scope.references.map(ref => ({
-          id: ref.id,
-          name: ref.name,
-          start: ref.start,
-          end: ref.end,
-          node: ref.node,
-          scopeId: ref.scopeId,
-          resolvedSymbolId: ref.resolvedSymbolId,
-          fileName: ref.fileName
-        }));
-      }
-
-      if (scope.children) {
-        cloned.children = scope.children.map(child => {
-          const clonedChild = cloneLexicalScope(child);
-          clonedChild.parentId = cloned.id;
-          return clonedChild;
-        });
-      }
-
-      return cloned;
-    };
+  // Build local scopes and resolve single-document references
+  const scopeChain = useMemo(() => {
+    if (!debouncedScopeResolverCode || !rootElement || !astResult) return null;
 
     try {
       setResolverErrorMsg(null);
@@ -934,121 +745,53 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       }
       const customBuildScopeChain = new Function('ast', 'fullText', 'ScopeBuilder', debouncedScopeResolverCode);
       
-      // 1. Build local scope tree for each file & annotate fileNames
-      for (const [filename, ast] of Object.entries(computedWorkspaceASTs)) {
-        if (!ast) continue;
-        const content = workspaceFiles[filename] || "";
-
-        const cached = backgroundScopesCacheRef.current[filename];
-        if (
-          cached && 
-          cached.ast === ast && 
-          cached.content === content && 
-          cached.debouncedScopeResolverCode === debouncedScopeResolverCode
-        ) {
-          scopes[filename] = cloneLexicalScope(cached.scope);
-          continue;
-        }
-
-        try {
-          const res = customBuildScopeChain(ast, content, InterceptedScopeBuilder);
-          if (res) {
-            res.name = filename; // Label global scope
-            
-            // Annotate scope trees recursively with filename context for navigation/scoping
-            const annotateFile = (scope: LexicalScope) => {
-              scope.fileName = filename;
-              if (scope.symbols) {
-                for (const sym of scope.symbols) {
-                  sym.fileName = filename;
-                }
-              }
-              if (scope.references) {
-                for (const ref of scope.references) {
-                  ref.fileName = filename;
-                }
-              }
-              if (scope.children) {
-                for (const child of scope.children) {
-                  annotateFile(child);
-                }
-              }
-            };
-            annotateFile(res);
-            scopes[filename] = res;
-
-            backgroundScopesCacheRef.current[filename] = {
-              ast,
-              content,
-              debouncedScopeResolverCode,
-              scope: res
-            };
+      const res = customBuildScopeChain(astResult, debouncedTestInput, InterceptedScopeBuilder);
+      if (res) {
+        res.name = "Global"; // Label global scope
+        
+        // Annotate scope trees recursively with filename context for navigation/scoping
+        const annotateFile = (scope: LexicalScope) => {
+          scope.fileName = "main.hlsl";
+          if (scope.symbols) {
+            for (const sym of scope.symbols) {
+              sym.fileName = "main.hlsl";
+            }
           }
-        } catch (e: any) {
-          console.error(`Error building local scope for ${filename}:`, e);
-          if (filename === activeFileName) {
-            setResolverErrorMsg(e.message || `Error building local scope for ${filename}`);
+          if (scope.references) {
+            for (const ref of scope.references) {
+              ref.fileName = "main.hlsl";
+            }
           }
-        }
-      }
-
-      if (capturedScopeBuilder) {
-        setLastScopeBuilder(capturedScopeBuilder);
-      }
-
-      // Collect helper
-      const collectFromScope = (scope: LexicalScope, syms: SymbolDefinition[], refs: SymbolReference[]) => {
-        if (scope.symbols) syms.push(...scope.symbols);
-        if (scope.references) refs.push(...scope.references);
-        if (scope.children) {
-          for (const child of scope.children) {
-            collectFromScope(child, syms, refs);
+          if (scope.children) {
+            for (const child of scope.children) {
+              annotateFile(child);
+            }
           }
-        }
-      };
+        };
+        annotateFile(res);
 
-      // Helper to search in recursively included files
-      const findSymbolInIncludes = (fileName: string, name: string, visited = new Set<string>()): SymbolDefinition | null => {
-        if (visited.has(fileName)) return null;
-        visited.add(fileName);
-
-        const content = workspaceFiles[fileName] || "";
-        const includes = getIncludesFromText(content);
-
-        // Search direct includes
-        for (const include of includes) {
-          const targetScope = scopes[include];
-          if (targetScope && targetScope.symbols) {
-            const found = targetScope.symbols.find(s => s.name === name);
-            if (found) return found;
-          }
+        if (capturedScopeBuilder) {
+          setLastScopeBuilder(capturedScopeBuilder);
         }
 
-        // Search transitively
-        for (const include of includes) {
-          const found = findSymbolInIncludes(include, name, visited);
-          if (found) return found;
-        }
-
-        return null;
-      };
-
-      // 2. Perform cross-document resolution
-      for (const [filename, fileScope] of Object.entries(scopes)) {
+        // Collect and wire local references to local symbols
         const syms: SymbolDefinition[] = [];
         const refs: SymbolReference[] = [];
-        collectFromScope(fileScope, syms, refs);
-
-        // Remove duplicates and cross-file leftovers to prevent bloating
-        for (const sym of syms) {
-          if (sym.references) {
-            sym.references = sym.references.filter(r => r.scopeId && r.scopeId.startsWith(fileScope.id));
+        
+        const collectFromScope = (scope: LexicalScope, sList: SymbolDefinition[], rList: SymbolReference[]) => {
+          if (scope.symbols) sList.push(...scope.symbols);
+          if (scope.references) rList.push(...scope.references);
+          if (scope.children) {
+            for (const child of scope.children) {
+              collectFromScope(child, sList, rList);
+            }
           }
-        }
+        };
+        collectFromScope(res, syms, refs);
 
         for (const ref of refs) {
           if (!ref.resolvedSymbolId) {
-            const resolvedSym = findSymbolInIncludes(filename, ref.name);
+            const resolvedSym = syms.find(s => s.name === ref.name);
             if (resolvedSym) {
               ref.resolvedSymbolId = resolvedSym.id;
               if (!resolvedSym.references) {
@@ -1058,18 +801,16 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
             }
           }
         }
+
+        return res;
       }
     } catch (e: any) {
-      console.error("Error inside cross-document scope resolution:", e);
-      setResolverErrorMsg(e.message || "Error during cross-document scope resolution");
+      console.error("Error inside scope resolution:", e);
+      setResolverErrorMsg(e.message || "Error during scope resolution");
     }
 
-    return scopes;
-  }, [computedWorkspaceASTs, workspaceFiles, debouncedScopeResolverCode, rootElement, activeFileName]);
-
-  const scopeChain = useMemo(() => {
-    return resolvedWorkspaceScopes[activeFileName] || null;
-  }, [resolvedWorkspaceScopes, activeFileName]);
+    return null;
+  }, [astResult, debouncedTestInput, debouncedScopeResolverCode, rootElement]);
 
   const [queryText, setQueryText] = useState<string>('(struct_decl (identifier) @struct_name)');
   const [hoveredQueryNode, setHoveredQueryNode] = useState<any | null>(null);
@@ -1128,11 +869,9 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       return null;
     };
 
-    for (const scope of Object.values(resolvedWorkspaceScopes) as LexicalScope[]) {
-      if (scope) {
-        const found = searchScope(scope);
-        if (found) return found;
-      }
+    if (scopeChain) {
+      const found = searchScope(scopeChain);
+      if (found) return found;
     }
     return null;
   };
@@ -1209,16 +948,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
   // Debounced input states to reduce keystroke latency
   const [debouncedGrammarCode, setDebouncedGrammarCode] = useState<string>(grammarCode);
 
-  // Debounce syncing testInput back to workspaceFiles on pause to prevent excessive parent state mutations
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setWorkspaceFiles(prev => {
-        if (prev[activeFileName] === testInput) return prev;
-        return { ...prev, [activeFileName]: testInput };
-      });
-    }, 250);
-    return () => clearTimeout(handler);
-  }, [testInput, activeFileName]);
+
 
   useEffect(() => {
     const handler = setTimeout(() => {
@@ -1389,14 +1119,10 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       input: testInput,
       scopeResolver: scopeResolverCode,
       ast: astCode,
-      updatedAt: Date.now(),
-      workspaceFiles: workspaceFiles,
-      activeFileName: activeFileName
+      updatedAt: Date.now()
     };
     
     setSavedProjects(prev => {
-      // If a project with same name exists, update it or keep it?
-      // For simplicity, just add new one
       return [newProject, ...prev];
     });
     setProjectName(name);
@@ -1405,32 +1131,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
 
   const loadProject = (project: SavedProject) => {
     setGrammarCode(project.grammar);
-    if (project.workspaceFiles) {
-      setWorkspaceFiles(project.workspaceFiles);
-      const active = project.activeFileName || Object.keys(project.workspaceFiles)[0] || "main.hlsl";
-      setActiveFileName(active);
-      setTestInput(project.workspaceFiles[active] || "");
-    } else {
-      const defaultWorkspace = {
-        "main.hlsl": project.input,
-        "UnityCG.cginc": [
-          "// UnityCG.cginc - Common Unity Shader Helper Functions",
-          "",
-          "float4 UnityObjectToClipPos(float4 pos) {",
-          "    // Model-view-projection transform helper",
-          "    return mul(UNITY_MATRIX_MVP, pos);",
-          "}",
-          "",
-          "fixed4 tex2D(sampler2D s, float2 uv) {",
-          "    // Texture lookup helper",
-          "    return fixed4(1, 1, 1, 1);",
-          "}"
-        ].join("\n")
-      };
-      setWorkspaceFiles(defaultWorkspace);
-      setActiveFileName("main.hlsl");
-      setTestInput(project.input);
-    }
+    setTestInput(project.input);
     setAstCode(project.ast || DEFAULT_AST_CODE);
     setScopeResolverCode(project.scopeResolver || DEFAULT_SCOPE_RESOLVER_CODE);
     setProjectName(project.name);
@@ -1445,24 +1146,6 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
   const newProject = () => {
     if (confirm("Clear current grammar and start fresh?")) {
       setGrammarCode("");
-      const defaultWorkspace = {
-        "main.hlsl": "",
-        "UnityCG.cginc": [
-          "// UnityCG.cginc - Common Unity Shader Helper Functions",
-          "",
-          "float4 UnityObjectToClipPos(float4 pos) {",
-          "    // Model-view-projection transform helper",
-          "    return mul(UNITY_MATRIX_MVP, pos);",
-          "}",
-          "",
-          "fixed4 tex2D(sampler2D s, float2 uv) {",
-          "    // Texture lookup helper",
-          "    return fixed4(1, 1, 1, 1);",
-          "}"
-        ].join("\n")
-      };
-      setWorkspaceFiles(defaultWorkspace);
-      setActiveFileName("main.hlsl");
       setTestInput("");
       setAstCode(DEFAULT_AST_CODE);
       setScopeResolverCode(DEFAULT_SCOPE_RESOLVER_CODE);
@@ -1597,7 +1280,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       incrementalParserRef.current.clear();
     }
     pendingEditsRef.current = [];
-  }, [rootElement, activeFileName]);
+  }, [rootElement]);
 
   useEffect(() => {
     if (rootElement) {
@@ -1778,7 +1461,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
     }
 
     const activeBlock = hoveredScope || selectedScope;
-    const hasActiveBlock = !!(activeBlock && activeBlock.type !== 'global' && (!activeBlock.fileName || activeBlock.fileName === activeFileName));
+    const hasActiveBlock = !!(activeBlock && activeBlock.type !== 'global');
     const activeBlockStart = hasActiveBlock ? activeBlock.start : -1;
     const activeBlockEnd = hasActiveBlock ? activeBlock.end : -1;
 
@@ -1804,7 +1487,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
     }
 
     const activeRef = selectedReference || hoveredReference;
-    if (activeRef && (!activeRef.fileName || activeRef.fileName === activeFileName)) {
+    if (activeRef) {
       const refStart = Math.max(0, activeRef.start);
       const refEnd = Math.min(code.length, activeRef.end);
       for (let i = refStart; i < refEnd; i++) {
@@ -3117,192 +2800,6 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                     </span>
                   </div>
                 </div>
-                {/* Workspace Files Tabs Bar */}
-                <div className="bg-[#121214] border-b border-white/5 flex items-center justify-between px-4 py-1.5 shrink-0 select-none">
-                  <div className="flex items-center gap-2 overflow-x-auto scrollbar-none flex-1">
-                    <div className="flex items-center gap-1.5 text-slate-500 text-[9px] font-black uppercase tracking-wider border-r border-white/5 pr-3 shrink-0">
-                      <FolderOpen className="w-3.5 h-3.5 text-indigo-400/80" />
-                      <span>Workspace</span>
-                    </div>
-
-                    <div className="flex items-center gap-1">
-                      {Object.keys(workspaceFiles).map(filename => {
-                        const isActive = filename === activeFileName;
-                        const isRenaming = renamingFileName === filename;
-
-                        return (
-                          <div
-                            key={filename}
-                            className={cn(
-                              "group flex items-center gap-2 px-3 py-1 text-[11px] font-mono rounded-md border border-transparent transition-all cursor-pointer relative",
-                              isActive
-                                ? "bg-white/5 text-indigo-300 border-indigo-500/30 shadow-[0_0_12px_rgba(99,102,241,0.05)] font-semibold"
-                                : "text-slate-400 hover:text-white hover:bg-white/[0.02]"
-                            )}
-                            onClick={() => {
-                              if (!isRenaming) {
-                                setWorkspaceFiles(prev => ({ ...prev, [activeFileName]: testInput }));
-                                setActiveFileName(filename);
-                                setTestInput(workspaceFiles[filename] || "");
-                              }
-                            }}
-                            onDoubleClick={() => {
-                              setRenamingFileName(filename);
-                              setRenameInput(filename);
-                            }}
-                            title="Double-click to rename"
-                          >
-                            <FileCode className={cn(
-                              "w-3.5 h-3.5",
-                              isActive ? "text-indigo-400" : "text-slate-500 group-hover:text-slate-300"
-                            )} />
-
-                            {isRenaming ? (
-                              <input
-                                type="text"
-                                autoFocus
-                                value={renameInput}
-                                onChange={e => setRenameInput(e.target.value)}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') {
-                                    const newName = renameInput.trim();
-                                    if (!newName || newName === filename) {
-                                      setRenamingFileName(null);
-                                      return;
-                                    }
-                                    if (workspaceFiles[newName] !== undefined) {
-                                      alert("A file with this name already exists!");
-                                      setRenamingFileName(null);
-                                      return;
-                                    }
-                                    setWorkspaceFiles(prev => {
-                                      const copy = { ...prev };
-                                      const content = copy[filename];
-                                      delete copy[filename];
-                                      copy[newName] = content;
-                                      return copy;
-                                    });
-                                    if (activeFileName === filename) {
-                                      setActiveFileName(newName);
-                                    }
-                                    setRenamingFileName(null);
-                                  } else if (e.key === 'Escape') {
-                                    setRenamingFileName(null);
-                                  }
-                                }}
-                                onBlur={() => {
-                                  const newName = renameInput.trim();
-                                  if (!newName || newName === filename) {
-                                    setRenamingFileName(null);
-                                    return;
-                                  }
-                                  if (workspaceFiles[newName] !== undefined) {
-                                    alert("A file with this name already exists!");
-                                    setRenamingFileName(null);
-                                    return;
-                                  }
-                                  setWorkspaceFiles(prev => {
-                                    const copy = { ...prev };
-                                    const content = copy[filename];
-                                    delete copy[filename];
-                                    copy[newName] = content;
-                                    return copy;
-                                  });
-                                  if (activeFileName === filename) {
-                                    setActiveFileName(newName);
-                                  }
-                                  setRenamingFileName(null);
-                                }}
-                                className="bg-[#18181b] border border-indigo-500/40 rounded px-1.5 py-0.5 text-[10px] text-white focus:outline-none font-sans font-normal"
-                                onClick={e => e.stopPropagation()}
-                              />
-                            ) : (
-                              <span>{filename}</span>
-                            )}
-
-                            {filename !== "main.hlsl" && !isRenaming && (
-                              <button
-                                onClick={e => {
-                                  e.stopPropagation();
-                                  if (confirm(`Delete ${filename}?`)) {
-                                    setWorkspaceFiles(prev => {
-                                      const copy = { ...prev };
-                                      delete copy[filename];
-                                      return copy;
-                                    });
-                                    if (activeFileName === filename) {
-                                      setActiveFileName("main.hlsl");
-                                      setTestInput(workspaceFiles["main.hlsl"] || "");
-                                    }
-                                  }
-                                }}
-                                className="ml-1 text-slate-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:bg-rose-500/10 rounded"
-                                title="Delete file"
-                              >
-                                <X className="w-2.5 h-2.5" />
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-
-                      {isAddingFile ? (
-                        <div className="flex items-center gap-1.5 px-2 bg-white/5 rounded-md border border-indigo-500/30">
-                          <input
-                            type="text"
-                            autoFocus
-                            placeholder="filename.hlsl"
-                            value={newFileNameInput}
-                            onChange={e => setNewFileNameInput(e.target.value)}
-                            onKeyDown={e => {
-                              if (e.key === 'Enter') {
-                                const name = newFileNameInput.trim();
-                                if (!name) {
-                                  setIsAddingFile(false);
-                                  return;
-                                }
-                                if (workspaceFiles[name] !== undefined) {
-                                  alert("A file with this name already exists!");
-                                  return;
-                                }
-                                setWorkspaceFiles(prev => ({ ...prev, [name]: `// ${name}\n` }));
-                                setActiveFileName(name);
-                                setTestInput(`// ${name}\n`);
-                                setIsAddingFile(false);
-                                setNewFileNameInput("");
-                              } else if (e.key === 'Escape') {
-                                setIsAddingFile(false);
-                                setNewFileNameInput("");
-                              }
-                            }}
-                            onBlur={() => {
-                              const name = newFileNameInput.trim();
-                              if (name && workspaceFiles[name] === undefined) {
-                                setWorkspaceFiles(prev => ({ ...prev, [name]: `// ${name}\n` }));
-                                setActiveFileName(name);
-                                setTestInput(`// ${name}\n`);
-                              }
-                              setIsAddingFile(false);
-                              setNewFileNameInput("");
-                            }}
-                            className="bg-transparent text-[11px] font-mono text-white placeholder-slate-500 focus:outline-none py-0.5 w-24"
-                          />
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => {
-                            setIsAddingFile(true);
-                            setNewFileNameInput("");
-                          }}
-                          className="p-1 hover:bg-white/5 rounded text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
-                          title="Create new file"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
                 <div ref={editorScrollContainerRef} className="flex-1 overflow-auto custom-scrollbar bg-[#161618] relative flex flex-row">
                   {/* Line Numbers Gutter */}
                   <div className="sticky left-0 self-start select-none text-right pr-2 pl-3 pt-[20px] pb-[20px] bg-[#121214] border-r border-white/5 pointer-events-none z-10 flex flex-col items-end leading-[20px]">
@@ -4468,11 +3965,11 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                                               <span>Scope: {selectedSymbol.scopeId} ({currentScope.type})</span>
                                             </div>
                                             <div className="pl-3 border-l-2 border-dashed border-indigo-500/40 text-rose-300 font-bold flex items-center gap-1.5">
-                                              <span>↳ Declared Node: <b>{selectedSymbol.name}</b> as <b>{selectedSymbol.datatype}</b> in <span className="text-rose-400 font-mono text-[10px] bg-white/5 px-1 py-0.5 rounded">{selectedSymbol.fileName || activeFileName}</span></span>
+                                              <span>↳ Declared Node: <b>{selectedSymbol.name}</b> as <b>{selectedSymbol.datatype}</b></span>
                                             </div>
                                             {selectedSymbol.references.map((r, ri) => (
                                               <div key={r.id} className="pl-3 border-l-2 border-dashed border-indigo-500/40 text-emerald-400 flex items-center gap-1.5">
-                                                <span>↳ Ref #{ri+1} ({r.fileName || activeFileName}): at Offset {r.start} resolved to declaration symbol</span>
+                                                <span>↳ Ref #{ri+1}: at Offset {r.start} resolved to declaration symbol</span>
                                               </div>
                                             ))}
                                           </div>
@@ -4481,7 +3978,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                                         <div className="space-y-1">
                                           <span className="block text-[8px] text-slate-500 font-bold uppercase tracking-wider">Symbol Snippet Source</span>
                                           <pre className="p-2.5 rounded bg-black/60 border border-indigo-500/20 text-[10px] text-emerald-400 leading-relaxed overflow-x-auto truncate">
-                                            {(workspaceFiles[selectedSymbol.fileName || activeFileName] || "").substring(selectedSymbol.start, selectedSymbol.end) || "Empty Definition Match"}
+                                            {(testInput || "").substring(selectedSymbol.start, selectedSymbol.end) || "Empty Definition Match"}
                                           </pre>
                                         </div>
 
@@ -4492,22 +3989,18 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                                           ) : (
                                             <div className="flex flex-wrap gap-1.5">
                                               {selectedSymbol.references.map((r, ri) => {
-                                                const rFile = r.fileName || activeFileName;
-                                                const rContent = workspaceFiles[rFile] || "";
-                                                const rLoc = getLineAndCol(rContent, r.start);
+                                                const rLoc = getLineAndCol(testInput, r.start);
                                                 return (
                                                   <div 
                                                     key={r.id}
                                                     onClick={() => {
-                                                      setWorkspaceFiles(prev => ({ ...prev, [activeFileName]: testInput }));
-                                                      setActiveFileName(rFile);
-                                                      setTestInput(workspaceFiles[rFile] || "");
+                                                      scrollToNode(r);
                                                     }}
                                                     className="p-1.5 px-2 bg-emerald-500/5 hover:bg-indigo-500/20 border border-emerald-500/20 hover:border-indigo-500/40 rounded text-[10px] text-emerald-300 transition-all flex items-center gap-1.5 cursor-pointer"
-                                                    title={`Click to jump to ${rFile} line ${rLoc.line}`}
+                                                    title={`Click to jump to line ${rLoc.line}`}
                                                   >
                                                     <Link className="w-3 h-3 text-emerald-400/80" />
-                                                    <span>Ref #{ri+1} ({rFile}: Line {rLoc.line}, Col {rLoc.col})</span>
+                                                    <span>Ref #{ri+1} (Line {rLoc.line}, Col {rLoc.col})</span>
                                                   </div>
                                                 );
                                               })}
