@@ -30,6 +30,7 @@ export interface Rule {
   value?: any;
   label?: string;
   ignored?: boolean;
+  tokenName?: string;
 }
 
 export interface ParseError {
@@ -101,6 +102,7 @@ export class GreenNode {
 export class RedNode {
   public readonly type: string;
   public readonly width: number;
+  public readonly _fields: Record<string, any> = {};
   private _value: any = null;
   private _isResolved = false;
 
@@ -109,7 +111,18 @@ export class RedNode {
     public readonly parent: RedNode | null,
     public readonly offset: number
   ) {
-    this.type = green.type;
+    const elementObj = SyntaxElement.registry?.get(green.type);
+    if (elementObj && elementObj.astNodeName) {
+      this.type = elementObj.astNodeName;
+    } else {
+      const parentRuleId = (green as any).parentRuleId !== undefined ? (green as any).parentRuleId : green.ruleId;
+      const rule = SyntaxElement.ruleRegistry?.get(parentRuleId);
+      if (rule && rule.tokenName) {
+        this.type = rule.tokenName;
+      } else {
+        this.type = green.type;
+      }
+    }
     this.width = green.width;
   }
 
@@ -124,6 +137,42 @@ export class RedNode {
         if (!g) return null;
         const redChild = new RedNode(g, this, currentOffset);
         currentOffset += g.width;
+
+        // Dynamic attribute mapping based on rule labels
+        const parentRuleId = (g as any).parentRuleId !== undefined ? (g as any).parentRuleId : g.ruleId;
+        const rule = SyntaxElement.ruleRegistry?.get(parentRuleId);
+        if (rule && rule.label) {
+          const label = rule.label;
+          const isList = rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy';
+          
+          // Store in our safe _fields mapping first to avoid colliding with built-in properties
+          if (isList) {
+            if (!this._fields[label]) {
+              this._fields[label] = [];
+            }
+            if (Array.isArray(this._fields[label])) {
+              this._fields[label].push(redChild);
+            }
+          } else {
+            this._fields[label] = redChild;
+          }
+
+          // Directly assign on instance ONLY if the field name doesn't conflict with built-in properties
+          const reserved = new Set(['type', 'width', '_value', '_isResolved', 'green', 'parent', 'offset', 'value', '_fields']);
+          if (!reserved.has(label)) {
+            if (isList) {
+              if (!(this as any)[label]) {
+                (this as any)[label] = [];
+              }
+              if (Array.isArray((this as any)[label])) {
+                (this as any)[label].push(redChild);
+              }
+            } else {
+              (this as any)[label] = redChild;
+            }
+          }
+        }
+
         return redChild;
       });
     } else {
@@ -169,6 +218,9 @@ export class SyntaxElement {
   public static defaultLeadingTrivia?: string | RegExp | SyntaxElement;
   public static defaultTrailingTrivia?: string | RegExp | SyntaxElement;
 
+  public static registry = new Map<string, SyntaxElement>();
+  public static ruleRegistry = new Map<number, Rule>();
+
   private static lastId = 0;
   
   public readonly id: number;
@@ -191,11 +243,28 @@ export class SyntaxElement {
   constructor(name: string) {
     this.id = ++SyntaxElement.lastId;
     this.name = name;
+    SyntaxElement.registry.set(name, this);
   }
 
   // Builder Methods
   AsNode(nodeName: string): this {
     this.astNodeName = nodeName;
+    SyntaxElement.registry.set(nodeName, this);
+    return this;
+  }
+
+  AsToken(tokenName: string): this {
+    if (this.rules.length > 0) {
+      let targetRule = this.rules[this.rules.length - 1];
+      for (let i = this.rules.length - 1; i >= 0; i--) {
+        const r = this.rules[i];
+        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia' && r.type !== 'whitespace') {
+          targetRule = r;
+          break;
+        }
+      }
+      targetRule.tokenName = tokenName;
+    }
     return this;
   }
 
@@ -206,14 +275,30 @@ export class SyntaxElement {
 
   As(fieldName: string): this {
     if (this.rules.length > 0) {
-      this.rules[this.rules.length - 1].label = fieldName;
+      let targetRule = this.rules[this.rules.length - 1];
+      for (let i = this.rules.length - 1; i >= 0; i--) {
+        const r = this.rules[i];
+        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia' && r.type !== 'whitespace') {
+          targetRule = r;
+          break;
+        }
+      }
+      targetRule.label = fieldName;
     }
     return this;
   }
 
   Ignore(): this {
     if (this.rules.length > 0) {
-      this.rules[this.rules.length - 1].ignored = true;
+      let targetRule = this.rules[this.rules.length - 1];
+      for (let i = this.rules.length - 1; i >= 0; i--) {
+        const r = this.rules[i];
+        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia' && r.type !== 'whitespace') {
+          targetRule = r;
+          break;
+        }
+      }
+      targetRule.ignored = true;
     }
     return this;
   }
@@ -283,7 +368,21 @@ export class SyntaxElement {
       const lead = SyntaxElement.defaultLeadingTrivia;
       const trail = SyntaxElement.defaultTrailingTrivia;
       if (lead) this.LeadingTrivia(lead);
-      this.Expects(inner as any);
+      
+      const id = nextRuleId();
+      let rule: Rule;
+      if (inner instanceof SyntaxElement) {
+        rule = { id, type: 'element', value: inner };
+      } else if (inner instanceof RegExp) {
+        rule = { id, type: 'regex', value: inner };
+      } else {
+        rule = { id, type: 'literal', value: inner };
+      }
+      if ((pattern as any).name) {
+        rule.tokenName = (pattern as any).name;
+      }
+      this.rules.push(rule);
+      
       if (trail) this.TrailingTrivia(trail);
     } else {
       const id = nextRuleId();
@@ -389,7 +488,14 @@ export class SyntaxElement {
       const lead = SyntaxElement.defaultLeadingTrivia;
       const trail = SyntaxElement.defaultTrailingTrivia;
       if (lead) this.LeadingTrivia(lead);
-      this.Optional(inner as any);
+      
+      const id = nextRuleId();
+      const rule: Rule = { id, type: 'optional', value: inner };
+      if ((pattern as any).name) {
+        rule.tokenName = (pattern as any).name;
+      }
+      this.rules.push(rule);
+      
       if (trail) this.TrailingTrivia(trail);
     } else {
       const id = nextRuleId();
@@ -570,21 +676,23 @@ export class SyntaxElement {
     
     const realPattern = (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) ? pattern.pattern : pattern;
     
+    let rule: Rule;
+    const id = nextRuleId();
     if (realPattern && typeof realPattern === 'object' && 'type' in realPattern && (realPattern.type === 'beginScope' || realPattern.type === 'endScope')) {
-      const id = nextRuleId();
-      this.rules.push({ id, type: realPattern.type, value: realPattern.value });
+      rule = { id, type: realPattern.type, value: realPattern.value };
     } else {
       if (realPattern instanceof SyntaxElement) {
-        const id = nextRuleId();
-        this.rules.push({ id, type: 'element', value: realPattern });
+        rule = { id, type: 'element', value: realPattern };
       } else if (realPattern instanceof RegExp) {
-        const id = nextRuleId();
-        this.rules.push({ id, type: 'regex', value: realPattern });
+        rule = { id, type: 'regex', value: realPattern };
       } else {
-        const id = nextRuleId();
-        this.rules.push({ id, type: 'literal', value: realPattern });
+        rule = { id, type: 'literal', value: realPattern };
       }
     }
+    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern && (pattern as any).name) {
+      rule.tokenName = (pattern as any).name;
+    }
+    this.rules.push(rule);
     
     if (trail) this.TrailingTrivia(trail);
     return this;
@@ -841,6 +949,9 @@ export class SyntaxElement {
     if (pattern instanceof SyntaxElement) {
       const subResult = pattern.parse(text, currentOffset, memo, context);
       if (subResult && !subResult.error) {
+        if (subResult.ast) {
+          (subResult.ast as any).parentRuleId = ruleId;
+        }
         return { success: true, value: subResult.ast, newOffset: subResult.newOffset, skipped: false, dependencyLimit: subResult.dependencyLimit !== undefined ? subResult.dependencyLimit : subResult.newOffset };
       } else {
         return { success: false, error: subResult?.error || `Failed sub-element: ${pattern.name}`, newOffset: subResult ? subResult.newOffset : currentOffset, dependencyLimit: subResult ? (subResult.dependencyLimit !== undefined ? subResult.dependencyLimit : subResult.newOffset) : currentOffset };
@@ -963,6 +1074,15 @@ export class SyntaxElement {
     memo: Map<string, ParseResult> = new Map(), 
     context?: any
   ): ParseResult | null {
+    for (const el of SyntaxElement.registry.values()) {
+      for (const rule of el.rules) {
+        SyntaxElement.ruleRegistry.set(rule.id, rule);
+      }
+    }
+    for (const rule of this.rules) {
+      SyntaxElement.ruleRegistry.set(rule.id, rule);
+    }
+
     const memoKey = `${this.id}-${offset}`;
     const ctx: any = context || { maxOffset: -1, maxError: null, expectedPaths: [], recoveredErrors: [], activeScopeEnds: [] };
     if (ctx.maxOffset === undefined) ctx.maxOffset = -1;
@@ -1941,12 +2061,14 @@ export function EndScope(pattern: string | RegExp | SyntaxElement): ScopeMarker 
 export interface TokenMarker {
   __isTokenMarker: true;
   pattern: string | RegExp | SyntaxElement | ScopeMarker;
+  name?: string;
 }
 
-export function Token(pattern: string | RegExp | SyntaxElement | ScopeMarker): TokenMarker {
+export function Token(pattern: string | RegExp | SyntaxElement | ScopeMarker, name?: string): TokenMarker {
   return {
     __isTokenMarker: true,
-    pattern
+    pattern,
+    name
   };
 }
 

@@ -447,8 +447,11 @@ function matchChildren(
   const isDescendantPat = pat.isDescendant || false;
   
   if (pat.field) {
-    if (parent && parent[pat.field] !== undefined) {
-      const target = parent[pat.field];
+    const parentFields = parent && (parent as any)._fields;
+    const hasField = parentFields && parentFields[pat.field] !== undefined;
+    const isDirectVal = parent && parent[pat.field] !== undefined;
+    if (hasField || isDirectVal) {
+      const target = hasField ? parentFields[pat.field] : parent[pat.field];
       const targetNodes = Array.isArray(target) ? target : [target];
       
       for (const tn of targetNodes) {
@@ -530,7 +533,9 @@ export function executePatternMatch(node: any, pat: QueryPattern, captures: Quer
   }
   
   if (pat.type === 'node') {
-    if (pat.nodeType && pat.nodeType !== '_' && node.type !== pat.nodeType) {
+    const mainTypeMatches = node.type === pat.nodeType;
+    const greenTypeMatches = node.green && node.green.type === pat.nodeType;
+    if (pat.nodeType && pat.nodeType !== '_' && !mainTypeMatches && !greenTypeMatches) {
       return false;
     }
     

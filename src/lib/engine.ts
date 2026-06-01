@@ -7,4 +7,6 @@ export * from './syntax-element';
 export * from './spatial-index';
 export * from './query';
 export * from './scope';
-export * from './codegen';
+export * from './codegen-cs';
+export * from './codegen-ts';
+export * from './codegen-core';

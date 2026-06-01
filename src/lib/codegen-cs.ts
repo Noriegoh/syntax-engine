@@ -1,464 +1,19 @@
 import { SyntaxElement } from './syntax-element';
 import { ScopeBuilder } from './scope';
-import regexpTree from 'regexp-tree';
-class NState {
-  id: number;
-  transitions: { range: [number, number]; target: NState }[] = [];
-  epsilonTransitions: NState[] = [];
-  isAccepting = false;
-  constructor(id: number) {
-    this.id = id;
-  }
-}
-function foldRange(start: number, end: number): [number, number][] {
-  const result: [number, number][] = [[start, end]];
-  
-  const startLower = Math.max(97, Math.min(122, start));
-  const endLower = Math.max(97, Math.min(122, end));
-  if (startLower <= endLower && startLower >= 97) {
-    result.push([startLower - 32, endLower - 32]);
-  }
-  
-  const startUpper = Math.max(65, Math.min(90, start));
-  const endUpper = Math.max(65, Math.min(90, end));
-  if (startUpper <= endUpper && startUpper >= 65) {
-    result.push([startUpper + 32, endUpper + 32]);
-  }
-  
-  return result;
-}
-function invertRanges(ranges: [number, number][]): [number, number][] {
-  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
-  const merged: [number, number][] = [];
-  for (const r of sorted) {
-    if (merged.length === 0) {
-      merged.push([r[0], r[1]]);
-    } else {
-      const last = merged[merged.length - 1];
-      if (r[0] <= last[1] + 1) {
-        last[1] = Math.max(last[1], r[1]);
-      } else {
-        merged.push([r[0], r[1]]);
-      }
-    }
-  }
-  const inverted: [number, number][] = [];
-  let current = 0;
-  for (const r of merged) {
-    if (r[0] > current) {
-      inverted.push([current, r[0] - 1]);
-    }
-    current = r[1] + 1;
-  }
-  if (current <= 0xFFFF) {
-    inverted.push([current, 0xFFFF]);
-  }
-  return inverted;
-}
-function buildNFA(patternStr: string, flags: string = ""): NState {
-  const parsed = regexpTree.parse(`/${patternStr}/${flags}`);
-  const isCaseInsensitive = flags.includes('i');
-  
-  let stateCount = 0;
-  function createState() {
-    return new NState(stateCount++);
-  }
-  function getMetaRanges(value: string): [number, number][] {
-    if (value === '.') {
-      return [[0, 9], [11, 12], [14, 0xFFFF]];
-    }
-    if (value === '\\d') {
-      return [[48, 57]];
-    }
-    if (value === '\\D') {
-      return invertRanges([[48, 57]]);
-    }
-    if (value === '\\w') {
-      return [[48, 57], [65, 90], [95, 95], [97, 122]];
-    }
-    if (value === '\\W') {
-      return invertRanges([[48, 57], [65, 90], [95, 95], [97, 122]]);
-    }
-    if (value === '\\s') {
-      return [[9, 13], [32, 32]];
-    }
-    if (value === '\\S') {
-      return invertRanges([[9, 13], [32, 32]]);
-    }
-    if (value.startsWith('\\')) {
-      const c = value.slice(1);
-      if (c === 'n') return [[10, 10]];
-      if (c === 'r') return [[13, 13]];
-      if (c === 't') return [[9, 9]];
-      const code = c.charCodeAt(0);
-      return [[code, code]];
-    }
-    const code = value.charCodeAt(0);
-    return [[code, code]];
-  }
-  function toNFA(node: any): { entry: NState; exit: NState } {
-    if (!node) {
-      const entry = createState();
-      const exit = createState();
-      entry.epsilonTransitions.push(exit);
-      return { entry, exit };
-    }
-    if (node.type === 'Char') {
-      const entry = createState();
-      const exit = createState();
-      if (node.kind === 'simple') {
-        const code = node.value.charCodeAt(0);
-        const folded: [number, number][] = isCaseInsensitive ? foldRange(code, code) : [[code, code]];
-        for (const r of folded) {
-          entry.transitions.push({ range: r, target: exit });
-        }
-      } else if (node.kind === 'meta' || node.kind === 'escaped') {
-        const ranges = getMetaRanges(node.value);
-        for (const r of ranges) {
-          entry.transitions.push({ range: r, target: exit });
-        }
-      }
-      return { entry, exit };
-    }
-    if (node.type === 'CharacterClass') {
-      const entry = createState();
-      const exit = createState();
-      let rawRanges: [number, number][] = [];
-      const exprs = node.expressions || [];
-      for (const expr of exprs) {
-        if (expr.type === 'Char') {
-          if (expr.kind === 'simple') {
-            const code = expr.value.charCodeAt(0);
-            rawRanges.push([code, code]);
-          } else {
-            rawRanges.push(...getMetaRanges(expr.value));
-          }
-        } else if (expr.type === 'ClassRange') {
-          const fromCode = expr.from.value.charCodeAt(0);
-          const toCode = expr.to.value.charCodeAt(0);
-          rawRanges.push([fromCode, toCode]);
-        }
-      }
-      if (isCaseInsensitive) {
-        const folded: [number, number][] = [];
-        for (const r of rawRanges) {
-          folded.push(...foldRange(r[0], r[1]));
-        }
-        rawRanges = folded;
-      }
-      const finalRanges = node.negative ? invertRanges(rawRanges) : rawRanges;
-      for (const r of finalRanges) {
-        entry.transitions.push({ range: r, target: exit });
-      }
-      return { entry, exit };
-    }
-    if (node.type === 'Alternative') {
-      const exprs = node.expressions || [];
-      if (exprs.length === 0) {
-        const entry = createState();
-        const exit = createState();
-        entry.epsilonTransitions.push(exit);
-        return { entry, exit };
-      }
-      let prev = toNFA(exprs[0]);
-      const entry = prev.entry;
-      for (let i = 1; i < exprs.length; i++) {
-        const cur = toNFA(exprs[i]);
-        prev.exit.epsilonTransitions.push(cur.entry);
-        prev = cur;
-      }
-      const exit = prev.exit;
-      return { entry, exit };
-    }
-    if (node.type === 'Disjunction') {
-      const left = toNFA(node.left);
-      const right = toNFA(node.right);
-      const entry = createState();
-      const exit = createState();
-      entry.epsilonTransitions.push(left.entry);
-      entry.epsilonTransitions.push(right.entry);
-      left.exit.epsilonTransitions.push(exit);
-      right.exit.epsilonTransitions.push(exit);
-      return { entry, exit };
-    }
-    if (node.type === 'Repetition') {
-      const body = toNFA(node.expression);
-      const quant = node.quantifier || {};
-      const value = quant.value;
-      
-      const entry = createState();
-      const exit = createState();
-      
-      if (value === '*') {
-        entry.epsilonTransitions.push(body.entry);
-        entry.epsilonTransitions.push(exit);
-        body.exit.epsilonTransitions.push(body.entry);
-        body.exit.epsilonTransitions.push(exit);
-      } else if (value === '+') {
-        entry.epsilonTransitions.push(body.entry);
-        body.exit.epsilonTransitions.push(body.entry);
-        body.exit.epsilonTransitions.push(exit);
-      } else if (value === '?') {
-        entry.epsilonTransitions.push(body.entry);
-        entry.epsilonTransitions.push(exit);
-        body.exit.epsilonTransitions.push(exit);
-      } else {
-        entry.epsilonTransitions.push(body.entry);
-        entry.epsilonTransitions.push(exit);
-        body.exit.epsilonTransitions.push(body.entry);
-        body.exit.epsilonTransitions.push(exit);
-      }
-      return { entry, exit };
-    }
-    if (node.type === 'Group') {
-      return toNFA(node.expression);
-    }
-    if (node.type === 'Assertion') {
-      const entry = createState();
-      const exit = createState();
-      entry.epsilonTransitions.push(exit);
-      return { entry, exit };
-    }
-    const entry = createState();
-    const exit = createState();
-    entry.epsilonTransitions.push(exit);
-    return { entry, exit };
-  }
-  const rootNFA = toNFA(parsed.body);
-  rootNFA.exit.isAccepting = true;
-  return rootNFA.entry;
-}
-function formatChar(cp: number): string {
-  if (cp === 10) return "'\\n'";
-  if (cp === 13) return "'\\r'";
-  if (cp === 9) return "'\\t'";
-  if (cp === 39) return "'\\''";
-  if (cp === 92) return "'\\\\'";
-  if (cp >= 32 && cp <= 126) return `'${String.fromCharCode(cp)}'`;
-  return `(char)${cp}`;
-}
+import { 
+  sanitize, 
+  compileDFA, 
+  formatChar, 
+  escapeString, 
+  collectElements 
+} from './codegen-core';
+
+
 export function generateDFACSharpMethod(methodName: string, regex: RegExp, ruleId: number, type: 'Rule' | 'Spec'): string {
   const patternStr = regex.source;
-  const flags = regex.flags;
   
   try {
-    const startState = buildNFA(patternStr, flags);
-    const allRanges: [number, number][] = [];
-    const visited = new Set<number>();
-    
-    function collectRanges(state: NState) {
-      if (visited.has(state.id)) return;
-      visited.add(state.id);
-      for (const t of state.transitions) {
-        allRanges.push(t.range);
-      }
-      for (const t of state.transitions) {
-        collectRanges(t.target);
-      }
-      for (const next of state.epsilonTransitions) {
-        collectRanges(next);
-      }
-    }
-    collectRanges(startState);
-    
-    const splitPointsSet = new Set<number>();
-    splitPointsSet.add(0);
-    splitPointsSet.add(0x10000);
-    for (const r of allRanges) {
-      splitPointsSet.add(r[0]);
-      splitPointsSet.add(r[1] + 1);
-    }
-    const splitPoints = Array.from(splitPointsSet).sort((a, b) => a - b);
-    
-    const intervals: [number, number][] = [];
-    for (let i = 0; i < splitPoints.length - 1; i++) {
-      intervals.push([splitPoints[i], splitPoints[i+1] - 1]);
-    }
-    
-    function getEpsilonClosure(states: Iterable<NState>): Set<NState> {
-      const closure = new Set<NState>(states);
-      const queue = Array.from(states);
-      while (queue.length > 0) {
-        const s = queue.shift()!;
-        for (const next of s.epsilonTransitions) {
-          if (!closure.has(next)) {
-            closure.add(next);
-            queue.push(next);
-          }
-        }
-      }
-      return closure;
-    }
-    
-    class DFAState {
-      id: number;
-      nfaStates: Set<NState>;
-      transitions = new Map<number, DFAState>();
-      isAccepting = false;
-      constructor(id: number, nfaStates: Set<NState>) {
-        this.id = id;
-        this.nfaStates = nfaStates;
-        for (const s of nfaStates) {
-          if (s.isAccepting) {
-            this.isAccepting = true;
-            break;
-          }
-        }
-      }
-    }
-    
-    function getDFAStateKey(states: Set<NState>): string {
-      return Array.from(states).map(s => s.id).sort((a, b) => a - b).join(',');
-    }
-    
-    const dfaStates: DFAState[] = [];
-    const stateMap = new Map<string, DFAState>();
-    
-    const startClosure = getEpsilonClosure([startState]);
-    const startDFAState = new DFAState(0, startClosure);
-    dfaStates.push(startDFAState);
-    stateMap.set(getDFAStateKey(startClosure), startDFAState);
-    
-    const queue = [startDFAState];
-    while (queue.length > 0) {
-      const currentDFA = queue.shift()!;
-      
-      for (let intervalIdx = 0; intervalIdx < intervals.length; intervalIdx++) {
-        const [startCp] = intervals[intervalIdx];
-        const targets = new Set<NState>();
-        
-        for (const nState of currentDFA.nfaStates) {
-          for (const t of nState.transitions) {
-            if (startCp >= t.range[0] && startCp <= t.range[1]) {
-              targets.add(t.target);
-            }
-          }
-        }
-        
-        if (targets.size > 0) {
-          const closure = getEpsilonClosure(targets);
-          const key = getDFAStateKey(closure);
-          
-          let targetDFA = stateMap.get(key);
-          if (!targetDFA) {
-            targetDFA = new DFAState(dfaStates.length, closure);
-            dfaStates.push(targetDFA);
-            stateMap.set(key, targetDFA);
-            queue.push(targetDFA);
-          }
-          currentDFA.transitions.set(intervalIdx, targetDFA);
-        }
-      }
-    }
-
-    // ==========================================
-    // DFA STATE MINIMIZATION (MOORE'S ALGORITHM)
-    // ==========================================
-    // This optimization refactors the DFA to identify and merge identical/equivalent states.
-    // Equivalent states are those that:
-    // 1. Share the same acceptance capability (both accepting or both non-accepting).
-    // 2. For all possible character intervals, transition to states that are also equivalent.
-    // By partitioning states iteratively until stable and rebuilding the DFA, we significantly
-    // reduce the number of switch-case branches in the compiled C# code, optimizing file size and performance.
-
-    let partition: DFAState[][] = [];
-    const nonAccepting = dfaStates.filter(s => !s.isAccepting);
-    const accepting = dfaStates.filter(s => s.isAccepting);
-    if (nonAccepting.length > 0) partition.push(nonAccepting);
-    if (accepting.length > 0) partition.push(accepting);
-
-    const stateToGroupId = new Map<number, number>();
-    function updateGroupIds() {
-      stateToGroupId.clear();
-      for (let gId = 0; gId < partition.length; gId++) {
-        for (const state of partition[gId]) {
-          stateToGroupId.set(state.id, gId);
-        }
-      }
-    }
-    updateGroupIds();
-
-    let partitionChanged = true;
-    while (partitionChanged) {
-      partitionChanged = false;
-      const newPartition: DFAState[][] = [];
-      for (const group of partition) {
-        if (group.length <= 1) {
-          newPartition.push(group);
-          continue;
-        }
-
-        // Group states within the division by their transition signature.
-        // A state's signature maps each character interval to the target state's partition group ID.
-        const sigMap = new Map<string, DFAState[]>();
-        for (const s of group) {
-          const sig = Array.from({ length: intervals.length }, (_, idx) => {
-            const target = s.transitions.get(idx);
-            return target ? stateToGroupId.get(target.id)! : -1;
-          }).join(',');
-
-          if (!sigMap.has(sig)) {
-            sigMap.set(sig, []);
-          }
-          sigMap.get(sig)!.push(s);
-        }
-
-        if (sigMap.size > 1) {
-          partitionChanged = true;
-        }
-        for (const subset of sigMap.values()) {
-          newPartition.push(subset);
-        }
-      }
-      partition = newPartition;
-      updateGroupIds();
-    }
-
-    // Identify the partition group containing the starting state (original ID 0)
-    // and move it to index 0 of the partition. This ensures the minimized start state is always 0.
-    const startGroupIdx = partition.findIndex(group => group.some(s => s.id === 0));
-    if (startGroupIdx !== -1 && startGroupIdx !== 0) {
-      const [startGroup] = partition.splice(startGroupIdx, 1);
-      partition.unshift(startGroup);
-    }
-
-    // Establish a mapping from original DFAState ID to the new minimized state ID.
-    const originalIdToMinId = new Map<number, number>();
-    for (let minId = 0; minId < partition.length; minId++) {
-      for (const s of partition[minId]) {
-        originalIdToMinId.set(s.id, minId);
-      }
-    }
-
-    // Reconstruct the minimized DFAState objects.
-    const minDFAStates: DFAState[] = [];
-    for (let minId = 0; minId < partition.length; minId++) {
-      const rep = partition[minId][0];
-      const combinedNFAStates = new Set<NState>();
-      for (const s of partition[minId]) {
-        for (const ns of s.nfaStates) {
-          combinedNFAStates.add(ns);
-        }
-      }
-      const minState = new DFAState(minId, combinedNFAStates);
-      // Explicitly set isAccepting in case of empty internal NFA states list differences
-      minState.isAccepting = rep.isAccepting;
-      minDFAStates.push(minState);
-    }
-
-    // Link transitions between minimized states.
-    for (let minId = 0; minId < partition.length; minId++) {
-      const minState = minDFAStates[minId];
-      const rep = partition[minId][0];
-      for (const [intervalIdx, targetState] of rep.transitions.entries()) {
-        const targetMinId = originalIdToMinId.get(targetState.id)!;
-        minState.transitions.set(intervalIdx, minDFAStates[targetMinId]);
-      }
-    }
-
-    // Replace the original, verbose dfaStates array with our newly optimized, minimized set.
-    dfaStates.length = 0;
-    dfaStates.push(...minDFAStates);
+    const { dfaStates, intervals } = compileDFA(regex);
     
     const acceptingCases: string[] = [];
     for (const dState of dfaStates) {
@@ -609,90 +164,12 @@ ${errStackComment}
 `;
   }
 }
-/**
- * Normalizes a string to be a safe C# identifier.
- */
-function sanitize(name: string): string {
-  if (!name) return "";
-  const parts = name
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2') // split camelCase
-    .replace(/[^a-zA-Z0-9]/g, ' ')          // replace non-alphanumeric with spaces
-    .split(/\s+/)
-    .filter(Boolean);
-  
-  if (parts.length === 0) return "_";
-  
-  const result = parts
-    .map(p => p.charAt(0).toUpperCase() + p.slice(1))
-    .join("");
-  
-  if (/^[0-9]/.test(result)) {
-    return '_' + result;
-  }
-  return result;
-}
-/**
- * Escapes strings for C# code literal initialization.
- */
-function escapeString(str: string): string {
-  return str
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t');
-}
+
 /**
  * Escapes regex pattern for C# verbatims.
  */
 function escapeRegex(pattern: RegExp): string {
   return pattern.source.replace(/"/g, '""');
-}
-/**
- * Collects all unique SyntaxElements reachable from root.
- */
-function collectElements(root: SyntaxElement): SyntaxElement[] {
-  const visited = new Set<number>();
-  const elements: SyntaxElement[] = [];
-  function visit(el: SyntaxElement) {
-    if (!el || visited.has(el.id)) return;
-    visited.add(el.id);
-    elements.push(el);
-    for (const rule of el.rules) {
-      if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
-        visit(rule.value);
-      } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
-        for (const child of rule.value) {
-          if (child instanceof SyntaxElement) {
-            visit(child);
-          }
-        }
-      } else if (
-        rule.type === 'optional' ||
-        rule.type === 'leadingTrivia' ||
-        rule.type === 'trailingTrivia' ||
-        rule.type === 'zeroOrMore' ||
-        rule.type === 'oneOrMore' ||
-        rule.type === 'not' ||
-        rule.type === 'beginScope' ||
-        rule.type === 'endScope' ||
-        rule.type === 'assert'
-      ) {
-        if (rule.value instanceof SyntaxElement) {
-          visit(rule.value);
-        }
-      } else if (rule.type === 'separatedBy' && rule.value) {
-        if (rule.value.item instanceof SyntaxElement) {
-          visit(rule.value.item);
-        }
-        if (rule.value.separator instanceof SyntaxElement) {
-          visit(rule.value.separator);
-        }
-      }
-    }
-  }
-  visit(root);
-  return elements;
 }
 /**
  * Formats a speculative match in C# for nested rules like Choice, Optional, ZeroOrMore.
@@ -738,6 +215,387 @@ function compileSpeculativeMatch(
                         int ${precVar} = ${pattern.precedence || 0};`;
   }
   return { code, matchedName: mVar, parsedAstName: astVar, newOffsetName: offsetVar, precName: precVar };
+}
+/**
+ * Generates the strongly-typed AST node class structures.
+ */
+export function generateStronglyTypedAstClasses(rootElement: SyntaxElement, namespaceName: string = "SyntaxEngine"): string {
+  const elements = collectElements(rootElement);
+  
+  // 1. Generate Enums for elements marked with MapToEnum
+  let enumsCode = "";
+  for (const el of elements) {
+    if (el.isEnumTarget && el.enumName) {
+      const enumValues = new Set<string>();
+      for (const rule of el.rules) {
+        if (rule.type === 'choice') {
+          for (const choice of rule.value) {
+            if (typeof choice === 'string') {
+              const sanitized = sanitize(choice);
+              if (sanitized && sanitized !== "_") {
+                enumValues.add(sanitized);
+              }
+            } else if (choice instanceof SyntaxElement) {
+              const label = choice.rules.length > 0 ? choice.rules[choice.rules.length - 1].label : null;
+              if (label) enumValues.add(label);
+              else enumValues.add(sanitize(choice.name));
+            }
+          }
+        }
+      }
+      
+      enumsCode += `    public enum ${el.enumName}\n    {\n        None,\n${Array.from(enumValues).map(v => `        ${v}`).join(",\n")}\n    }\n\n`;
+    }
+  }
+
+  return `using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace ${namespaceName}
+{
+${enumsCode}${elements.map(el => {
+    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+    
+    let propertiesStr = "";
+    
+    // Explicit field binding workflow (Method 2)
+    const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number }> = new Map();
+    
+    let hasExplicitBindings = false;
+    for (const rule of el.rules) {
+      if (rule.label && !rule.ignored) {
+        hasExplicitBindings = true;
+        let csharpType = "AstNode";
+        let isList = false;
+        
+        // Determine type based on rule content
+        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy') {
+          isList = true;
+          const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
+          if (leafValue instanceof SyntaxElement) {
+            csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+          } else if (Array.isArray(leafValue)) {
+            const elNames = leafValue.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
+            if (elNames.length > 0) {
+              const uniqueNames = Array.from(new Set(elNames));
+              if (uniqueNames.length === 1) {
+                csharpType = uniqueNames[0];
+              } else {
+                csharpType = "AstNode";
+              }
+            } else {
+              csharpType = "AstNode";
+            }
+          }
+        } else if (rule.type === 'element' || rule.type === 'optional' || rule.type === 'assert') {
+          const leafValue = rule.type === 'assert' ? rule.value : rule.value;
+          if (leafValue instanceof SyntaxElement) {
+            csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+          }
+        } else if (rule.type === 'choice') {
+          csharpType = "AstNode"; // General fallback
+        }
+        
+        propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id });
+      }
+    }
+    
+    if (hasExplicitBindings) {
+      propertiesStr = Array.from(propertyGroups.entries()).map(([label, mapping]) => {
+         const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
+         if (mapping.isList) {
+             return `        public List<${mapping.type}> ${label} => Children.OfType<${mapping.type}>().ToList();
+        public ${elName}Node With${capLabel}(List<${mapping.type}> newChildren)
+        {
+            return this;
+        }`;
+         } else {
+             return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
+        public ${elName}Node With${capLabel}(${mapping.type} newNode)
+        {
+            var oldChild = this.${label}?.Green;
+            var newGreen = Green.ReplaceChild(oldChild, newNode?.Green);
+            return new ${elName}Node(newGreen, Parent, Offset);
+        }`;
+         }
+      }).join("\n\n");
+    } else {
+      // Fallback: the old behavior for elements without explicit bindings
+      const childrenNodeTypes = new Set<string>();
+      for (const rule of el.rules) {
+        if (rule.ignored) continue;
+        
+        if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
+          childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+        } else if (rule.type === 'choice') {
+          for (const child of rule.value) {
+            if (child instanceof SyntaxElement) {
+              childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
+            }
+          }
+        } else if (
+          rule.type === 'optional' ||
+          rule.type === 'leadingTrivia' ||
+          rule.type === 'trailingTrivia' ||
+          rule.type === 'zeroOrMore' ||
+          rule.type === 'oneOrMore' ||
+          rule.type === 'zeroOrMoreOneOf' ||
+          rule.type === 'oneOrMoreOneOf' ||
+          rule.type === 'not' ||
+          rule.type === 'assert'
+        ) {
+          if (rule.value instanceof SyntaxElement) {
+            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          } else if (Array.isArray(rule.value)) {
+            for (const sub of rule.value) {
+              if (sub instanceof SyntaxElement) {
+                childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
+              }
+            }
+          }
+        } else if (rule.type === 'separatedBy' && rule.value) {
+          if (rule.value.item instanceof SyntaxElement) {
+            childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
+          }
+          if (rule.value.separator instanceof SyntaxElement) {
+            childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
+          }
+        }
+      }
+      propertiesStr = Array.from(childrenNodeTypes).map(childName => `        public ${childName}Node ${childName} => FindChild<${childName}Node>();\n        public List<${childName}Node> All_${childName} => FindChildren<${childName}Node>();`).join("\n\n");
+    }
+
+    // Enum helper logic inside the class
+    let enumHelper = "";
+    if (el.isEnumTarget && el.enumName) {
+       enumHelper = `\n        private ${el.enumName}? _kindCache = null;\n        public ${el.enumName} Kind\n        {\n            get\n            {\n                if (_kindCache.HasValue) return _kindCache.Value;\n                string val = this.Value;\n                ${el.enumName} result = ${el.enumName}.None;\n                Enum.TryParse(val, true, out result);\n                _kindCache = result;\n                return result;\n            }\n        }\n`;
+    }
+
+    return `    public class ${elName}Node : AstNode
+    {
+        public ${elName}Node(GreenNode green, AstNode parent, int offset) : base(green, parent, offset)
+        {
+        }
+${propertiesStr}${enumHelper}
+    }`;
+  }).join("\n\n")}
+}
+`;
+}
+/**
+ * Generates the complete, self-contained C# code string in Allman style.
+ */
+export function generateFullCSharp(rootElement: SyntaxElement, namespaceName: string = "SyntaxEngine", scopeBuilder?: ScopeBuilder): string {
+  const elements = collectElements(rootElement);
+  const ruleTokenNames: { ruleId: number; tokenName: string }[] = [];
+  for (const el of elements) {
+    for (const rule of el.rules) {
+      if ((rule as any).tokenName) {
+        ruleTokenNames.push({ ruleId: rule.id, tokenName: (rule as any).tokenName });
+      }
+    }
+  }
+  const coreCode = generateCoreCSharpCode(namespaceName, scopeBuilder, ruleTokenNames);
+  const parserCode = generateParserAndAstCSharpCode(rootElement, namespaceName);
+  const astCode = generateStronglyTypedAstClasses(rootElement, namespaceName);
+  // Strip identical usings/namespace wraps to create a beautiful single cohesive file
+  const cleanParser = parserCode
+    .replace(/using [a-zA-Z.]+;\s*/g, '')
+    .replace(`namespace ${namespaceName}\n{`, '')
+    .replace(/}\s*$/, ''); // remove namespace ending bracket
+  const cleanAst = astCode
+    .replace(/using [a-zA-Z.]+;\s*/g, '')
+    .replace(`namespace ${namespaceName}\n{`, '')
+    .replace(/}\s*$/, ''); // remove namespace ending bracket
+  // Splice everything into the core file beautifully right before its last namespace enclosing bracket '}'
+  const lastBracketIndex = coreCode.lastIndexOf('}');
+  const prefix = coreCode.substring(0, lastBracketIndex);
+  const suffix = coreCode.substring(lastBracketIndex);
+  return `${prefix}
+    #region Specific Grammar Parser and Red Nodes
+${cleanParser.trim()}
+${cleanAst.trim()}
+    #endregion
+${suffix}`;
+}
+/**
+ * Custom file export interface representing independent C# compiler files.
+ */
+export interface GeneratedFile {
+  name: string;
+  content: string;
+}
+/**
+ * Generates custom separate file splits so that core classes can stay un-duplicated
+ * and strongly-typed nodes can reside in their own folders or single consolidated file.
+ */
+export function generateModularCSharp(
+  rootElement: SyntaxElement,
+  options: {
+    namespace?: string;
+    stronglyTypedAstSeparate?: boolean;
+    scopeBuilder?: ScopeBuilder;
+  } = {}
+): GeneratedFile[] {
+  const ns = options.namespace || "SyntaxEngine";
+  const rootName = sanitize(rootElement.name);
+  const files: GeneratedFile[] = [];
+  // 1. Core classes file
+  files.push({
+    name: "SyntaxEngine.Core.cs",
+    content: generateCoreCSharpCode(ns, options.scopeBuilder)
+  });
+  // 2. Parser specific file
+  files.push({
+    name: `${rootName}Parser.cs`,
+    content: generateParserAndAstCSharpCode(rootElement, ns)
+  });
+  // 3. Strongly-typed AST nodes file(s)
+  if (options.stronglyTypedAstSeparate) {
+    const elements = collectElements(rootElement);
+    elements.forEach(el => {
+      const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+      
+      let propertiesStr = "";
+      
+      const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number }> = new Map();
+      
+      let hasExplicitBindings = false;
+      for (const rule of el.rules) {
+        if (rule.label && !rule.ignored) {
+          hasExplicitBindings = true;
+          let csharpType = "AstNode";
+          let isList = false;
+          
+          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy') {
+            isList = true;
+            const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
+            if (leafValue instanceof SyntaxElement) {
+              csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+            } else if (Array.isArray(leafValue)) {
+              const elNames = leafValue.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
+              if (elNames.length > 0) {
+                const uniqueNames = Array.from(new Set(elNames));
+                if (uniqueNames.length === 1) {
+                  csharpType = uniqueNames[0];
+                } else {
+                  csharpType = "AstNode";
+                }
+              } else {
+                csharpType = "AstNode";
+              }
+            }
+          } else if (rule.type === 'element' || rule.type === 'optional' || rule.type === 'assert') {
+            const leafValue = rule.type === 'assert' ? rule.value : rule.value;
+            if (leafValue instanceof SyntaxElement) {
+              csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+            }
+          } else if (rule.type === 'choice') {
+            csharpType = "AstNode";
+          }
+          
+          propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id });
+        }
+      }
+      
+      if (hasExplicitBindings) {
+        propertiesStr = Array.from(propertyGroups.entries()).map(([label, mapping]) => {
+           // Capitalize first letter for Method names
+           const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
+           if (mapping.isList) {
+               return `        public List<${mapping.type}> ${label} => Children.OfType<${mapping.type}>().ToList();
+        public ${elName}Node With${capLabel}(List<${mapping.type}> newChildren)
+        {
+            // Simple list replacement (Warning: basic implementation for immutable mutation)
+            return this; // Placeholder for list replacements
+        }`;
+           } else {
+               return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
+        public ${elName}Node With${capLabel}(${mapping.type} newNode)
+        {
+            var oldChild = this.${label}?.Green;
+            return new ${elName}Node(Green.ReplaceChild(oldChild, newNode?.Green), Parent, Offset);
+        }`;
+           }
+        }).join("\n\n");
+      } else {
+        const childrenNodeTypes = new Set<string>();
+        for (const rule of el.rules) {
+          if (rule.ignored) continue;
+          
+          if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
+            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          } else if (rule.type === 'choice') {
+            for (const child of rule.value) {
+              if (child instanceof SyntaxElement) {
+                childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
+              }
+            }
+          } else if (
+            rule.type === 'optional' ||
+            rule.type === 'leadingTrivia' ||
+            rule.type === 'trailingTrivia' ||
+            rule.type === 'zeroOrMore' ||
+            rule.type === 'oneOrMore' ||
+            rule.type === 'zeroOrMoreOneOf' ||
+            rule.type === 'oneOrMoreOneOf' ||
+            rule.type === 'not' ||
+            rule.type === 'assert'
+          ) {
+            if (rule.value instanceof SyntaxElement) {
+              childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+            } else if (Array.isArray(rule.value)) {
+              for (const sub of rule.value) {
+                if (sub instanceof SyntaxElement) {
+                  childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
+                }
+              }
+            }
+          } else if (rule.type === 'separatedBy' && rule.value) {
+            if (rule.value.item instanceof SyntaxElement) {
+              childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
+            }
+            if (rule.value.separator instanceof SyntaxElement) {
+              childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
+            }
+          }
+        }
+        propertiesStr = Array.from(childrenNodeTypes).map(childName => `        public ${childName}Node ${childName} => FindChild<${childName}Node>();\n        public List<${childName}Node> All_${childName} => FindChildren<${childName}Node>();`).join("\n\n");
+      }
+
+      let enumHelper = "";
+      if (el.isEnumTarget && el.enumName) {
+         enumHelper = `\n        private ${el.enumName}? _kindCache = null;\n        public ${el.enumName} Kind\n        {\n            get\n            {\n                if (_kindCache.HasValue) return _kindCache.Value;\n                string val = this.Value;\n                ${el.enumName} result = ${el.enumName}.None;\n                Enum.TryParse(val, true, out result);\n                _kindCache = result;\n                return result;\n            }\n        }\n`;
+      }
+
+      const nodeCode = `using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace ${ns}
+{
+    public class ${elName}Node : AstNode
+    {
+        public ${elName}Node(GreenNode green, AstNode parent, int offset) : base(green, parent, offset)
+        {
+        }
+${propertiesStr}${enumHelper}
+    }
+}
+`;
+      files.push({
+        name: `${elName}Node.cs`,
+        content: nodeCode
+      });
+    });
+  } else {
+    files.push({
+      name: "SyntaxEngine.AstNodes.cs",
+      content: generateStronglyTypedAstClasses(rootElement, ns)
+    });
+  }
+  return files;
 }
 /**
  * Generates declarative C# ScopeBuilder rules setup.
@@ -793,7 +651,11 @@ function generateScopeBuilderConfigCode(scopeBuilder?: ScopeBuilder): string {
 /**
  * Generates core classes independently definitions for modular use.
  */
-export function generateCoreCSharpCode(namespaceName: string = "SyntaxEngine", scopeBuilder?: ScopeBuilder): string {
+export function generateCoreCSharpCode(namespaceName: string = "SyntaxEngine", scopeBuilder?: ScopeBuilder, ruleTokenNames: { ruleId: number; tokenName: string }[] = []): string {
+  let ruleTokenNamesInit = "";
+  if (ruleTokenNames && ruleTokenNames.length > 0) {
+    ruleTokenNamesInit = ruleTokenNames.map(r => `            { ${r.ruleId}, "${r.tokenName}" }`).join(",\n");
+  }
   return `using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -1245,6 +1107,10 @@ namespace ${namespaceName}
     }
     public class CSTQuery
     {
+        public static readonly Dictionary<int, string> RuleTokenNames = new Dictionary<int, string>
+        {
+${ruleTokenNamesInit}
+        };
         private static readonly ConditionalWeakTable<GreenNode, Dictionary<CSTQuery, List<RelativeQueryMatch>>> _greenQueryCache =
             new ConditionalWeakTable<GreenNode, Dictionary<CSTQuery, List<RelativeQueryMatch>>>();
         public List<QueryPattern> Patterns { get; set; }
@@ -1811,7 +1677,8 @@ namespace ${namespaceName}
             bool isDescendantPat = pat.IsDescendant;
             if (!string.IsNullOrEmpty(pat.Field))
             {
-                var prop = parent.GetType().GetProperty(pat.Field);
+                var fieldNameCapitalized = char.ToUpper(pat.Field[0]) + pat.Field.Substring(1);
+                var prop = parent.GetType().GetProperty(pat.Field) ?? parent.GetType().GetProperty(fieldNameCapitalized);
                 object targetVal = prop?.GetValue(parent);
                 if (targetVal != null)
                 {
@@ -1950,7 +1817,13 @@ namespace ${namespaceName}
                     string currentType = node.GetType().Name.ToLowerInvariant().Replace("node", "").Replace("_", "");
                     string nodeTypeName = node.Type.ToString().ToLowerInvariant().Replace("_", "");
                     
-                    if (currentType != target && nodeTypeName != target)
+                    string ruleTokenName = null;
+                    if (CSTQuery.RuleTokenNames.TryGetValue(node.RuleId, out var rName))
+                    {
+                        ruleTokenName = rName.ToLowerInvariant().Replace("_", "");
+                    }
+                    
+                    if (currentType != target && nodeTypeName != target && ruleTokenName != target)
                     {
                         return false;
                     }
@@ -3953,376 +3826,4 @@ ${parserMethods}
     #endregion
 }
 `;
-}
-/**
- * Generates the strongly-typed AST node class structures.
- */
-export function generateStronglyTypedAstClasses(rootElement: SyntaxElement, namespaceName: string = "SyntaxEngine"): string {
-  const elements = collectElements(rootElement);
-  
-  // 1. Generate Enums for elements marked with MapToEnum
-  let enumsCode = "";
-  for (const el of elements) {
-    if (el.isEnumTarget && el.enumName) {
-      const enumValues = new Set<string>();
-      for (const rule of el.rules) {
-        if (rule.type === 'choice') {
-          for (const choice of rule.value) {
-            if (typeof choice === 'string') {
-              const sanitized = sanitize(choice);
-              if (sanitized && sanitized !== "_") {
-                enumValues.add(sanitized);
-              }
-            } else if (choice instanceof SyntaxElement) {
-              const label = choice.rules.length > 0 ? choice.rules[choice.rules.length - 1].label : null;
-              if (label) enumValues.add(label);
-              else enumValues.add(sanitize(choice.name));
-            }
-          }
-        }
-      }
-      
-      enumsCode += `    public enum ${el.enumName}\n    {\n        None,\n${Array.from(enumValues).map(v => `        ${v}`).join(",\n")}\n    }\n\n`;
-    }
-  }
-
-  return `using System;
-using System.Collections.Generic;
-using System.Linq;
-
-namespace ${namespaceName}
-{
-${enumsCode}${elements.map(el => {
-    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
-    
-    let propertiesStr = "";
-    
-    // Explicit field binding workflow (Method 2)
-    const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number }> = new Map();
-    
-    let hasExplicitBindings = false;
-    for (const rule of el.rules) {
-      if (rule.label && !rule.ignored) {
-        hasExplicitBindings = true;
-        let csharpType = "AstNode";
-        let isList = false;
-        
-        // Determine type based on rule content
-        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy') {
-          isList = true;
-          const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
-          if (leafValue instanceof SyntaxElement) {
-            csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
-          } else if (Array.isArray(leafValue)) {
-            const elNames = leafValue.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
-            if (elNames.length > 0) {
-              const uniqueNames = Array.from(new Set(elNames));
-              if (uniqueNames.length === 1) {
-                csharpType = uniqueNames[0];
-              } else {
-                csharpType = "AstNode";
-              }
-            } else {
-              csharpType = "AstNode";
-            }
-          }
-        } else if (rule.type === 'element' || rule.type === 'optional' || rule.type === 'assert') {
-          const leafValue = rule.type === 'assert' ? rule.value : rule.value;
-          if (leafValue instanceof SyntaxElement) {
-            csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
-          }
-        } else if (rule.type === 'choice') {
-          csharpType = "AstNode"; // General fallback
-        }
-        
-        propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id });
-      }
-    }
-    
-    if (hasExplicitBindings) {
-      propertiesStr = Array.from(propertyGroups.entries()).map(([label, mapping]) => {
-         const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
-         if (mapping.isList) {
-             return `        public List<${mapping.type}> ${label} => Children.OfType<${mapping.type}>().ToList();
-        public ${elName}Node With${capLabel}(List<${mapping.type}> newChildren)
-        {
-            return this;
-        }`;
-         } else {
-             return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
-        public ${elName}Node With${capLabel}(${mapping.type} newNode)
-        {
-            var oldChild = this.${label}?.Green;
-            var newGreen = Green.ReplaceChild(oldChild, newNode?.Green);
-            return new ${elName}Node(newGreen, Parent, Offset);
-        }`;
-         }
-      }).join("\n\n");
-    } else {
-      // Fallback: the old behavior for elements without explicit bindings
-      const childrenNodeTypes = new Set<string>();
-      for (const rule of el.rules) {
-        if (rule.ignored) continue;
-        
-        if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
-          childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
-        } else if (rule.type === 'choice') {
-          for (const child of rule.value) {
-            if (child instanceof SyntaxElement) {
-              childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
-            }
-          }
-        } else if (
-          rule.type === 'optional' ||
-          rule.type === 'leadingTrivia' ||
-          rule.type === 'trailingTrivia' ||
-          rule.type === 'zeroOrMore' ||
-          rule.type === 'oneOrMore' ||
-          rule.type === 'zeroOrMoreOneOf' ||
-          rule.type === 'oneOrMoreOneOf' ||
-          rule.type === 'not' ||
-          rule.type === 'assert'
-        ) {
-          if (rule.value instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
-          } else if (Array.isArray(rule.value)) {
-            for (const sub of rule.value) {
-              if (sub instanceof SyntaxElement) {
-                childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
-              }
-            }
-          }
-        } else if (rule.type === 'separatedBy' && rule.value) {
-          if (rule.value.item instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
-          }
-          if (rule.value.separator instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
-          }
-        }
-      }
-      propertiesStr = Array.from(childrenNodeTypes).map(childName => `        public ${childName}Node ${childName} => FindChild<${childName}Node>();\n        public List<${childName}Node> All_${childName} => FindChildren<${childName}Node>();`).join("\n\n");
-    }
-
-    // Enum helper logic inside the class
-    let enumHelper = "";
-    if (el.isEnumTarget && el.enumName) {
-       enumHelper = `\n        private ${el.enumName}? _kindCache = null;\n        public ${el.enumName} Kind\n        {\n            get\n            {\n                if (_kindCache.HasValue) return _kindCache.Value;\n                string val = this.Value;\n                ${el.enumName} result = ${el.enumName}.None;\n                Enum.TryParse(val, true, out result);\n                _kindCache = result;\n                return result;\n            }\n        }\n`;
-    }
-
-    return `    public class ${elName}Node : AstNode
-    {
-        public ${elName}Node(GreenNode green, AstNode parent, int offset) : base(green, parent, offset)
-        {
-        }
-${propertiesStr}${enumHelper}
-    }`;
-  }).join("\n\n")}
-}
-`;
-}
-/**
- * Generates the complete, self-contained C# code string in Allman style.
- */
-export function generateFullCSharp(rootElement: SyntaxElement, namespaceName: string = "SyntaxEngine", scopeBuilder?: ScopeBuilder): string {
-  const coreCode = generateCoreCSharpCode(namespaceName, scopeBuilder);
-  const parserCode = generateParserAndAstCSharpCode(rootElement, namespaceName);
-  const astCode = generateStronglyTypedAstClasses(rootElement, namespaceName);
-  // Strip identical usings/namespace wraps to create a beautiful single cohesive file
-  const cleanParser = parserCode
-    .replace(/using [a-zA-Z.]+;\s*/g, '')
-    .replace(`namespace ${namespaceName}\n{`, '')
-    .replace(/}\s*$/, ''); // remove namespace ending bracket
-  const cleanAst = astCode
-    .replace(/using [a-zA-Z.]+;\s*/g, '')
-    .replace(`namespace ${namespaceName}\n{`, '')
-    .replace(/}\s*$/, ''); // remove namespace ending bracket
-  // Splice everything into the core file beautifully right before its last namespace enclosing bracket '}'
-  const lastBracketIndex = coreCode.lastIndexOf('}');
-  const prefix = coreCode.substring(0, lastBracketIndex);
-  const suffix = coreCode.substring(lastBracketIndex);
-  return `${prefix}
-    #region Specific Grammar Parser and Red Nodes
-${cleanParser.trim()}
-${cleanAst.trim()}
-    #endregion
-${suffix}`;
-}
-/**
- * Custom file export interface representing independent C# compiler files.
- */
-export interface GeneratedFile {
-  name: string;
-  content: string;
-}
-/**
- * Generates custom separate file splits so that core classes can stay un-duplicated
- * and strongly-typed nodes can reside in their own folders or single consolidated file.
- */
-export function generateModularCSharp(
-  rootElement: SyntaxElement,
-  options: {
-    namespace?: string;
-    stronglyTypedAstSeparate?: boolean;
-    scopeBuilder?: ScopeBuilder;
-  } = {}
-): GeneratedFile[] {
-  const ns = options.namespace || "SyntaxEngine";
-  const rootName = sanitize(rootElement.name);
-  const files: GeneratedFile[] = [];
-  // 1. Core classes file
-  files.push({
-    name: "SyntaxEngine.Core.cs",
-    content: generateCoreCSharpCode(ns, options.scopeBuilder)
-  });
-  // 2. Parser specific file
-  files.push({
-    name: `${rootName}Parser.cs`,
-    content: generateParserAndAstCSharpCode(rootElement, ns)
-  });
-  // 3. Strongly-typed AST nodes file(s)
-  if (options.stronglyTypedAstSeparate) {
-    const elements = collectElements(rootElement);
-    elements.forEach(el => {
-      const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
-      
-      let propertiesStr = "";
-      
-      const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number }> = new Map();
-      
-      let hasExplicitBindings = false;
-      for (const rule of el.rules) {
-        if (rule.label && !rule.ignored) {
-          hasExplicitBindings = true;
-          let csharpType = "AstNode";
-          let isList = false;
-          
-          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy') {
-            isList = true;
-            const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
-            if (leafValue instanceof SyntaxElement) {
-              csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
-            } else if (Array.isArray(leafValue)) {
-              const elNames = leafValue.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
-              if (elNames.length > 0) {
-                const uniqueNames = Array.from(new Set(elNames));
-                if (uniqueNames.length === 1) {
-                  csharpType = uniqueNames[0];
-                } else {
-                  csharpType = "AstNode";
-                }
-              } else {
-                csharpType = "AstNode";
-              }
-            }
-          } else if (rule.type === 'element' || rule.type === 'optional' || rule.type === 'assert') {
-            const leafValue = rule.type === 'assert' ? rule.value : rule.value;
-            if (leafValue instanceof SyntaxElement) {
-              csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
-            }
-          } else if (rule.type === 'choice') {
-            csharpType = "AstNode";
-          }
-          
-          propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id });
-        }
-      }
-      
-      if (hasExplicitBindings) {
-        propertiesStr = Array.from(propertyGroups.entries()).map(([label, mapping]) => {
-           // Capitalize first letter for Method names
-           const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
-           if (mapping.isList) {
-               return `        public List<${mapping.type}> ${label} => Children.OfType<${mapping.type}>().ToList();
-        public ${elName}Node With${capLabel}(List<${mapping.type}> newChildren)
-        {
-            // Simple list replacement (Warning: basic implementation for immutable mutation)
-            return this; // Placeholder for list replacements
-        }`;
-           } else {
-               return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
-        public ${elName}Node With${capLabel}(${mapping.type} newNode)
-        {
-            var oldChild = this.${label}?.Green;
-            return new ${elName}Node(Green.ReplaceChild(oldChild, newNode?.Green), Parent, Offset);
-        }`;
-           }
-        }).join("\n\n");
-      } else {
-        const childrenNodeTypes = new Set<string>();
-        for (const rule of el.rules) {
-          if (rule.ignored) continue;
-          
-          if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
-          } else if (rule.type === 'choice') {
-            for (const child of rule.value) {
-              if (child instanceof SyntaxElement) {
-                childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
-              }
-            }
-          } else if (
-            rule.type === 'optional' ||
-            rule.type === 'leadingTrivia' ||
-            rule.type === 'trailingTrivia' ||
-            rule.type === 'zeroOrMore' ||
-            rule.type === 'oneOrMore' ||
-            rule.type === 'zeroOrMoreOneOf' ||
-            rule.type === 'oneOrMoreOneOf' ||
-            rule.type === 'not' ||
-            rule.type === 'assert'
-          ) {
-            if (rule.value instanceof SyntaxElement) {
-              childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
-            } else if (Array.isArray(rule.value)) {
-              for (const sub of rule.value) {
-                if (sub instanceof SyntaxElement) {
-                  childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
-                }
-              }
-            }
-          } else if (rule.type === 'separatedBy' && rule.value) {
-            if (rule.value.item instanceof SyntaxElement) {
-              childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
-            }
-            if (rule.value.separator instanceof SyntaxElement) {
-              childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
-            }
-          }
-        }
-        propertiesStr = Array.from(childrenNodeTypes).map(childName => `        public ${childName}Node ${childName} => FindChild<${childName}Node>();\n        public List<${childName}Node> All_${childName} => FindChildren<${childName}Node>();`).join("\n\n");
-      }
-
-      let enumHelper = "";
-      if (el.isEnumTarget && el.enumName) {
-         enumHelper = `\n        private ${el.enumName}? _kindCache = null;\n        public ${el.enumName} Kind\n        {\n            get\n            {\n                if (_kindCache.HasValue) return _kindCache.Value;\n                string val = this.Value;\n                ${el.enumName} result = ${el.enumName}.None;\n                Enum.TryParse(val, true, out result);\n                _kindCache = result;\n                return result;\n            }\n        }\n`;
-      }
-
-      const nodeCode = `using System;
-using System.Collections.Generic;
-using System.Linq;
-
-namespace ${ns}
-{
-    public class ${elName}Node : AstNode
-    {
-        public ${elName}Node(GreenNode green, AstNode parent, int offset) : base(green, parent, offset)
-        {
-        }
-${propertiesStr}${enumHelper}
-    }
-}
-`;
-      files.push({
-        name: `${elName}Node.cs`,
-        content: nodeCode
-      });
-    });
-  } else {
-    files.push({
-      name: "SyntaxEngine.AstNodes.cs",
-      content: generateStronglyTypedAstClasses(rootElement, ns)
-    });
-  }
-  return files;
 }

@@ -50,13 +50,14 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, BeginScope, EndScope } from './lib/engine';
+import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, generateFullTypeScript, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, BeginScope, EndScope } from './lib/engine';
 import { cn } from './lib/utils';
 import { runGrammarDiagnostics, Diagnostic } from './lib/diagnostics';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ParserProfiler } from './components/ParserProfiler';
 import { ProjectLibraryModal } from './components/ProjectLibraryModal';
 import { CSharpExportModal } from './components/CSharpExportModal';
+import { TypeScriptExportModal } from './components/TypeScriptExportModal';
 const workbenchLogo = new URL('./assets/images/workbench_logo_1780160579859.png', import.meta.url).href;
 
 const SyntaxEngineLogo = ({ className }: { className?: string }) => (
@@ -194,12 +195,12 @@ const trailingTrivia = new SyntaxElement('trailing_trivia')
 DefaultLeadingTrivia(leadingTrivia);
 DefaultTrailingTrivia(trailingTrivia);
 
-const id = Token(/[a-zA-Z_][a-zA-Z0-9_]*/);
-const number = Token(/-?[0-9]*\\.?[0-9]+f?/);
+const id = Token(/[a-zA-Z_][a-zA-Z0-9_]*/, "id");
+const number = Token(/-?[0-9]*\\.?[0-9]+f?/, "number");
 const string = Token(new SyntaxElement("string")
   .BeginScope('"')
   .Expects(/([^"\\\\]|\\\\.)*/)
-  .EndScope('"'));
+  .EndScope('"'), "string");
 
 // --- HLSL BLOCK ---
 const hlslType = Token(new SyntaxElement("hlsl_type").MapToEnum("HlslType").ExpectsOneOf(Sort(
@@ -207,7 +208,7 @@ const hlslType = Token(new SyntaxElement("hlsl_type").MapToEnum("HlslType").Expe
   "half4", "half3", "half2", "half",
   "fixed4", "fixed3", "fixed2", "fixed",
   "int", "bool", "uint", "sampler2D", "Texture2D", "SamplerState"
-)));
+)), "hlslType");
 const type = new SyntaxElement("type").ExpectsOneOf(hlslType, id);
 
 const semantic = new SyntaxElement("semantic").AsNode("Semantic").Token(":").Ignore().Expects(id).As("value");
@@ -266,7 +267,7 @@ const hlslBlock = new SyntaxElement("hlsl_block")
 
 // --- SHADERLAB ---
 const propAttr = new SyntaxElement("prop_attr").Token("[").Expects(id).Token("]");
-const propType = Token(new SyntaxElement("prop_type").ExpectsOneOf("Color", "2D", "Rect", "Cube", "Float", "Int", "Range", "Vector"));
+const propType = Token(new SyntaxElement("prop_type").ExpectsOneOf("Color", "2D", "Rect", "Cube", "Float", "Int", "Range", "Vector"), "propType");
 const propTypeArgs = new SyntaxElement("prop_type_args").Token(BeginScope("(")).Optional(/[^)]*/).Token(EndScope(")"));
 const propValue = new SyntaxElement("prop_value").ExpectsOneOf(string, number, new SyntaxElement("tuple").Token("(").Optional(/[^)]*/).Token(")"), id);
 
@@ -341,6 +342,17 @@ function transform(node) {
     end: node.end
   };
 
+  // Copy fields if present to allow queries with labels to work on AST
+  if (node._fields) {
+    cleanNode._fields = {};
+    for (const key in node._fields) {
+      const val = node._fields[key];
+      const transformedVal = transform(val);
+      cleanNode._fields[key] = transformedVal;
+      cleanNode[key] = transformedVal;
+    }
+  }
+
   // Process sub-values recursively
   if (node.value !== undefined) {
     const transformedValue = transform(node.value);
@@ -357,12 +369,14 @@ function transform(node) {
     }
   }
 
-  // If the node ended up with no children, no data, and no value, prune it
+  // If the node ended up with no children, no data, no value, and no fields, prune it
   // unless it has a specific type we want to retain (like identifier/id/literals)
+  const hasFields = cleanNode._fields && Object.keys(cleanNode._fields).length > 0;
   if (
     cleanNode.children === undefined && 
     cleanNode.data === undefined && 
-    cleanNode.value === undefined
+    cleanNode.value === undefined &&
+    !hasFields
   ) {
     return null;
   }
@@ -424,6 +438,7 @@ const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'AsASTNode', insertText: 'AsASTNode(', type: 'method', description: 'Re-bind generated visual abstract type identifier' },
   { label: 'As', insertText: 'As(', type: 'method', description: 'Assign field property name/label to the matched result' },
   { label: 'AsNode', insertText: 'AsNode(', type: 'method', description: 'Instruct engine to construct visual AST Node representation instead of direct CST structure' },
+  { label: 'AsToken', insertText: 'AsToken(', type: 'method', description: 'Assign a custom token name to the matched terminal pattern without injecting trivias' },
   { label: 'Ignore', insertText: 'Ignore()', type: 'method', description: 'Exclude matched terminal/token value output representation' },
   { label: 'Inline', insertText: 'Inline()', type: 'method', description: 'Instruct engine to flatten and merge current SyntaxElement rule inside parent nodes' },
   { label: 'IgnoreSelf', insertText: 'IgnoreSelf()', type: 'method', description: 'Skip this entire subtree node construction while still executing parsing checks' },
@@ -737,6 +752,23 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       });
     }
   }, [rootElement, csNamespace, csExportMode, csAstSeparate, lastScopeBuilder]);
+
+  // TypeScript Code Export settings
+  const [showTSModal, setShowTSModal] = useState(false);
+  const [tsSelectedFileIndex, setTsSelectedFileIndex] = useState(0);
+  const [tsCopiedFileIndex, setTsCopiedFileIndex] = useState<number | null>(null);
+
+  const tsGeneratedFiles = useMemo(() => {
+    if (!rootElement) return [];
+    try {
+      const code = generateFullTypeScript(rootElement);
+      const name = `${rootElement.name ? rootElement.name.replace(/[^a-zA-Z0-9]/g, '') : 'Parser'}Bundle.ts`;
+      return [{ name, content: code }];
+    } catch (e) {
+      console.error(e);
+      return [{ name: "error.ts", content: `// Generation failed: ${e instanceof Error ? e.message : e}` }];
+    }
+  }, [rootElement]);
 
   const downloadSingleFile = (name: string, content: string) => {
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -1713,6 +1745,12 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
     setShowCSharpModal(true);
   };
 
+  const generateTypeScript = () => {
+    if (!rootElement) return;
+    setTsSelectedFileIndex(0);
+    setShowTSModal(true);
+  };
+
   const renderCSTVisualNode = (node: any, depth: number = 0, isLast: boolean = true, path: string = "root"): React.ReactNode => {
     if (!node) return null;
     
@@ -2057,12 +2095,16 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
           <div className="flex bg-white/5 rounded-lg border border-white/10 p-1">
             <button 
               onClick={generateCSharp}
-              className="px-3 py-1 text-[10px] font-bold text-slate-400 hover:text-white transition-colors flex items-center gap-2"
+              className="px-3 py-1 text-[10px] font-bold text-slate-400 hover:text-white transition-colors flex items-center gap-1.5"
             >
-              <Code2 className="w-3 h-3" /> C#
+              <Code2 className="w-3 h-3 text-indigo-400" /> C#
             </button>
-            <button className="px-3 py-1 text-[10px] font-bold bg-white/10 text-white rounded shadow-sm border border-white/10">RUST</button>
-            <button className="px-3 py-1 text-[10px] font-bold text-slate-400 hover:text-white transition-colors">TS</button>
+            <button 
+              onClick={generateTypeScript}
+              className="px-3 py-1 text-[10px] font-bold text-slate-400 hover:text-white transition-colors flex items-center gap-1.5"
+            >
+              <Code2 className="w-3 h-3 text-orange-400" /> TS
+            </button>
           </div>
           <button className="flex items-center gap-2 px-4 py-1.5 bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-semibold rounded-lg shadow-lg shadow-indigo-500/30 transition-colors">
             <Rocket className="w-4 h-4" />
@@ -4315,6 +4357,18 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
         downloadSingleFile={downloadSingleFile}
         copiedFileIndex={copiedFileIndex}
         setCopiedFileIndex={setCopiedFileIndex}
+      />
+
+      {/* TS Export Modal */}
+      <TypeScriptExportModal
+        showTSModal={showTSModal}
+        setShowTSModal={setShowTSModal}
+        tsGeneratedFiles={tsGeneratedFiles}
+        tsSelectedFileIndex={tsSelectedFileIndex}
+        setTsSelectedFileIndex={setTsSelectedFileIndex}
+        downloadSingleFile={downloadSingleFile}
+        copiedFileIndex={tsCopiedFileIndex}
+        setCopiedFileIndex={setTsCopiedFileIndex}
       />
     </div>
   );
