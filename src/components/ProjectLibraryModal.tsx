@@ -1,6 +1,6 @@
 import React from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { FolderOpen, X, FileCode, Terminal, Settings, Trash2, Plus } from "lucide-react";
+import { FolderOpen, X, FileCode, Terminal, Settings, Trash2, Plus, Upload } from "lucide-react";
 
 interface SavedProject {
   id: string;
@@ -19,6 +19,7 @@ interface ProjectLibraryModalProps {
   loadProject: (project: SavedProject) => void;
   deleteProject: (id: string, e: React.MouseEvent) => void;
   newProject: () => void;
+  importFromDisk?: () => void;
 }
 
 export const ProjectLibraryModal: React.FC<ProjectLibraryModalProps> = ({
@@ -28,6 +29,7 @@ export const ProjectLibraryModal: React.FC<ProjectLibraryModalProps> = ({
   loadProject,
   deleteProject,
   newProject,
+  importFromDisk,
 }) => {
   return (
     <AnimatePresence>
@@ -100,13 +102,24 @@ export const ProjectLibraryModal: React.FC<ProjectLibraryModalProps> = ({
               )}
             </div>
 
-            <div className="p-4 border-t border-white/5 bg-white/[0.01] flex justify-center">
+            <div className="p-4 border-t border-white/5 bg-white/[0.01] flex items-center justify-center gap-3">
                <button 
                 onClick={newProject}
                 className="px-6 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-bold uppercase tracking-widest border border-white/10 transition-all flex items-center gap-2"
                >
                  <Plus className="w-4 h-4" /> Start New Project
                </button>
+               {importFromDisk && (
+                 <button 
+                  onClick={() => {
+                    setShowLibrary(false);
+                    importFromDisk();
+                  }}
+                  className="px-6 py-2 bg-indigo-500 hover:bg-indigo-400 text-white rounded-xl text-xs font-bold uppercase tracking-widest border border-indigo-500/30 transition-all flex items-center gap-2"
+                 >
+                   <Upload className="w-4 h-4" /> Import from Disk
+                 </button>
+               )}
             </div>
           </motion.div>
         </motion.div>

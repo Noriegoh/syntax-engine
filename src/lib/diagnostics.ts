@@ -14,6 +14,35 @@ function unwrapPattern(p: any): any {
   return p;
 }
 
+function arePatternsEquivalent(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+
+  const ua = unwrapPattern(a);
+  const ub = unwrapPattern(b);
+
+  if (ua === ub) return true;
+  if (!ua || !ub) return false;
+
+  if (ua instanceof RegExp && ub instanceof RegExp) {
+    return ua.source === ub.source && ua.flags === ub.flags;
+  }
+
+  if (ua instanceof SyntaxElement && ub instanceof SyntaxElement) {
+    return ua.name === ub.name;
+  }
+
+  if (Array.isArray(ua) && Array.isArray(ub)) {
+    if (ua.length !== ub.length) return false;
+    for (let i = 0; i < ua.length; i++) {
+      if (!arePatternsEquivalent(ua[i], ub[i])) return false;
+    }
+    return true;
+  }
+
+  return false;
+}
+
 function isPatternNullable(pattern: any, nullable: Map<SyntaxElement, boolean>): boolean {
   if (!pattern) return true;
   if (pattern instanceof SyntaxElement) {
@@ -48,7 +77,7 @@ function isRuleNullable(rule: any, nullable: Map<SyntaxElement, boolean>): boole
     case 'trailingTrivia':
       return true; // zero-width
     case 'whitespace':
-      return true; // typically nullable or ignorable whitespace
+      return false; // Requires at least one whitespace character (\s+) in syntax engine matching
     case 'optional':
     case 'zeroOrMore':
     case 'zeroOrMoreOneOf':
@@ -446,9 +475,195 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
                 type: "warning",
                 nodeName: elName,
                 message: `Potential infinite loop or boundary overlap: Sibling rule can consume the EndScope delimiter.\nCulprit Sibling Path: ${path}\nConflict detail: ${reason}`,
-                suggestion: `To prevent parser lockup or eating the close delimiter, refine your body pattern (e.g. use [^${delimStr}] instead of wildcard matching), balance it using BeginScope/EndScope helpers on nested elements, or prefix your body block with a negative lookahead "Unexpects(Token('${delimStr}'))" guard.`
+                suggestion: `To prevent parser lockup or eating the close delimiter, refine your body pattern (e.g. use [^${delimStr}] instead of wildcard matching), balance it using BeginScope/EndScope helpers on nested elements, or prefix your body block with a negative lookahead "Not(Token('${delimStr}'))" guard.`
               });
             }
+          }
+        }
+      }
+    }
+
+    // New Custom Checking: Unreachable rules after EOF
+    const eofIndex = el.rules.findIndex(r => r.type === 'eof');
+    if (eofIndex !== -1 && eofIndex < el.rules.length - 1) {
+      diagnostics.push({
+        type: "warning",
+        nodeName: elName,
+        message: "Unreachable grammar rules: There are rules defined after an EOF rule. Since the parser terminates at EOF, these rules will never match.",
+        suggestion: "Place the EOF rule at the very end of your sequence, or move the unreachable rules before the EOF expectation."
+      });
+    }
+
+    // New Custom Checking: Consecutive / Contradictory Lookaheads (Not & Assert)
+    for (let i = 0; i < el.rules.length - 1; i++) {
+      const currentRule = el.rules[i];
+      const nextRule = el.rules[i + 1];
+
+      if (
+        (currentRule.type === 'not' || currentRule.type === 'assert') &&
+        (nextRule.type === 'not' || nextRule.type === 'assert')
+      ) {
+        const eq = arePatternsEquivalent(currentRule.value, nextRule.value);
+        if (eq) {
+          if (currentRule.type === nextRule.type) {
+            diagnostics.push({
+              type: "warning",
+              nodeName: elName,
+              message: `Redundant consecutive lookaheads: Consecutive '${currentRule.type === 'not' ? 'Not' : 'Assert'}' rules verify the same pattern. The second is completely redundant.`,
+              suggestion: "Remove the duplicate lookahead rule to simplify the grammar and improve parsing performance."
+            });
+          } else {
+            diagnostics.push({
+              type: "warning",
+              nodeName: elName,
+              message: `Contradictory consecutive lookaheads: Consecutive '${currentRule.type === 'not' ? 'Not' : 'Assert'}' and '${nextRule.type === 'not' ? 'Not' : 'Assert'}' rules check the same pattern at the same offset. This sequence will always fail.`,
+              suggestion: "Confirm your lookahead logic. A pattern cannot be both present and absent at the exact same location in the input string."
+            });
+          }
+        }
+      }
+    }
+
+    // New Custom Checking: Infinite loops inside loops (ZeroOrMore, OneOrMore)
+    for (const rule of el.rules) {
+      if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+        const unwrapped = unwrapPattern(rule.value);
+        let isNullable = false;
+        
+        if (Array.isArray(unwrapped)) {
+          isNullable = unwrapped.every(p => isPatternNullable(p, nullable));
+        } else {
+          isNullable = isPatternNullable(unwrapped, nullable);
+        }
+
+        if (isNullable) {
+          diagnostics.push({
+            type: "warning",
+            nodeName: elName,
+            message: `Potential infinite loop: Loop rule ('${rule.type}') contains a nullable pattern. It can match empty input repeatedly without consuming characters, causing parser lockup.`,
+            suggestion: "Ensure the pattern inside the loop is not nullable (i.e. it must match at least one character) to prevent the parser from freezing."
+          });
+        }
+
+        // Check if the loop inner consists entirely of lookaheads or assertions:
+        const isLookahead = (val: any): boolean => {
+          if (!val) return false;
+          if (Array.isArray(val)) {
+            return val.some(isLookahead);
+          }
+          if (val instanceof SyntaxElement) {
+            return val.rules && val.rules.length > 0 && val.rules.every(r => r.type === 'not' || r.type === 'assert');
+          }
+          return false;
+        };
+
+        if (isLookahead(unwrapped)) {
+          diagnostics.push({
+            type: "warning",
+            nodeName: elName,
+            message: `Infinite loop hazard: Loop rule ('${rule.type}') contains lookahead/assertion rules. Since lookaheads do not consume input, this loop will repeat infinitely.`,
+            suggestion: "Avoid invoking lookaheads ('Not' or 'Assert') as the main repeating elements of a loop since they do not consume characters."
+          });
+        }
+      }
+    }
+
+    // New Custom Checking: Duplicate choices & Lookahead inside choices
+    for (const rule of el.rules) {
+      if (rule.type === 'choice') {
+        const choiceList = rule.value;
+        if (Array.isArray(choiceList)) {
+          const seen = new Set<string>();
+          for (const choice of choiceList) {
+            const unwrapped = unwrapPattern(choice);
+            let repr = "";
+            if (typeof unwrapped === 'string') {
+              repr = `literal:${unwrapped}`;
+            } else if (unwrapped instanceof RegExp) {
+              repr = `regex:${unwrapped.source}`;
+            } else if (unwrapped instanceof SyntaxElement) {
+              repr = `element:${unwrapped.name}`;
+            } else if (unwrapped && typeof unwrapped === 'object' && 'pattern' in unwrapped) {
+              repr = `token:${JSON.stringify(unwrapped)}`;
+            }
+
+            if (repr) {
+              if (seen.has(repr)) {
+                diagnostics.push({
+                  type: "warning",
+                  nodeName: elName,
+                  message: `Duplicate alternative: The choice list contains a duplicate entry for "${repr.split(':')[1]}".`,
+                  suggestion: "Remove the duplicate choice from the alternative list since it is redundant and can never be reached."
+                });
+              } else {
+                seen.add(repr);
+              }
+            }
+
+            // Lookahead inside choice suggestion
+            if (unwrapped instanceof SyntaxElement) {
+              const isPureLookahead = unwrapped.rules && unwrapped.rules.length > 0 && unwrapped.rules.every(r => r.type === 'not' || r.type === 'assert');
+              if (isPureLookahead) {
+                diagnostics.push({
+                  type: "warning",
+                  nodeName: elName,
+                  message: `Lookahead inside choice alternative: Option "${unwrapped.name}" is a pure lookahead/assertion node.`,
+                  suggestion: "Having zero-width lookahead components inside choice alternatives can lead to surprising behavior since they succeed without consuming characters, potentially masking other valid branches. Place lookaheads outside the choice expression instead."
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // New Custom Checking: Performance suggestions / Info diagnostics
+    for (const rule of el.rules) {
+      if (rule.type === 'choice') {
+        const choiceList = rule.value;
+        if (Array.isArray(choiceList)) {
+          // Large choice lists warning/info
+          if (choiceList.length >= 8) {
+            diagnostics.push({
+              type: "info",
+              nodeName: elName,
+              message: `Large target alternatives: Choice rule has ${choiceList.length} different options.`,
+              suggestion: "Having many nested alternatives can slow down parsing. Consider ordering them by probability of occurrence (most common first) to speed up matching, or grouping them with common prefixes."
+            });
+          }
+
+          // Non-sorted literals check & prefix masking warnings
+          const stringChoicesWithIndices = choiceList
+            .map((c, index) => ({ value: unwrapPattern(c), index }))
+            .filter(item => typeof item.value === 'string') as { value: string, index: number }[];
+
+          let hasMaskingWarning = false;
+          for (let i = 0; i < stringChoicesWithIndices.length; i++) {
+            for (let j = i + 1; j < stringChoicesWithIndices.length; j++) {
+              const shorter = stringChoicesWithIndices[i];
+              const longer = stringChoicesWithIndices[j];
+              if (longer.value.startsWith(shorter.value) && shorter.value !== longer.value) {
+                diagnostics.push({
+                  type: "warning",
+                  nodeName: elName,
+                  message: `Greedy match masking: The choice alternative '${shorter.value}' (index ${shorter.index}) is a prefix of '${longer.value}' (index ${longer.index}). The parser will always match the shorter prefix and fail to recognize the longer option.`,
+                  suggestion: `Move the longer option '${longer.value}' before the shorter prefix '${shorter.value}' in the ExpectsOneOf list.`
+                });
+                hasMaskingWarning = true;
+              }
+            }
+          }
+
+
+
+          // Single choice rule check
+          if (choiceList.length === 1) {
+            diagnostics.push({
+              type: "info",
+              nodeName: elName,
+              message: "Trivial choice alternative: ExpectsOneOf is used with only 1 choice option.",
+              suggestion: "Simplify your rule definition by replacing ExpectsOneOf with a direct Expects() call."
+            });
           }
         }
       }

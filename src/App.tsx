@@ -38,7 +38,9 @@ import {
   Check,
   ExternalLink,
   Sparkles,
-  MousePointer
+  MousePointer,
+  Download,
+  Upload
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactJson from 'react-json-view';
@@ -420,11 +422,79 @@ const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'EndScope', insertText: 'EndScope(', type: 'method', description: 'Signal local lexical namespace termination (e.g., matching brace "}" )' },
   { label: 'ExpectsEOF', insertText: 'ExpectsEOF()', type: 'method', description: 'Enforce complete final end-of-file condition' },
   { label: 'AsASTNode', insertText: 'AsASTNode(', type: 'method', description: 'Re-bind generated visual abstract type identifier' },
+  { label: 'As', insertText: 'As(', type: 'method', description: 'Assign field property name/label to the matched result' },
+  { label: 'AsNode', insertText: 'AsNode(', type: 'method', description: 'Instruct engine to construct visual AST Node representation instead of direct CST structure' },
+  { label: 'Ignore', insertText: 'Ignore()', type: 'method', description: 'Exclude matched terminal/token value output representation' },
+  { label: 'Inline', insertText: 'Inline()', type: 'method', description: 'Instruct engine to flatten and merge current SyntaxElement rule inside parent nodes' },
+  { label: 'IgnoreSelf', insertText: 'IgnoreSelf()', type: 'method', description: 'Skip this entire subtree node construction while still executing parsing checks' },
+  { label: 'RecoverWith', insertText: 'RecoverWith(', type: 'method', description: 'Register explicit manual recovery delimiters for automated parser healing' },
+  { label: 'SelfHeals', insertText: 'SelfHeals(', type: 'method', description: 'Designate current rules blocks automated healing boundaries' },
+  { label: 'MapToEnum', insertText: 'MapToEnum(', type: 'method', description: 'Map matched string tokens to target C# compilation enumerations' },
+  { label: 'SeparatedBy', insertText: 'SeparatedBy(', type: 'method', description: 'Sequence matcher for elements separated by distinct separator literal/token' },
+  { label: 'Assert', insertText: 'Assert(', type: 'method', description: 'Lookahead assertion checker: verify ahead without consuming incoming layout streams' },
   { label: 'SyntaxElement', insertText: 'SyntaxElement', type: 'class', description: 'Compiler blueprint construct initializer' },
   { label: 'Sort', insertText: 'Sort(', type: 'keyword', description: 'Sort array inputs descending by pattern length' },
   { label: 'DefaultLeadingTrivia', insertText: 'DefaultLeadingTrivia', type: 'variable', description: 'Pre-registered standard spacer elements container' },
   { label: 'DefaultTrailingTrivia', insertText: 'DefaultTrailingTrivia', type: 'variable', description: 'Pre-registered standard spacer elements container' },
 ];
+
+const getCaretCoordinatesRelative = (element: HTMLTextAreaElement, position: number) => {
+  const div = document.createElement('div');
+  const style = window.getComputedStyle(element);
+  
+  const properties = [
+    'direction', 'boxSizing', 'width', 'height', 'overflowX', 'overflowY',
+    'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+    'borderStyle', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'fontStyle', 'fontVariant', 'fontVariantNumeric', 'fontVariantCaps',
+    'fontVariantEastAsian', 'fontVariantLigatures', 'fontWeight', 'fontStretch',
+    'fontSize', 'fontSizeAdjust', 'lineHeight', 'fontFamily', 'textAlign',
+    'textTransform', 'textIndent', 'textDecoration', 'letterSpacing', 'wordSpacing',
+    'tabSize', 'MozTabSize'
+  ];
+  
+  properties.forEach(prop => {
+    if (prop in style) {
+      (div.style as any)[prop] = (style as any)[prop];
+    }
+  });
+
+  div.style.position = 'absolute';
+  div.style.visibility = 'hidden';
+  div.style.whiteSpace = 'pre-wrap';
+  div.style.wordBreak = 'break-word';
+  
+  document.body.appendChild(div);
+  
+  const text = element.value;
+  div.textContent = text.substring(0, position);
+  
+  const span = document.createElement('span');
+  span.textContent = text.substring(position) || '.';
+  div.appendChild(span);
+  
+  const spanLeft = span.offsetLeft;
+  const spanTop = span.offsetTop;
+  
+  document.body.removeChild(div);
+  
+  const textareaRect = element.getBoundingClientRect();
+  const parentElement = element.offsetParent || element.parentElement;
+  let topOffset = 0;
+  let leftOffset = 0;
+  
+  if (parentElement) {
+    const parentRect = parentElement.getBoundingClientRect();
+    topOffset = textareaRect.top - parentRect.top;
+    leftOffset = textareaRect.left - parentRect.left;
+  }
+  
+  return {
+    top: topOffset + spanTop - element.scrollTop,
+    left: leftOffset + spanLeft - element.scrollLeft,
+    lineHeight: parseInt(style.lineHeight) || 16
+  };
+};
 
 export default function App() {
   const [grammarCode, setGrammarCode] = useState(DEFAULT_CODE);
@@ -436,6 +506,9 @@ export default function App() {
     cursorOffset: number;
     lineIndex: number;
     lineText: string;
+    top: number;
+    left: number;
+    lineHeight: number;
   } | null>(null);
 
   const getCustomVars = (code: string): SuggestionItem[] => {
@@ -461,15 +534,34 @@ export default function App() {
     const lineIndex = lines.length - 1;
     const currentLineText = lines[lineIndex] || '';
     
+    // Check if the cursor is directly after a dot, or a dot followed by some word characters
+    const wordWithDotMatch = textBefore.match(/\.([a-zA-Z0-9_$]*)$/);
     const wordMatch = textBefore.match(/([a-zA-Z0-9_$]*)$/);
-    const word = wordMatch ? wordMatch[1] : '';
     
-    if (word && word.length > 0) {
-      const matched = [...GRAMMAR_SUGGESTIONS, ...getCustomVars(value)].filter(s => 
-        s.label.toLowerCase().startsWith(word.toLowerCase()) && s.label.toLowerCase() !== word.toLowerCase()
-      );
+    let word = '';
+    let isMethodOnly = false;
+    
+    if (wordWithDotMatch) {
+      word = wordWithDotMatch[1];
+      isMethodOnly = true;
+    } else if (wordMatch) {
+      word = wordMatch[1];
+    }
+    
+    if (wordWithDotMatch || (word && word.length > 0)) {
+      let suggestionsSource = [...GRAMMAR_SUGGESTIONS, ...getCustomVars(value)];
+      if (isMethodOnly) {
+        suggestionsSource = GRAMMAR_SUGGESTIONS.filter(s => s.type === 'method');
+      }
+      
+      const matched = suggestionsSource.filter(s => {
+        const labelLower = s.label.toLowerCase();
+        const wordLower = word.toLowerCase();
+        return labelLower.startsWith(wordLower) && labelLower !== wordLower;
+      });
       
       if (matched.length > 0) {
+        const coords = getCaretCoordinatesRelative(textarea, offset);
         setAutocomplete({
           show: true,
           suggestions: matched,
@@ -477,7 +569,10 @@ export default function App() {
           word,
           cursorOffset: offset,
           lineIndex,
-          lineText: currentLineText
+          lineText: currentLineText,
+          top: coords.top,
+          left: coords.left,
+          lineHeight: coords.lineHeight
         });
         return;
       }
@@ -597,6 +692,18 @@ export default function App() {
   const grammarDiagnostics = useMemo(() => {
     return runGrammarDiagnostics(rootElement);
   }, [rootElement]);
+
+  const errorsCount = useMemo(() => {
+    return grammarDiagnostics.filter(d => d.type === 'error').length;
+  }, [grammarDiagnostics]);
+
+  const warningsCount = useMemo(() => {
+    return grammarDiagnostics.filter(d => d.type === 'warning').length;
+  }, [grammarDiagnostics]);
+
+  const infosCount = useMemo(() => {
+    return grammarDiagnostics.filter(d => d.type === 'info').length;
+  }, [grammarDiagnostics]);
   const [hierarchy, setHierarchy] = useState<any>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
   const [parseResult, setParseResult] = useState<any>(null);
@@ -818,6 +925,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
   const [cursorPosition, setCursorPosition] = useState({ line: 1, col: 1 });
   const transformComponentRef = useRef<any>(null);
   const editorScrollContainerRef = useRef<HTMLDivElement>(null);
+  const diskFileInputRef = useRef<HTMLInputElement>(null);
 
   const doCopy = (key: string, text: string) => {
     navigator.clipboard.writeText(text);
@@ -1110,8 +1218,10 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
     localStorage.setItem('syntax_engine_projects', JSON.stringify(savedProjects));
   }, [savedProjects]);
 
-  const saveProject = () => {
+  const saveProjectToDisk = () => {
     const name = prompt("Project Name:", projectName) || projectName;
+    if (!name) return;
+    
     const newProject: SavedProject = {
       id: Math.random().toString(36).substring(2, 9),
       name,
@@ -1122,11 +1232,72 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       updatedAt: Date.now()
     };
     
+    // Save locally to localStorage index
     setSavedProjects(prev => {
-      return [newProject, ...prev];
+      const filtered = prev.filter(p => p.name !== name);
+      return [newProject, ...filtered];
     });
     setProjectName(name);
-    alert(`Project "${name}" saved!`);
+
+    // Trigger local disk file download
+    try {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(newProject, null, 2));
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", `${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_syntax_project.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+    } catch (e) {
+      console.error("Failed to save project to disk", e);
+      alert("Error saving project to disk: " + (e as Error).message);
+    }
+  };
+
+  const triggerLoadProjectFromDisk = () => {
+    diskFileInputRef.current?.click();
+  };
+
+  const handleLoadProjectFromDisk = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        const project = JSON.parse(content) as SavedProject;
+        
+        if (!project.name || typeof project.grammar !== 'string') {
+          throw new Error("Invalid project file structure. Missing 'name' or 'grammar' text.");
+        }
+
+        // Apply loaded states
+        setGrammarCode(project.grammar);
+        setTestInput(project.input || "");
+        setAstCode(project.ast || DEFAULT_AST_CODE);
+        setScopeResolverCode(project.scopeResolver || DEFAULT_SCOPE_RESOLVER_CODE);
+        setProjectName(project.name);
+
+        // Also add/update in our local memory library
+        setSavedProjects(prev => {
+          const filtered = prev.filter(p => p.name !== project.name);
+          const projectWithId = {
+            ...project,
+            id: project.id || Math.random().toString(36).substring(2, 9),
+            updatedAt: project.updatedAt || Date.now()
+          };
+          return [projectWithId, ...filtered];
+        });
+
+        alert(`Successfully imported and loaded "${project.name}" from disk.`);
+      } catch (err) {
+        console.error("Failed to parse project file.", err);
+        alert("Failed to load project from disk: " + (err as Error).message);
+      }
+      e.target.value = "";
+    };
+    reader.readAsText(file);
   };
 
   const loadProject = (project: SavedProject) => {
@@ -1764,7 +1935,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                       rule.type === 'endScope' && "bg-purple-500/20 text-purple-400",
                       rule.type === 'eof' && "bg-zinc-500/20 text-zinc-400"
                     )}>
-                      {rule.type === 'not' ? 'Unexpects' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? 'Any' : rule.type === 'oneOrMore' ? 'Some' : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : 'Expects'}
+                      {rule.type === 'not' ? 'Not' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? 'Any' : rule.type === 'oneOrMore' ? 'Some' : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : 'Expects'}
                     </span>
                     
                     <code className={cn(
@@ -1860,12 +2031,27 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
               <FolderOpen className="w-3.5 h-3.5" />
             </button>
             <button 
-              onClick={saveProject}
+              onClick={saveProjectToDisk}
               className="px-2 py-1 text-slate-400 hover:text-white transition-colors flex items-center gap-1.5 border-l border-white/10"
-              title="Save Project"
+              title="Save Project to Disk"
             >
-              <Save className="w-3.5 h-3.5" />
+              <Download className="w-3.5 h-3.5" />
             </button>
+            <button 
+              onClick={triggerLoadProjectFromDisk}
+              className="px-2 py-1 text-slate-400 hover:text-white transition-colors flex items-center gap-1.5 border-l border-white/10"
+              title="Load Project from Disk"
+            >
+              <Upload className="w-3.5 h-3.5" />
+            </button>
+
+            <input 
+              type="file"
+              ref={diskFileInputRef}
+              onChange={handleLoadProjectFromDisk}
+              accept=".json"
+              style={{ display: 'none' }}
+            />
           </div>
 
           <div className="flex bg-white/5 rounded-lg border border-white/10 p-1">
@@ -1964,16 +2150,27 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                     >
                       <Terminal className="w-3.5 h-3.5 text-indigo-400" /> Console
                       {grammarDiagnostics.length > 0 && (
-                        <span className={cn(
-                          "absolute -top-1.5 -right-1.5 flex h-4 min-w-4 px-1 items-center justify-center rounded-full text-[8.5px] font-extrabold text-white shadow-lg shadow-black animate-pulse border border-slate-900",
-                          grammarDiagnostics.some(d => d.type === 'error') ? "bg-rose-500" : "bg-amber-500"
-                        )}>
-                          {grammarDiagnostics.length}
-                        </span>
+                        <div className="absolute -top-1.5 -right-1.5 flex gap-0.5 pointer-events-none">
+                          {errorsCount > 0 && (
+                            <span className="flex h-3.5 min-w-[14px] px-1 items-center justify-center rounded-full text-[8px] font-extrabold text-white shadow-md bg-rose-500 border border-slate-900 leading-none">
+                              {errorsCount}
+                            </span>
+                          )}
+                          {warningsCount > 0 && (
+                            <span className="flex h-3.5 min-w-[14px] px-1 items-center justify-center rounded-full text-[8px] font-extrabold text-white shadow-md bg-amber-500 border border-slate-900 leading-none">
+                              {warningsCount}
+                            </span>
+                          )}
+                          {infosCount > 0 && (
+                            <span className="flex h-3.5 min-w-[14px] px-1 items-center justify-center rounded-full text-[8px] font-extrabold text-white shadow-md bg-indigo-500 border border-slate-900 leading-none">
+                              {infosCount}
+                            </span>
+                          )}
+                        </div>
                       )}
                     </button>
                   </div>
-                  <div className="flex-1 overflow-auto custom-scrollbar bg-[#1a1a1a]/55 relative">
+                  <div className="flex-1 overflow-hidden flex flex-col bg-[#1a1a1a]/55 relative">
                     {designerEditorTab === 'console' ? (
                       <div className="p-4 flex flex-col gap-4 h-full overflow-auto custom-scrollbar bg-[#1e1e24] text-slate-200">
                         <div className="flex items-center justify-between border-b border-white/5 pb-3">
@@ -1983,9 +2180,28 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                               Grammar Diagnostics Console
                             </span>
                           </div>
-                          <span className="text-[10px] text-slate-400 uppercase font-bold tracking-widest bg-white/5 px-2 py-0.5 rounded border border-white/5">
-                            {grammarDiagnostics.length} issue{grammarDiagnostics.length !== 1 ? 's' : ''}
-                          </span>
+                          <div className="flex gap-1.5">
+                            {errorsCount > 0 && (
+                              <span className="text-[9px] bg-rose-500/10 text-rose-300 px-2 py-0.5 rounded border border-rose-500/20 uppercase tracking-widest font-extrabold">
+                                {errorsCount} Error{errorsCount !== 1 ? 's' : ''}
+                              </span>
+                            )}
+                            {warningsCount > 0 && (
+                              <span className="text-[9px] bg-amber-500/10 text-amber-300 px-2 py-0.5 rounded border border-amber-500/20 uppercase tracking-widest font-extrabold">
+                                {warningsCount} Warning{warningsCount !== 1 ? 's' : ''}
+                              </span>
+                            )}
+                            {infosCount > 0 && (
+                              <span className="text-[9px] bg-indigo-500/10 text-indigo-300 px-2 py-0.5 rounded border border-indigo-500/20 uppercase tracking-widest font-extrabold">
+                                {infosCount} Info{infosCount !== 1 ? 's' : ''}
+                              </span>
+                            )}
+                            {grammarDiagnostics.length === 0 && (
+                              <span className="text-[9px] bg-emerald-500/10 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/20 uppercase tracking-widest font-extrabold">
+                                Pristine
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         {grammarDiagnostics.length === 0 ? (
@@ -2059,7 +2275,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                         )}
                       </div>
                     ) : (
-                      <div className="flex h-full min-h-[500px] divide-x divide-white/5 relative items-stretch">
+                      <div className="flex-1 flex min-h-0 divide-x divide-white/5 relative items-stretch">
                         <div className="flex-1 overflow-auto custom-scrollbar relative grammar-editor-container">
                           <Editor
                             value={
@@ -2106,10 +2322,10 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                           {/* FLOATING DROPDOWN FOR ACTIVE INTELLISENSE */}
                           {designerEditorTab === 'grammar' && autocomplete && autocomplete.show && (
                             <div 
-                              className="absolute bg-slate-900/95 border border-indigo-500/30 rounded-lg shadow-xl shadow-black/80 z-50 p-1 min-w-[280px] max-w-[360px] flex flex-col gap-0.5 font-sans"
+                              className="absolute bg-slate-900/95 border border-indigo-500/30 rounded-lg shadow-xl shadow-black/80 z-50 p-1 min-w-[280px] max-w-[360px] flex flex-col gap-0.5 font-sans animate-fade"
                               style={{
-                                bottom: '20px',
-                                right: '20px'
+                                left: `${Math.max(10, Math.min(autocomplete.left, (document.querySelector('.grammar-editor-container')?.clientWidth || 500) - 300))}px`,
+                                top: `${autocomplete.top + autocomplete.lineHeight + 4}px`
                               }}
                             >
                               <div className="flex items-center justify-between border-b border-white/5 pb-1 mb-1 px-1.5 pt-0.5 shrink-0">
@@ -2164,84 +2380,8 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                               </div>
                             </div>
                           )}
+                        
                         </div>
-
-                        {/* COMPANION SIDEBAR INTELLISENSE */}
-                        {designerEditorTab === 'grammar' && (
-                          <div className="w-80 shrink-0 bg-slate-900/60 p-4 flex flex-col gap-4 overflow-auto custom-scrollbar border-l border-white/5 text-slate-200">
-                            <div className="flex items-center gap-2 border-b border-white/5 pb-2.5 shrink-0">
-                              <Sparkles className="w-4 h-4 text-indigo-400" />
-                              <span className="text-xs font-bold uppercase tracking-wider text-slate-200 font-sans">
-                                Intellisense & Helper
-                              </span>
-                            </div>
-
-                            {/* Active typing segment */}
-                            {autocomplete && autocomplete.show ? (
-                              <div className="bg-indigo-600/15 border border-indigo-500/20 p-3.5 rounded-xl flex flex-col gap-2 shrink-0 animate-fadeIn">
-                                <h4 className="text-[11px] font-extrabold uppercase tracking-widest text-indigo-400 flex items-center gap-1.5">
-                                  <ChevronRight className="w-3.5 h-3.5 animate-pulse" /> Active Match
-                                </h4>
-                                <div className="text-xs font-mono font-bold text-slate-200">
-                                  {autocomplete.word}...
-                                </div>
-                                <p className="text-[11px] text-slate-300 leading-relaxed">
-                                  Use <kbd className="px-1.5 py-0.5 rounded bg-white/10 border border-white/15 text-[9px]">Tab</kbd> or <kbd className="px-1.5 py-0.5 rounded bg-white/10 border border-white/15 text-[9px]">Enter</kbd> to insert the selected autocompletion.
-                                </p>
-                              </div>
-                            ) : (
-                              <div className="bg-gradient-to-br from-indigo-500/5 to-slate-500/5 border border-white/5 p-4 rounded-xl flex flex-col gap-2 shrink-0 text-center">
-                                <FileCode className="w-7 h-7 text-indigo-400/50 mx-auto" />
-                                <h4 className="text-xs font-bold text-slate-300">Live API Intellisense</h4>
-                                <p className="text-[11px] text-slate-400 leading-relaxed">
-                                  Start typing methods or variable names in the Editor to trigger live autocomplete suggestions and definitions!
-                                </p>
-                              </div>
-                            )}
-
-                            {/* Full API Catalog with interactive insertion */}
-                            <div className="flex flex-col gap-2.5">
-                              <h5 className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider shrink-0">
-                                API Commands Catalog
-                              </h5>
-                              <div className="flex flex-col gap-2">
-                                {GRAMMAR_SUGGESTIONS.map((item, idx) => (
-                                  <button
-                                    key={idx}
-                                    onClick={() => {
-                                      const textarea = document.querySelector('.grammar-editor-container textarea') as HTMLTextAreaElement;
-                                      if (textarea) {
-                                        const value = textarea.value;
-                                        const offset = textarea.selectionStart;
-                                        const before = value.slice(0, offset);
-                                        const after = value.slice(offset);
-                                        setGrammarCode(before + item.insertText + after);
-                                        setTimeout(() => {
-                                          textarea.focus();
-                                          const newCursor = offset + item.insertText.length;
-                                          textarea.setSelectionRange(newCursor, newCursor);
-                                        }, 10);
-                                      }
-                                    }}
-                                    className="w-full text-left p-2.5 rounded-xl border border-white/5 bg-white/[0.01] hover:bg-indigo-600/10 hover:border-indigo-500/20 transition-all cursor-pointer flex flex-col gap-1 group"
-                                  >
-                                    <div className="flex items-center justify-between gap-1.5">
-                                      <span className="font-mono text-xs font-bold text-slate-200 group-hover:text-indigo-300">
-                                        .{item.label}
-                                      </span>
-                                      <span className="text-[7.5px] uppercase font-extrabold tracking-widest text-indigo-400 group-hover:bg-indigo-500/10 px-1 py-0.2 rounded border border-indigo-500/10">
-                                        insert
-                                      </span>
-                                    </div>
-                                    <span className="text-[10.5px] text-slate-400 leading-relaxed font-sans font-medium">
-                                      {item.description}
-                                    </span>
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
@@ -4155,6 +4295,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
         loadProject={loadProject}
         deleteProject={deleteProject}
         newProject={newProject}
+        importFromDisk={triggerLoadProjectFromDisk}
       />
 
       {/* C# Export Modal */}

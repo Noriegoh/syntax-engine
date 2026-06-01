@@ -2804,243 +2804,297 @@ ${choiceChecks.join("\n")}
             }`;
       }
       if (rule.type === 'zeroOrMore') {
-        const sId = nextSpecId();
-        const escErrorsVar = `loopErrors_${ruleId}`;
-        let specificDfaName: string | undefined;
-        if (rule.value instanceof RegExp) {
-          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+        const isArray = Array.isArray(rule.value);
+        if (isArray) {
+          const patterns = rule.value as any[];
+          const escErrorsVar = `loopErrors_${ruleId}`;
+          const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
+          
+          const branchChecks: string[] = [];
+          patterns.forEach((p, idx) => {
+            const sId = nextSpecId();
+            let specificDfaName: string | undefined;
+            if (p instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+            branchChecks.push(`
+                    {
+                        int beforeBranchOffset = currentOffset;
+                        int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
+                        int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
+                        ${spec.code.trim()}
+                        if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
+                        {
+                            matchedBranch = true;
+                            matchedAst = ${spec.parsedAstName};
+                            branchNewOffset = ${spec.newOffsetName};
+                        }
+                        else
+                        {
+                            ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
+                            if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
+                            {
+                                ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
+                            }
+                        }
+                    }
+                    if (matchedBranch) goto matched_branch_${ruleId};
+            `);
+          });
+
+          return `
+              // Zero Or More Rule (id: ${ruleId})
+              if (!panicked)
+              {
+                  int startOffset_${ruleId} = currentOffset;
+                  int startLoopOffset = currentOffset;
+                  var loopResults = new List<GreenNode>();
+                  while (currentOffset < text.Length)
+                  {
+                      bool matchedBranch = false;
+                      GreenNode matchedAst = null;
+                      int branchNewOffset = currentOffset;
+
+                      ${branchChecks.join("\n").trim()}
+
+                      matched_branch_${ruleId}:
+                      if (matchedBranch)
+                      {
+                          loopResults.Add(matchedAst);
+                          currentOffset = branchNewOffset;
+                      }
+                      else
+                      {
+                          break;
+                      }
+                  }
+                  if (loopResults.Count > 0)
+                  {
+                      results.Add(GreenNode.Create(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                      ${structUpdate}
+                  }
+              }`;
+        } else {
+          const sId = nextSpecId();
+          const escErrorsVar = `loopErrors_${ruleId}`;
+          let specificDfaName: string | undefined;
+          if (rule.value instanceof RegExp) {
+            specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+          }
+          const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
+          return `
+              // Zero Or More Rule (id: ${ruleId})
+              if (!panicked)
+              {
+                  int startOffset_${ruleId} = currentOffset;
+                  int startLoopOffset = currentOffset;
+                  var loopResults = new List<GreenNode>();
+                  while (currentOffset < text.Length)
+                  {
+                      int beforeIterOffset = currentOffset;
+                      int ${escErrorsVar} = ctx.RecoveredErrors.Count;
+                      ${spec.code.trim()}
+                      if (${spec.matchedName} && ${spec.newOffsetName} > beforeIterOffset)
+                      {
+                          loopResults.Add(${spec.parsedAstName});
+                          currentOffset = ${spec.newOffsetName};
+                      }
+                      else
+                      {
+                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
+                          break;
+                      }
+                  }
+                  if (loopResults.Count > 0)
+                  {
+                      results.Add(GreenNode.Create(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                      ${structUpdate}
+                  }
+              }`;
         }
-        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
-        return `
-            // Zero Or More Rule (id: ${ruleId})
-            if (!panicked)
-            {
-                int startOffset_${ruleId} = currentOffset;
-                int startLoopOffset = currentOffset;
-                var loopResults = new List<GreenNode>();
-                while (currentOffset < text.Length)
-                {
-                    int beforeIterOffset = currentOffset;
-                    int ${escErrorsVar} = ctx.RecoveredErrors.Count;
-                    ${spec.code.trim()}
-                    if (${spec.matchedName} && ${spec.newOffsetName} > beforeIterOffset)
-                    {
-                        loopResults.Add(${spec.parsedAstName});
-                        currentOffset = ${spec.newOffsetName};
-                    }
-                    else
-                    {
-                        ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
-                        break;
-                    }
-                }
-                if (loopResults.Count > 0)
-                {
-                    results.Add(GreenNode.Create(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
-                    ${structUpdate}
-                }
-            }`;
       }
       if (rule.type === 'oneOrMore') {
-        const sId = nextSpecId();
-        const escErrorsVar = `loopErrors_${ruleId}`;
-        let specificDfaName: string | undefined;
-        if (rule.value instanceof RegExp) {
-          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
-        }
-        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
-        return `
-            // One Or More Rule (id: ${ruleId})
-            if (!panicked)
-            {
-                int startOffset_${ruleId} = currentOffset;
-                int startLoopOffset = currentOffset;
-                var loopResults = new List<GreenNode>();
-                while (currentOffset < text.Length)
-                {
-                    int beforeIterOffset = currentOffset;
-                    int ${escErrorsVar} = ctx.RecoveredErrors.Count;
-                    ${spec.code.trim()}
-                    if (${spec.matchedName} && ${spec.newOffsetName} > beforeIterOffset)
+        const isArray = Array.isArray(rule.value);
+        if (isArray) {
+          const patterns = rule.value as any[];
+          const escErrorsVar = `loopErrors_${ruleId}`;
+          const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
+          
+          const branchChecks: string[] = [];
+          patterns.forEach((p, idx) => {
+            const sId = nextSpecId();
+            let specificDfaName: string | undefined;
+            if (p instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+            branchChecks.push(`
                     {
-                        loopResults.Add(${spec.parsedAstName});
+                        int beforeBranchOffset = currentOffset;
+                        int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
+                        int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
+                        ${spec.code.trim()}
+                        if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
+                        {
+                            matchedBranch = true;
+                            matchedAst = ${spec.parsedAstName};
+                            branchNewOffset = ${spec.newOffsetName};
+                        }
+                        else
+                        {
+                            ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
+                            if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
+                            {
+                                ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
+                            }
+                        }
+                    }
+                    if (matchedBranch) goto matched_branch_${ruleId};
+            `);
+          });
+
+          return `
+              // One Or More Rule (id: ${ruleId})
+              if (!panicked)
+              {
+                  int startOffset_${ruleId} = currentOffset;
+                  int startLoopOffset = currentOffset;
+                  var loopResults = new List<GreenNode>();
+                  while (currentOffset < text.Length)
+                  {
+                      bool matchedBranch = false;
+                      GreenNode matchedAst = null;
+                      int branchNewOffset = currentOffset;
+
+                      ${branchChecks.join("\n").trim()}
+
+                      matched_branch_${ruleId}:
+                      if (matchedBranch)
+                      {
+                          loopResults.Add(matchedAst);
+                          currentOffset = branchNewOffset;
+                      }
+                      else
+                      {
+                          break;
+                      }
+                  }
+                  if (loopResults.Count > 0)
+                  {
+                      results.Add(GreenNode.Create(NodeType.OneOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                      hasCommitted = true;
+                      ${structUpdate}
+                  }
+                  else
+                  {
+                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                          return failRes;
+                  }
+              }`;
+        } else {
+          const sId = nextSpecId();
+          const escErrorsVar = `loopErrors_${ruleId}`;
+          let specificDfaName: string | undefined;
+          if (rule.value instanceof RegExp) {
+            specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+          }
+          const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
+          return `
+              // One Or More Rule (id: ${ruleId})
+              if (!panicked)
+              {
+                  int startOffset_${ruleId} = currentOffset;
+                  int startLoopOffset = currentOffset;
+                  var loopResults = new List<GreenNode>();
+                  while (currentOffset < text.Length)
+                  {
+                      int beforeIterOffset = currentOffset;
+                      int ${escErrorsVar} = ctx.RecoveredErrors.Count;
+                      ${spec.code.trim()}
+                      if (${spec.matchedName} && ${spec.newOffsetName} > beforeIterOffset)
+                      {
+                          loopResults.Add(${spec.parsedAstName});
+                          currentOffset = ${spec.newOffsetName};
+                      }
+                      else
+                      {
+                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
+                          break;
+                      }
+                  }
+                  if (loopResults.Count > 0)
+                  {
+                      results.Add(GreenNode.Create(NodeType.OneOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                      hasCommitted = true;
+                      ${structUpdate}
+                  }
+                  else
+                  {
+                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                          return failRes;
+                  }
+              }`;
+        }
+      }
+      if (rule.type === 'not') {
+        const escErrorsVar = `notErrors_${ruleId}`;
+        const isArray = Array.isArray(rule.value);
+
+        let seqCode = "";
+        let finalMatchCheck = "";
+        if (isArray) {
+          const patterns = rule.value as any[];
+          seqCode = `bool seqMatched_${ruleId} = true;\n`;
+          patterns.forEach((p, idx) => {
+            const sId = nextSpecId();
+            let specificDfaName: string | undefined;
+            if (p instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+            if (idx === 0) {
+              seqCode += `
+                {
+                    ${spec.code.trim()}
+                    if (${spec.matchedName})
+                    {
                         currentOffset = ${spec.newOffsetName};
                     }
                     else
                     {
-                        ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
-                        break;
+                        seqMatched_${ruleId} = false;
                     }
                 }
-                if (loopResults.Count > 0)
+              `;
+            } else {
+              seqCode += `
+                if (seqMatched_${ruleId})
                 {
-                    results.Add(GreenNode.Create(NodeType.OneOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
-                    hasCommitted = true;
-                    ${structUpdate}
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }
-            }`;
-      }
-      if (rule.type === 'zeroOrMoreOneOf') {
-        const patterns = rule.value as any[];
-        const escErrorsVar = `loopErrors_${ruleId}`;
-        const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
-        
-        const branchChecks: string[] = [];
-        patterns.forEach((p, idx) => {
-          const sId = nextSpecId();
-          let specificDfaName: string | undefined;
-          if (p instanceof RegExp) {
-            specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
-          }
-          const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
-          branchChecks.push(`
+                    ${spec.code.trim()}
+                    if (${spec.matchedName})
                     {
-                        int beforeBranchOffset = currentOffset;
-                        int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
-                        int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
-                        ${spec.code.trim()}
-                        if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
-                        {
-                            matchedBranch = true;
-                            matchedAst = ${spec.parsedAstName};
-                            branchNewOffset = ${spec.newOffsetName};
-                        }
-                        else
-                        {
-                            ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
-                            if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
-                            {
-                                ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
-                            }
-                        }
-                    }
-                    if (matchedBranch) goto matched_branch_${ruleId};
-          `);
-        });
-
-        return `
-            // Zero Or More One Of Rule (id: ${ruleId})
-            if (!panicked)
-            {
-                int startOffset_${ruleId} = currentOffset;
-                int startLoopOffset = currentOffset;
-                var loopResults = new List<GreenNode>();
-                while (currentOffset < text.Length)
-                {
-                    bool matchedBranch = false;
-                    GreenNode matchedAst = null;
-                    int branchNewOffset = currentOffset;
-
-                    ${branchChecks.join("\n").trim()}
-
-                    matched_branch_${ruleId}:
-                    if (matchedBranch)
-                    {
-                        loopResults.Add(matchedAst);
-                        currentOffset = branchNewOffset;
+                        currentOffset = ${spec.newOffsetName};
                     }
                     else
                     {
-                        break;
+                        seqMatched_${ruleId} = false;
                     }
                 }
-                if (loopResults.Count > 0)
-                {
-                    results.Add(GreenNode.Create(NodeType.ZeroOrMoreOneOf, loopResults, ${ruleId}, currentOffset - startLoopOffset));
-                    ${structUpdate}
-                }
-            }`;
-      }
-      if (rule.type === 'oneOrMoreOneOf') {
-        const patterns = rule.value as any[];
-        const escErrorsVar = `loopErrors_${ruleId}`;
-        const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
-        
-        const branchChecks: string[] = [];
-        patterns.forEach((p, idx) => {
+              `;
+            }
+          });
+          finalMatchCheck = `seqMatched_${ruleId}`;
+        } else {
           const sId = nextSpecId();
           let specificDfaName: string | undefined;
-          if (p instanceof RegExp) {
-            specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+          if (rule.value instanceof RegExp) {
+            specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
           }
-          const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
-          branchChecks.push(`
-                    {
-                        int beforeBranchOffset = currentOffset;
-                        int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
-                        int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
-                        ${spec.code.trim()}
-                        if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
-                        {
-                            matchedBranch = true;
-                            matchedAst = ${spec.parsedAstName};
-                            branchNewOffset = ${spec.newOffsetName};
-                        }
-                        else
-                        {
-                            ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
-                            if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
-                            {
-                                ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
-                            }
-                        }
-                    }
-                    if (matchedBranch) goto matched_branch_${ruleId};
-          `);
-        });
-
-        return `
-            // One Or More One Of Rule (id: ${ruleId})
-            if (!panicked)
-            {
-                int startOffset_${ruleId} = currentOffset;
-                int startLoopOffset = currentOffset;
-                var loopResults = new List<GreenNode>();
-                while (currentOffset < text.Length)
-                {
-                    bool matchedBranch = false;
-                    GreenNode matchedAst = null;
-                    int branchNewOffset = currentOffset;
-
-                    ${branchChecks.join("\n").trim()}
-
-                    matched_branch_${ruleId}:
-                    if (matchedBranch)
-                    {
-                        loopResults.Add(matchedAst);
-                        currentOffset = branchNewOffset;
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-                if (loopResults.Count > 0)
-                {
-                    results.Add(GreenNode.Create(NodeType.OneOrMoreOneOf, loopResults, ${ruleId}, currentOffset - startLoopOffset));
-                    hasCommitted = true;
-                    ${structUpdate}
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one match for OneOrMoreOneOf", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }
-            }`;
-      }
-      if (rule.type === 'not') {
-        const sId = nextSpecId();
-        const escErrorsVar = `notErrors_${ruleId}`;
-        let specificDfaName: string | undefined;
-        if (rule.value instanceof RegExp) {
-          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+          const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
+          seqCode = spec.code.trim();
+          finalMatchCheck = spec.matchedName;
         }
-        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
 
         let triviaSkipCode = "";
         if (SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement) {
@@ -3086,15 +3140,15 @@ ${choiceChecks.join("\n")}
                 ${triviaSkipCode.trim()}
                 // ----- SKIP TRIVIA END -----
                 currentOffset = scanOffset_${ruleId};
-                ${spec.code.trim()}
+                ${seqCode.trim()}
                 currentOffset = backupOffset_${ruleId};
-                if (${spec.matchedName})
+                if (${finalMatchCheck})
                 {
                     ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
                     return new ParseResult
                     {
                         Success = false,
-                        Error = "Encountered forbidden lookahead pattern",
+                        Error = "Encountered forbidden lookahead pattern sequence",
                         NewOffset = backupOffset_${ruleId},
                         DependencyLimit = localMaxOffset,
                         RuleId = ${ruleId}
@@ -3107,13 +3161,63 @@ ${choiceChecks.join("\n")}
             }`;
       }
       if (rule.type === 'assert') {
-        const sId = nextSpecId();
         const escErrorsVar = `assertErrors_${ruleId}`;
-        let specificDfaName: string | undefined;
-        if (rule.value instanceof RegExp) {
-          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+        const isArray = Array.isArray(rule.value);
+
+        let seqCode = "";
+        let finalMatchCheck = "";
+        if (isArray) {
+          const patterns = rule.value as any[];
+          seqCode = `bool seqMatched_${ruleId} = true;\n`;
+          patterns.forEach((p, idx) => {
+            const sId = nextSpecId();
+            let specificDfaName: string | undefined;
+            if (p instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+            if (idx === 0) {
+              seqCode += `
+                {
+                    ${spec.code.trim()}
+                    if (${spec.matchedName})
+                    {
+                        currentOffset = ${spec.newOffsetName};
+                    }
+                    else
+                    {
+                        seqMatched_${ruleId} = false;
+                    }
+                }
+              `;
+            } else {
+              seqCode += `
+                if (seqMatched_${ruleId})
+                {
+                    ${spec.code.trim()}
+                    if (${spec.matchedName})
+                    {
+                        currentOffset = ${spec.newOffsetName};
+                    }
+                    else
+                    {
+                        seqMatched_${ruleId} = false;
+                    }
+                }
+              `;
+            }
+          });
+          finalMatchCheck = `seqMatched_${ruleId}`;
+        } else {
+          const sId = nextSpecId();
+          let specificDfaName: string | undefined;
+          if (rule.value instanceof RegExp) {
+            specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+          }
+          const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
+          seqCode = spec.code.trim();
+          finalMatchCheck = spec.matchedName;
         }
-        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
 
         let triviaSkipCode = "";
         if (SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement) {
@@ -3159,12 +3263,12 @@ ${choiceChecks.join("\n")}
                 ${triviaSkipCode.trim()}
                 // ----- SKIP TRIVIA END -----
                 currentOffset = scanOffset_${ruleId};
-                ${spec.code.trim()}
+                ${seqCode.trim()}
                 currentOffset = backupOffset_${ruleId};
-                if (!${spec.matchedName})
+                if (!${finalMatchCheck})
                 {
                     ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Assertion failed: expected positive lookahead pattern", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Assertion failed: expected positive lookahead pattern sequence", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
                 else

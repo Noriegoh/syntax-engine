@@ -271,7 +271,13 @@ export class SyntaxElement {
     return this;
   }
 
-  Expects(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+  Expects(pattern: string | RegExp | SyntaxElement | TokenMarker | (string | RegExp | SyntaxElement | TokenMarker)[]): this {
+    if (Array.isArray(pattern)) {
+      for (const item of pattern) {
+        this.Expects(item);
+      }
+      return this;
+    }
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -298,11 +304,41 @@ export class SyntaxElement {
     return this;
   }
 
-  Unexpects(pattern: string | SyntaxElement | TokenMarker): this {
-    const unwrapped = unwrapToken(pattern);
+  Not(pattern: any, ...additional: any[]): this {
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const item of arr) {
+        if (Array.isArray(item)) {
+          res.push(...flatten(item));
+        } else {
+          res.push(item);
+        }
+      }
+      return res;
+    };
+
+    const hasAdditional = additional.length > 0;
+    const isArrayInput = Array.isArray(pattern);
+    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
+
+    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    for (const p of allPatterns) {
+      if (p && typeof p === 'object' && '__isTokenMarker' in p) {
+        unwrapped.push(unwrapToken(p));
+      } else {
+        unwrapped.push(p as any);
+      }
+    }
+
+    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
+
     const id = nextRuleId();
-    this.rules.push({ id, type: 'not', value: unwrapped });
+    this.rules.push({ id, type: 'not', value: valueToWrite });
     return this;
+  }
+
+  Unexpects(pattern: any, ...additional: any[]): this {
+    return this.Not(pattern, ...additional);
   }
 
   ExpectsOneOf(...patterns: any[]): this {
@@ -363,25 +399,56 @@ export class SyntaxElement {
   }
 
   ZeroOrMore(pattern: any, ...additional: any[]): this {
-    if (additional.length > 0 || Array.isArray(pattern)) {
-      const all = Array.isArray(pattern) ? pattern : [pattern, ...additional];
-      return this.ZeroOrMoreOneOf(...all);
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const item of arr) {
+        if (Array.isArray(item)) {
+          res.push(...flatten(item));
+        } else {
+          res.push(item);
+        }
+      }
+      return res;
+    };
+
+    const hasAdditional = additional.length > 0;
+    const isArrayInput = Array.isArray(pattern);
+    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
+
+    let hasToken = false;
+    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    for (const p of allPatterns) {
+      if (p && typeof p === 'object' && '__isTokenMarker' in p) {
+        hasToken = true;
+        unwrapped.push(unwrapToken(p));
+      } else {
+        unwrapped.push(p as any);
+      }
     }
-    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
-      const inner = pattern.pattern;
+
+    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
+
+    if (hasToken) {
       const lead = SyntaxElement.defaultLeadingTrivia;
       const trail = SyntaxElement.defaultTrailingTrivia;
       if (lead) this.LeadingTrivia(lead);
-      this.ZeroOrMore(inner as any);
+      
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite });
+      
       if (trail) this.TrailingTrivia(trail);
     } else {
       const id = nextRuleId();
-      this.rules.push({ id, type: 'zeroOrMore', value: pattern });
+      this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite });
     }
     return this;
   }
 
   ZeroOrMoreOneOf(...patterns: any[]): this {
+    return this.ZeroOrMore(patterns);
+  }
+
+  OneOrMore(pattern: any, ...additional: any[]): this {
     const flatten = (arr: any[]): any[] => {
       const res: any[] = [];
       for (const item of arr) {
@@ -393,12 +460,14 @@ export class SyntaxElement {
       }
       return res;
     };
-    
-    const flatPatterns = flatten(patterns);
-      
+
+    const hasAdditional = additional.length > 0;
+    const isArrayInput = Array.isArray(pattern);
+    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
+
     let hasToken = false;
     const unwrapped: (string | RegExp | SyntaxElement)[] = [];
-    for (const p of flatPatterns) {
+    for (const p of allPatterns) {
       if (p && typeof p === 'object' && '__isTokenMarker' in p) {
         hasToken = true;
         unwrapped.push(unwrapToken(p));
@@ -406,82 +475,27 @@ export class SyntaxElement {
         unwrapped.push(p as any);
       }
     }
-    
+
+    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
+
     if (hasToken) {
       const lead = SyntaxElement.defaultLeadingTrivia;
       const trail = SyntaxElement.defaultTrailingTrivia;
       if (lead) this.LeadingTrivia(lead);
       
       const id = nextRuleId();
-      this.rules.push({ id, type: 'zeroOrMoreOneOf', value: unwrapped });
+      this.rules.push({ id, type: 'oneOrMore', value: valueToWrite });
       
       if (trail) this.TrailingTrivia(trail);
     } else {
       const id = nextRuleId();
-      this.rules.push({ id, type: 'zeroOrMoreOneOf', value: unwrapped as any });
-    }
-    return this;
-  }
-
-  OneOrMore(pattern: any, ...additional: any[]): this {
-    if (additional.length > 0 || Array.isArray(pattern)) {
-      const all = Array.isArray(pattern) ? pattern : [pattern, ...additional];
-      return this.OneOrMoreOneOf(...all);
-    }
-    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
-      const inner = pattern.pattern;
-      const lead = SyntaxElement.defaultLeadingTrivia;
-      const trail = SyntaxElement.defaultTrailingTrivia;
-      if (lead) this.LeadingTrivia(lead);
-      this.OneOrMore(inner as any);
-      if (trail) this.TrailingTrivia(trail);
-    } else {
-      const id = nextRuleId();
-      this.rules.push({ id, type: 'oneOrMore', value: pattern });
+      this.rules.push({ id, type: 'oneOrMore', value: valueToWrite });
     }
     return this;
   }
 
   OneOrMoreOneOf(...patterns: any[]): this {
-    const flatten = (arr: any[]): any[] => {
-      const res: any[] = [];
-      for (const item of arr) {
-        if (Array.isArray(item)) {
-          res.push(...flatten(item));
-        } else {
-          res.push(item);
-        }
-      }
-      return res;
-    };
-    
-    const flatPatterns = flatten(patterns);
-      
-    let hasToken = false;
-    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
-    for (const p of flatPatterns) {
-      if (p && typeof p === 'object' && '__isTokenMarker' in p) {
-        hasToken = true;
-        unwrapped.push(unwrapToken(p));
-      } else {
-        unwrapped.push(p as any);
-      }
-    }
-    
-    if (hasToken) {
-      const lead = SyntaxElement.defaultLeadingTrivia;
-      const trail = SyntaxElement.defaultTrailingTrivia;
-      if (lead) this.LeadingTrivia(lead);
-      
-      const id = nextRuleId();
-      this.rules.push({ id, type: 'oneOrMoreOneOf', value: unwrapped });
-      
-      if (trail) this.TrailingTrivia(trail);
-    } else {
-      const id = nextRuleId();
-      this.rules.push({ id, type: 'oneOrMoreOneOf', value: unwrapped as any });
-    }
-    return this;
+    return this.OneOrMore(patterns);
   }
 
   ExpectsEOF(): this {
@@ -516,10 +530,36 @@ export class SyntaxElement {
     return this;
   }
 
-  Assert(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
-    const unwrapped = unwrapToken(pattern);
+  Assert(pattern: any, ...additional: any[]): this {
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const item of arr) {
+        if (Array.isArray(item)) {
+          res.push(...flatten(item));
+        } else {
+          res.push(item);
+        }
+      }
+      return res;
+    };
+
+    const hasAdditional = additional.length > 0;
+    const isArrayInput = Array.isArray(pattern);
+    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
+
+    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    for (const p of allPatterns) {
+      if (p && typeof p === 'object' && '__isTokenMarker' in p) {
+        unwrapped.push(unwrapToken(p));
+      } else {
+        unwrapped.push(p as any);
+      }
+    }
+
+    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
+
     const id = nextRuleId();
-    this.rules.push({ id, type: 'assert', value: unwrapped });
+    this.rules.push({ id, type: 'assert', value: valueToWrite });
     return this;
   }
 
@@ -1359,20 +1399,51 @@ export class SyntaxElement {
     const matches = [];
     const loopStartOffset = currentOffset;
     let localMaxOffset = currentOffset;
+    const isArray = Array.isArray(rule.value);
 
     while (currentOffset < text.length) {
+      let matchedBranch = false;
+      let matchedRes: any = null;
+      let branchNewOffset = currentOffset;
       const beforeLoopErrorsLength = ctx.recoveredErrors.length;
-      const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
-      localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
-      
-      if (!res.success || res.newOffset === currentOffset) {
-        ctx.recoveredErrors.length = beforeLoopErrorsLength;
+      const baseActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
+
+      if (isArray) {
+        for (const pattern of rule.value) {
+          const res = this.parsePattern(pattern, text, currentOffset, memo, rule.id, ctx);
+          localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
+          if (res.success && res.newOffset > currentOffset) {
+            matchedBranch = true;
+            matchedRes = res.value;
+            branchNewOffset = res.newOffset;
+            break;
+          } else {
+            ctx.recoveredErrors.length = beforeLoopErrorsLength;
+            if (ctx.activeScopeEnds) {
+              ctx.activeScopeEnds.length = baseActiveScopeEndsLength;
+            }
+          }
+        }
+      } else {
+        const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
+        localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
+        if (res.success && res.newOffset > currentOffset) {
+          matchedBranch = true;
+          matchedRes = res.value;
+          branchNewOffset = res.newOffset;
+        } else {
+          ctx.recoveredErrors.length = beforeLoopErrorsLength;
+        }
+      }
+
+      if (!matchedBranch) {
         break;
       }
-      if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
-        matches.push(res.value);
+
+      if (matchedRes && (matchedRes.width > 0 || matchedRes.type === 'eof')) {
+        matches.push(matchedRes);
       }
-      currentOffset = res.newOffset;
+      currentOffset = branchNewOffset;
     }
 
     if (matches.length > 0) {
@@ -1392,51 +1463,7 @@ export class SyntaxElement {
     ctx: any,
     results: any[]
   ) {
-    const matches = [];
-    const loopStartOffset = currentOffset;
-    let localMaxOffset = currentOffset;
-    const patterns = rule.value as (string | RegExp | SyntaxElement)[];
-
-    while (currentOffset < text.length) {
-      let matchedBranch = false;
-      let matchedRes: any = null;
-      let branchNewOffset = currentOffset;
-      const beforeLoopErrorsLength = ctx.recoveredErrors.length;
-      const baseActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
-
-      for (const pattern of patterns) {
-        const res = this.parsePattern(pattern, text, currentOffset, memo, rule.id, ctx);
-        localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
-        if (res.success && res.newOffset > currentOffset) {
-          matchedBranch = true;
-          matchedRes = res.value;
-          branchNewOffset = res.newOffset;
-          break;
-        } else {
-          ctx.recoveredErrors.length = beforeLoopErrorsLength;
-          if (ctx.activeScopeEnds) {
-            ctx.activeScopeEnds.length = baseActiveScopeEndsLength;
-          }
-        }
-      }
-
-      if (!matchedBranch) {
-        break;
-      }
-
-      if (matchedRes && (matchedRes.width > 0 || matchedRes.type === 'eof')) {
-        matches.push(matchedRes);
-      }
-      currentOffset = branchNewOffset;
-    }
-
-    if (matches.length > 0) {
-      const loopWidth = currentOffset - loopStartOffset;
-      if (loopWidth > 0) {
-        results.push(GreenNode.create('zeroOrMoreOneOf', matches, rule.id, loopWidth));
-      }
-    }
-    return { success: true, newOffset: currentOffset, dependencyLimit: localMaxOffset };
+    return this.evaluateZeroOrMoreRule(rule, text, currentOffset, memo, ctx, results);
   }
 
   private evaluateOneOrMoreRule(
@@ -1450,20 +1477,51 @@ export class SyntaxElement {
     const matches = [];
     const loopStartOffset = currentOffset;
     let localMaxOffset = currentOffset;
+    const isArray = Array.isArray(rule.value);
 
     while (currentOffset < text.length) {
+      let matchedBranch = false;
+      let matchedRes: any = null;
+      let branchNewOffset = currentOffset;
       const beforeLoopErrorsLength = ctx.recoveredErrors.length;
-      const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
-      localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
-      
-      if (!res.success || res.newOffset === currentOffset) {
-        ctx.recoveredErrors.length = beforeLoopErrorsLength;
+      const baseActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
+
+      if (isArray) {
+        for (const pattern of rule.value) {
+          const res = this.parsePattern(pattern, text, currentOffset, memo, rule.id, ctx);
+          localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
+          if (res.success && res.newOffset > currentOffset) {
+            matchedBranch = true;
+            matchedRes = res.value;
+            branchNewOffset = res.newOffset;
+            break;
+          } else {
+            ctx.recoveredErrors.length = beforeLoopErrorsLength;
+            if (ctx.activeScopeEnds) {
+              ctx.activeScopeEnds.length = baseActiveScopeEndsLength;
+            }
+          }
+        }
+      } else {
+        const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
+        localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
+        if (res.success && res.newOffset > currentOffset) {
+          matchedBranch = true;
+          matchedRes = res.value;
+          branchNewOffset = res.newOffset;
+        } else {
+          ctx.recoveredErrors.length = beforeLoopErrorsLength;
+        }
+      }
+
+      if (!matchedBranch) {
         break;
       }
-      if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
-        matches.push(res.value);
+
+      if (matchedRes && (matchedRes.width > 0 || matchedRes.type === 'eof')) {
+        matches.push(matchedRes);
       }
-      currentOffset = res.newOffset;
+      currentOffset = branchNewOffset;
     }
 
     if (matches.length > 0) {
@@ -1485,53 +1543,7 @@ export class SyntaxElement {
     ctx: any,
     results: any[]
   ) {
-    const matches = [];
-    const loopStartOffset = currentOffset;
-    let localMaxOffset = currentOffset;
-    const patterns = rule.value as (string | RegExp | SyntaxElement)[];
-
-    while (currentOffset < text.length) {
-      let matchedBranch = false;
-      let matchedRes: any = null;
-      let branchNewOffset = currentOffset;
-      const beforeLoopErrorsLength = ctx.recoveredErrors.length;
-      const baseActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
-
-      for (const pattern of patterns) {
-        const res = this.parsePattern(pattern, text, currentOffset, memo, rule.id, ctx);
-        localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
-        if (res.success && res.newOffset > currentOffset) {
-          matchedBranch = true;
-          matchedRes = res.value;
-          branchNewOffset = res.newOffset;
-          break;
-        } else {
-          ctx.recoveredErrors.length = beforeLoopErrorsLength;
-          if (ctx.activeScopeEnds) {
-            ctx.activeScopeEnds.length = baseActiveScopeEndsLength;
-          }
-        }
-      }
-
-      if (!matchedBranch) {
-        break;
-      }
-
-      if (matchedRes && (matchedRes.width > 0 || matchedRes.type === 'eof')) {
-        matches.push(matchedRes);
-      }
-      currentOffset = branchNewOffset;
-    }
-
-    if (matches.length > 0) {
-      const loopWidth = currentOffset - loopStartOffset;
-      if (loopWidth > 0) {
-        results.push(GreenNode.create('oneOrMoreOneOf', matches, rule.id, loopWidth));
-      }
-      return { success: true, newOffset: currentOffset, dependencyLimit: localMaxOffset, hasCommittedUpdate: true };
-    } else {
-      return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: "Expected at least one match" };
-    }
+    return this.evaluateOneOrMoreRule(rule, text, currentOffset, memo, ctx, results);
   }
 
   private evaluateEofRule(
@@ -1566,11 +1578,32 @@ export class SyntaxElement {
         scanOffset++;
       }
     }
-    const res = this.parsePattern(rule.value, text, scanOffset, memo, rule.id, ctx);
-    if (res.success) {
-      return { success: false, newOffset: currentOffset, dependencyLimit: res.dependencyLimit, error: "Encountered forbidden pattern" };
+    const isArray = Array.isArray(rule.value);
+    if (isArray) {
+      let tempOffset = scanOffset;
+      let allSuccess = true;
+      let dependencyLimit = tempOffset;
+      for (const pattern of rule.value) {
+        const res = this.parsePattern(pattern, text, tempOffset, memo, rule.id, ctx);
+        dependencyLimit = Math.max(dependencyLimit, res.dependencyLimit);
+        if (res.success) {
+          tempOffset = res.newOffset;
+        } else {
+          allSuccess = false;
+          break;
+        }
+      }
+      if (allSuccess) {
+        return { success: false, newOffset: currentOffset, dependencyLimit, error: "Encountered forbidden pattern sequence" };
+      }
+      return { success: true, newOffset: currentOffset, dependencyLimit };
+    } else {
+      const res = this.parsePattern(rule.value, text, scanOffset, memo, rule.id, ctx);
+      if (res.success) {
+        return { success: false, newOffset: currentOffset, dependencyLimit: res.dependencyLimit, error: "Encountered forbidden pattern" };
+      }
+      return { success: true, newOffset: currentOffset, dependencyLimit: res.dependencyLimit };
     }
-    return { success: true, newOffset: currentOffset, dependencyLimit: res.dependencyLimit };
   }
 
   private evaluateAssertRule(
@@ -1591,11 +1624,32 @@ export class SyntaxElement {
         scanOffset++;
       }
     }
-    const res = this.parsePattern(rule.value, text, scanOffset, memo, rule.id, ctx);
-    if (res.success) {
-      return { success: true, newOffset: currentOffset, dependencyLimit: res.dependencyLimit };
+    const isArray = Array.isArray(rule.value);
+    if (isArray) {
+      let tempOffset = scanOffset;
+      let allSuccess = true;
+      let dependencyLimit = tempOffset;
+      for (const pattern of rule.value) {
+        const res = this.parsePattern(pattern, text, tempOffset, memo, rule.id, ctx);
+        dependencyLimit = Math.max(dependencyLimit, res.dependencyLimit);
+        if (res.success) {
+          tempOffset = res.newOffset;
+        } else {
+          allSuccess = false;
+          break;
+        }
+      }
+      if (allSuccess) {
+        return { success: true, newOffset: currentOffset, dependencyLimit };
+      }
+      return { success: false, newOffset: currentOffset, dependencyLimit, error: "Assertion sequence failed" };
+    } else {
+      const res = this.parsePattern(rule.value, text, scanOffset, memo, rule.id, ctx);
+      if (res.success) {
+        return { success: true, newOffset: currentOffset, dependencyLimit: res.dependencyLimit };
+      }
+      return { success: false, newOffset: currentOffset, dependencyLimit: res.dependencyLimit, error: "Assertion failed" };
     }
-    return { success: false, newOffset: currentOffset, dependencyLimit: res.dependencyLimit, error: "Assertion failed" };
   }
 
   private evaluateSeparatedByRule(
