@@ -7,6 +7,7 @@ import {
   escapeString, 
   collectElements 
 } from './codegen-core';
+import { isSimpleCaseInsensitiveRegex } from './utils';
 
 
 export function generateDFACSharpMethod(methodName: string, regex: RegExp, ruleId: number, type: 'Rule' | 'Spec'): string {
@@ -187,13 +188,24 @@ function compileSpeculativeMatch(
   const precVar = `prec_${varId}`;
   let code = "";
   if (pattern instanceof RegExp) {
-    const fnName = dfaMethodName || `MatchDFA_Spec_${ruleId}`;
-    code = `
+    if (isSimpleCaseInsensitiveRegex(pattern)) {
+      const esc = escapeString(pattern.source);
+      code = `
+                        const string lit_${varId} = "${esc}";
+                        const int litLen_${varId} = ${pattern.source.length};
+                        bool ${mVar} = ctx.MatchLiteralIgnoreCase(text, currentOffset, lit_${varId}, litLen_${varId});
+                        GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Literal, text.GetText(currentOffset, litLen_${varId}).ToString(), ${ruleId}, litLen_${varId}) : null;
+                        int ${offsetVar} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset;
+                        int ${precVar} = 0;`;
+    } else {
+      const fnName = dfaMethodName || `MatchDFA_Spec_${ruleId}`;
+      code = `
                         string mval_${varId};
                         bool ${mVar} = ${fnName}(text, currentOffset, out mval_${varId});
                         GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Token, mval_${varId}, ${ruleId}, mval_${varId}.Length) : null;
                         int ${offsetVar} = ${mVar} ? currentOffset + mval_${varId}.Length : currentOffset;
                         int ${precVar} = 0;`;
+    }
   } else if (typeof pattern === 'string') {
     const esc = escapeString(pattern);
     code = `
@@ -917,6 +929,18 @@ namespace ${namespaceName}
             }
             ReadOnlyMemory<char> segment = text.GetText(offset, literalLength);
             return segment.Span.SequenceEqual(literal.AsSpan());
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool MatchLiteralIgnoreCase(ITextDocument text, int offset, string literal, int literalLength)
+        {
+            if (offset + literalLength > text.Length) return false;
+            if (_cachedLineTextOffset != -1 && offset >= _cachedLineTextOffset && offset + literalLength <= _cachedLineTextOffset + _cachedLineTextLength)
+            {
+                int relOffset = offset - _cachedLineTextOffset;
+                return _cachedLineText.Span.Slice(relOffset, literalLength).Equals(literal.AsSpan(), StringComparison.OrdinalIgnoreCase);
+            }
+            ReadOnlyMemory<char> segment = text.GetText(offset, literalLength);
+            return segment.Span.Equals(literal.AsSpan(), StringComparison.OrdinalIgnoreCase);
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool MatchRegex(ITextDocument text, int offset, System.Text.RegularExpressions.Regex regex, out string matchedValue)
@@ -2376,12 +2400,16 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
     for (const rule of el.rules) {
       const ruleId = rule.id;
       if (rule.type === 'regex') {
-        registerPattern(rule.value, ruleId, 'Rule');
+        if (!isSimpleCaseInsensitiveRegex(rule.value)) {
+          registerPattern(rule.value, ruleId, 'Rule');
+        }
       } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
         const patterns = rule.value as any[];
         for (const p of patterns) {
           if (p instanceof RegExp) {
-            registerPattern(p, ruleId, 'Spec');
+            if (!isSimpleCaseInsensitiveRegex(p)) {
+              registerPattern(p, ruleId, 'Spec');
+            }
           }
         }
       } else if (
@@ -2396,14 +2424,20 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         rule.type === 'assert'
       ) {
         if (rule.value instanceof RegExp) {
-          registerPattern(rule.value, ruleId, 'Spec');
+          if (!isSimpleCaseInsensitiveRegex(rule.value)) {
+            registerPattern(rule.value, ruleId, 'Spec');
+          }
         }
       } else if (rule.type === 'separatedBy' && rule.value) {
         if (rule.value.item instanceof RegExp) {
-          registerPattern(rule.value.item, ruleId, 'Spec');
+          if (!isSimpleCaseInsensitiveRegex(rule.value.item)) {
+            registerPattern(rule.value.item, ruleId, 'Spec');
+          }
         }
         if (rule.value.separator instanceof RegExp) {
-          registerPattern(rule.value.separator, ruleId, 'Spec');
+          if (!isSimpleCaseInsensitiveRegex(rule.value.separator)) {
+            registerPattern(rule.value.separator, ruleId, 'Spec');
+          }
         }
       }
     }
@@ -2494,6 +2528,31 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 else
                 {
                     if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected literal \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes; // Handled recovery boundary hit
+                }
+            }`;
+      }
+      if (rule.type === 'caseInsensitiveLiteral') {
+        const esc = escapeString(rule.value.source);
+        return `
+            // Case-Insensitive Literal Rule: "${esc}" (id: ${ruleId})
+            if (!panicked)
+            {
+                int startOffset_${ruleId} = currentOffset;
+                const string lit = "${esc}";
+                const int litLen = ${rule.value.source.length};
+                localMaxOffset = Math.Max(localMaxOffset, currentOffset + litLen);
+                if (ctx.MatchLiteralIgnoreCase(text, currentOffset, lit, litLen))
+                {
+                    string matchedText = text.GetText(currentOffset, litLen).ToString();
+                    results.Add(GreenNode.Create(NodeType.Literal, matchedText, ${ruleId}, litLen));
+                    currentOffset += litLen;
+                    hasCommitted = true;
+                    ${structUpdate}
+                }
+                else
+                {
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive literal \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
                         return failRes; // Handled recovery boundary hit
                 }
             }`;

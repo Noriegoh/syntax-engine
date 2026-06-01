@@ -7,6 +7,7 @@ import {
   escapeString, 
   collectElements 
 } from './codegen-core';
+import { isSimpleCaseInsensitiveRegex } from './utils';
 
 /**
  * Generates an optimized, stand-alone, high-performance TypeScript parser/AST file.
@@ -39,13 +40,24 @@ function compileSpeculativeMatchTypeScript(
   const precVar = `prec_${varId}`;
   let code = "";
   if (pattern instanceof RegExp) {
-    const fnName = dfaMethodName || `matchDFA_Spec_${ruleId}`;
-    code = `
+    if (isSimpleCaseInsensitiveRegex(pattern)) {
+      const esc = escapeString(pattern.source);
+      code = `
+                        const lit_${varId} = "${esc}";
+                        const litLen_${varId} = ${pattern.source.length};
+                        const ${mVar} = ctx.matchLiteralIgnoreCase(text, currentOffset, lit_${varId}, litLen_${varId});
+                        const ${astVar} = ${mVar} ? new GreenNode(NodeType.Literal, text.substring(currentOffset, currentOffset + litLen_${varId}), ${ruleId}, litLen_${varId}) : null;
+                        const ${offsetVar} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset;
+                        const ${precVar} = 0;`;
+    } else {
+      const fnName = dfaMethodName || `matchDFA_Spec_${ruleId}`;
+      code = `
                         const resDFA_${varId} = this.${fnName}(text, currentOffset);
                         const ${mVar} = resDFA_${varId}.success;
                         const ${astVar} = ${mVar} ? new GreenNode(NodeType.Token, resDFA_${varId}.matchedValue, ${ruleId}, resDFA_${varId}.matchedValue.length) : null;
                         const ${offsetVar} = ${mVar} ? currentOffset + resDFA_${varId}.matchedValue.length : currentOffset;
                         const ${precVar} = 0;`;
+    }
   } else if (typeof pattern === 'string') {
     const esc = escapeString(pattern);
     code = `
@@ -367,12 +379,16 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
     for (const rule of el.rules) {
       const ruleId = rule.id;
       if (rule.type === 'regex') {
-        registerPattern(rule.value, ruleId, 'Rule');
+        if (!isSimpleCaseInsensitiveRegex(rule.value)) {
+          registerPattern(rule.value, ruleId, 'Rule');
+        }
       } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
         const patterns = rule.value as any[];
         for (const p of patterns) {
           if (p instanceof RegExp) {
-            registerPattern(p, ruleId, 'Spec');
+            if (!isSimpleCaseInsensitiveRegex(p)) {
+              registerPattern(p, ruleId, 'Spec');
+            }
           }
         }
       } else if (
@@ -387,14 +403,20 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
         rule.type === 'assert'
       ) {
         if (rule.value instanceof RegExp) {
-          registerPattern(rule.value, ruleId, 'Spec');
+          if (!isSimpleCaseInsensitiveRegex(rule.value)) {
+            registerPattern(rule.value, ruleId, 'Spec');
+          }
         }
       } else if (rule.type === 'separatedBy' && rule.value) {
         if (rule.value.item instanceof RegExp) {
-          registerPattern(rule.value.item, ruleId, 'Spec');
+          if (!isSimpleCaseInsensitiveRegex(rule.value.item)) {
+            registerPattern(rule.value.item, ruleId, 'Spec');
+          }
         }
         if (rule.value.separator instanceof RegExp) {
-          registerPattern(rule.value.separator, ruleId, 'Spec');
+          if (!isSimpleCaseInsensitiveRegex(rule.value.separator)) {
+            registerPattern(rule.value.separator, ruleId, 'Spec');
+          }
         }
       }
     }
@@ -479,6 +501,33 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     ${structUpdate}
                 } else {
                     const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected literal \\"${esc}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    if (rec.recovered) {
+                        currentOffset = rec.recoveredOffset;
+                        panicked = true;
+                    } else {
+                        return rec.failResult!;
+                    }
+                }
+            }`;
+      }
+      
+      if (rule.type === 'caseInsensitiveLiteral') {
+        const esc = escapeString(rule.value.source);
+        return `
+            // Case-Insensitive Literal Rule: "${esc}" (id: ${ruleId})
+            if (!panicked) {
+                const startOffset_${ruleId} = currentOffset;
+                const lit = "${esc}";
+                const litLen = ${rule.value.source.length};
+                localMaxOffset = Math.max(localMaxOffset, currentOffset + litLen);
+                if (ctx.matchLiteralIgnoreCase(text, currentOffset, lit, litLen)) {
+                    const matchedText = text.substring(currentOffset, currentOffset + litLen);
+                    this.addNode(results, new GreenNode(NodeType.Literal, matchedText, ${ruleId}, litLen), ${isInline});
+                    currentOffset += litLen;
+                    hasCommitted = true;
+                    ${structUpdate}
+                } else {
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive literal \\"${esc}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -1247,6 +1296,10 @@ export class ParserContext {
     public matchLiteral(text: ITextDocument, offset: number, literal: string, length: number): boolean {
         if (offset + length > text.length) return false;
         return text.substring(offset, offset + length) === literal;
+    }
+    public matchLiteralIgnoreCase(text: ITextDocument, offset: number, literal: string, length: number): boolean {
+        if (offset + length > text.length) return false;
+        return text.substring(offset, offset + length).toLowerCase() === literal.toLowerCase();
     }
 }
 

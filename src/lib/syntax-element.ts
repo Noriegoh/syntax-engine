@@ -1,4 +1,4 @@
-import { matchRegex, WS_REGEX, nextRuleId } from './utils';
+import { matchRegex, WS_REGEX, nextRuleId, isSimpleCaseInsensitiveRegex } from './utils';
 
 // ==========================================
 // SECTION 1: GLOBAL TYPE & INTERFACE DEFINITIONS
@@ -6,6 +6,7 @@ import { matchRegex, WS_REGEX, nextRuleId } from './utils';
 
 export type RuleType = 
   | 'literal' 
+  | 'caseInsensitiveLiteral'
   | 'regex' 
   | 'element' 
   | 'not' 
@@ -374,7 +375,11 @@ export class SyntaxElement {
       if (inner instanceof SyntaxElement) {
         rule = { id, type: 'element', value: inner };
       } else if (inner instanceof RegExp) {
-        rule = { id, type: 'regex', value: inner };
+        if (isSimpleCaseInsensitiveRegex(inner)) {
+          rule = { id, type: 'caseInsensitiveLiteral', value: inner };
+        } else {
+          rule = { id, type: 'regex', value: inner };
+        }
       } else {
         rule = { id, type: 'literal', value: inner };
       }
@@ -389,7 +394,11 @@ export class SyntaxElement {
       if (pattern instanceof SyntaxElement) {
         this.rules.push({ id, type: 'element', value: pattern });
       } else if (pattern instanceof RegExp) {
-        this.rules.push({ id, type: 'regex', value: pattern });
+        if (isSimpleCaseInsensitiveRegex(pattern)) {
+          this.rules.push({ id, type: 'caseInsensitiveLiteral', value: pattern });
+        } else {
+          this.rules.push({ id, type: 'regex', value: pattern });
+        }
       } else {
         this.rules.push({ id, type: 'literal', value: pattern });
       }
@@ -684,7 +693,11 @@ export class SyntaxElement {
       if (realPattern instanceof SyntaxElement) {
         rule = { id, type: 'element', value: realPattern };
       } else if (realPattern instanceof RegExp) {
-        rule = { id, type: 'regex', value: realPattern };
+        if (isSimpleCaseInsensitiveRegex(realPattern)) {
+          rule = { id, type: 'caseInsensitiveLiteral', value: realPattern };
+        } else {
+          rule = { id, type: 'regex', value: realPattern };
+        }
       } else {
         rule = { id, type: 'literal', value: realPattern };
       }
@@ -957,6 +970,15 @@ export class SyntaxElement {
         return { success: false, error: subResult?.error || `Failed sub-element: ${pattern.name}`, newOffset: subResult ? subResult.newOffset : currentOffset, dependencyLimit: subResult ? (subResult.dependencyLimit !== undefined ? subResult.dependencyLimit : subResult.newOffset) : currentOffset };
       }
     } else if (pattern instanceof RegExp) {
+      if (isSimpleCaseInsensitiveRegex(pattern)) {
+        const source = pattern.source;
+        const slice = text.slice(currentOffset, currentOffset + source.length);
+        if (slice.toLowerCase() === source.toLowerCase()) {
+          return { success: true, value: GreenNode.create('literal', slice, ruleId, source.length), newOffset: currentOffset + source.length, dependencyLimit: currentOffset + source.length };
+        } else {
+          return { success: false, error: `Expected case-insensitive literal: ${source}`, newOffset: currentOffset, dependencyLimit: currentOffset + source.length };
+        }
+      }
       const match = matchRegex(pattern, text, currentOffset);
       if (match) {
         return { success: true, value: GreenNode.create('token', match[0], ruleId, match[0].length), newOffset: currentOffset + match[0].length, dependencyLimit: currentOffset + match[0].length };

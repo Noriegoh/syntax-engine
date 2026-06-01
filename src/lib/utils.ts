@@ -75,3 +75,13 @@ export function findDiff(oldStr: string, newStr: string): { editOffset: number; 
     insertedText
   };
 }
+
+/**
+ * Checks if a RegExp is a simple word pattern with case-insensitive /i flag and no regex special chars.
+ */
+export function isSimpleCaseInsensitiveRegex(pattern: any): boolean {
+  if (!(pattern instanceof RegExp)) return false;
+  if (!pattern.flags.includes('i')) return false;
+  return !/[\\^$*+?.()|[\]{}]/.test(pattern.source);
+}
+
