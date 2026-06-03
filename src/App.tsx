@@ -1537,6 +1537,25 @@ export default function App() {
   const transformComponentRef = useRef<any>(null);
   const editorScrollContainerRef = useRef<HTMLDivElement>(null);
   const diskFileInputRef = useRef<HTMLInputElement>(null);
+  const testEditorRef = useRef<any>(null);
+
+  // Selector to flatten symbols and references for the AST Goto Definition action
+  const allSymbolsAndReferences = useMemo(() => {
+    if (!scopeChain) return { symbols: [], references: [] };
+    const symbols: SymbolDefinition[] = [];
+    const references: SymbolReference[] = [];
+    const collect = (scope: LexicalScope) => {
+      if (scope.symbols) symbols.push(...scope.symbols);
+      if (scope.references) references.push(...scope.references);
+      if (scope.children) {
+        for (const child of scope.children) {
+          collect(child);
+        }
+      }
+    };
+    collect(scopeChain);
+    return { symbols, references };
+  }, [scopeChain]);
 
   const doCopy = (key: string, text: string) => {
     navigator.clipboard.writeText(text);
@@ -1549,14 +1568,23 @@ export default function App() {
   const scrollToNode = (node: any) => {
     if (!node || typeof node.start !== 'number' || typeof node.end !== 'number') return;
     
-    // Focus the editor's textarea
-    const textarea = editorScrollContainerRef.current?.querySelector('textarea');
-    if (textarea) {
-      textarea.focus();
-      textarea.setSelectionRange(node.start, node.end);
+    // Focus and select/scroll in CodeMirror if available
+    if (testEditorRef.current?.view) {
+      testEditorRef.current.view.focus();
+      testEditorRef.current.view.dispatch({
+        selection: { anchor: node.start, head: node.end },
+        scrollIntoView: true
+      });
+    } else {
+      // Legacy textarea fallback
+      const textarea = editorScrollContainerRef.current?.querySelector('textarea');
+      if (textarea) {
+        textarea.focus();
+        textarea.setSelectionRange(node.start, node.end);
+      }
     }
     
-    // Smooth scroll inside parent container
+    // Scroll and position calculation reports
     const textBefore = debouncedTestInput.substring(0, node.start);
     const linesBefore = textBefore.split('\n');
     const line = linesBefore.length;
@@ -2407,10 +2435,10 @@ export default function App() {
   const renderCSTVisualNode = (node: any, depth: number = 0, isLast: boolean = true, path: string = "root"): React.ReactNode => {
     if (!node) return null;
     
-    // Handle primitive nodes (strings/numbers) directly
+    // Handle primitive nodes (strings/numbers/booleans) directly
     if (typeof node !== 'object') {
       return (
-        <div key={path} className="ml-12 mt-3 p-2 px-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl text-[11px] font-mono text-emerald-300/90 inline-block shadow-sm">
+        <div key={path} className="p-2 px-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl text-[11px] font-mono text-emerald-300/90 inline-block shadow-sm">
            {String(node)}
         </div>
       );
@@ -2453,22 +2481,19 @@ export default function App() {
             setHoveredCstNode(null);
           }}
           className={cn(
-            "ml-12 mt-3 p-3 bg-red-500/10 border rounded-xl flex items-start gap-3 max-w-[400px] shadow-lg shadow-red-500/5 relative group cursor-pointer transition-all",
-            isSelected ? "border-red-500 ring-2 ring-red-500/30" : "border-red-500/40 hover:border-red-500/80",
-            isHovered ? "bg-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.2)]" : ""
+            "p-3.5 bg-red-500/10 border rounded-xl flex items-start gap-3 max-w-[320px] shadow-lg shadow-red-500/5 relative group cursor-pointer transition-all text-left",
+            isSelected ? "border-red-500 ring-2 ring-red-500/30 bg-red-500/20" : "border-red-500/40 hover:border-red-500/80",
+            isHovered ? "bg-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.2)] border-red-400" : ""
           )}
         >
-          <div className="absolute -left-5 top-0 bottom-0 w-px bg-red-500/20 group-hover:bg-red-500/40 transition-colors">
-            <div className="absolute top-5 left-0 w-5 h-px bg-red-500/20 group-hover:bg-red-500/40 transition-colors" />
-          </div>
           <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
           <div className="flex flex-col">
             <span className="text-[8px] font-black uppercase tracking-widest text-red-400 mb-1">RECOVERED ERROR NODE</span>
-            <span className="text-[11px] font-mono text-red-100/80 leading-relaxed italic">
+            <span className="text-[11px] font-mono text-red-100/80 leading-relaxed italic truncate max-w-[240px]">
               {node.message}
             </span>
             <span className="text-[8px] font-bold text-red-400/50 mt-2 uppercase tracking-tighter">
-              Panic Recovery from offset {node.start} to {node.end}
+              Panic Recovery offset {node.start}..{node.end}
             </span>
           </div>
         </motion.div>
@@ -2480,30 +2505,19 @@ export default function App() {
     const isSelected = selectedCstNode === node;
     const isHovered = hoveredCstNode === node;
     
-    return (
-      <motion.div 
-        key={path} 
-        initial={{ opacity: 0, x: -5 }}
-        animate={{ opacity: 1, x: 0 }}
-        className={cn(
-          "relative select-none",
-          depth > 0 ? "ml-8 mt-3 pb-1" : ""
-        )}
-      >
-        {/* Connector lines with curved edges */}
-        {depth > 0 && (
-          <div className={cn(
-            "absolute -left-5 top-0 w-px bg-white/10",
-            isLast ? "h-5" : "bottom-0"
-          )}>
-            {/* Horizontal branch line */}
-            <div className={cn(
-              "absolute top-5 left-0 w-5 h-px bg-white/10",
-              isLast && "rounded-bl-lg"
-            )} />
-          </div>
-        )}
+    // Extract list of children nodes
+    let children: any[] = [];
+    if (isArray) {
+      children = value.filter(n => n !== null && n !== undefined);
+    } else if (typeof value === 'object' && value !== null) {
+      children = [value];
+    }
 
+    const hasChildren = children.length > 0;
+
+    return (
+      <div key={path} className="flex flex-col items-center relative">
+        {/* Main Node Box */}
         <div 
           onClick={(e) => {
             e.stopPropagation();
@@ -2517,52 +2531,71 @@ export default function App() {
             setHoveredCstNode(null);
           }}
           className={cn(
-            "inline-flex items-center gap-3 px-3 py-2 rounded-xl transition-all border group shadow-sm relative z-10 cursor-pointer",
-            isLeaf ? "bg-emerald-500/10 border-emerald-500/20" : "bg-white/5 border-white/10 hover:bg-white/[0.08]",
-            isSelected ? "ring-2 ring-indigo-500 bg-indigo-500/10 border-indigo-400" : "hover:border-indigo-500/40",
-            isHovered ? "border-indigo-400 bg-white/10 shadow-[0_0_12px_rgba(99,102,241,0.25)]" : ""
+            "inline-flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border group shadow-md relative z-10 cursor-pointer min-w-[124px] justify-center text-center",
+            isLeaf ? "bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/15" : "bg-black/80 border-white/10 hover:bg-white/[0.08]",
+            isSelected ? "ring-2 ring-indigo-500 bg-indigo-500/20 border-indigo-400 shadow-[0_0_20px_rgba(99,102,241,0.35)]" : "hover:border-indigo-500/40",
+            isHovered ? "border-indigo-400 bg-indigo-950/40 shadow-[0_0_15px_rgba(99,102,241,0.25)]" : ""
           )}
         >
           <div className={cn(
-            "w-2 h-2 rounded-full ring-4 ring-black/20",
+            "w-2 h-2 rounded-full shrink-0 ring-4 ring-black/40",
             isLeaf ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.4)]" : "bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.4)]"
           )} />
           
-          <div className="flex flex-col min-w-[40px]">
+          <div className="flex flex-col items-center">
             <span className={cn(
-              "text-[7.5px] font-black uppercase tracking-[0.2em] leading-none mb-1 opacity-50",
+              "text-[8px] font-black uppercase tracking-[0.25em] leading-none mb-1.5 opacity-60",
               isLeaf ? "text-emerald-400" : "text-indigo-400"
             )}>
-              {type}
+              {type || 'Rule'}
             </span>
             {isLeaf ? (
-              <span className="text-[11px] font-mono text-white/90 break-all max-w-[280px]">
+              <span className="text-[11px] font-mono text-white/95 break-all max-w-[210px] font-medium leading-tight">
                 {value !== undefined ? String(value) : "null"}
               </span>
             ) : isArray ? (
-              <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tight">
-                {value.length} {value.length === 1 ? 'branch' : 'branches'}
+              <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider font-mono">
+                {children.length} {children.length === 1 ? 'branch' : 'branches'}
               </span>
             ) : null}
           </div>
         </div>
 
-        {/* Recurse on array value */}
-        {isArray && value.length > 0 && (
-          <div className="flex flex-col">
-            {value.map((child: any, idx: number) => 
-               renderCSTVisualNode(child, depth + 1, idx === value.length - 1, `${path}-${idx}`)
-            )}
+        {/* Vertical connective track going down to horizontal split line */}
+        {hasChildren && (
+          <div className="w-px h-6 bg-indigo-500/30 relative">
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1.5 h-1.5 bg-indigo-500/40 rounded-full" />
           </div>
         )}
 
-        {/* Recurse on single object value */}
-        {!isArray && typeof value === 'object' && value !== null && (
-          <div className="flex flex-col">
-            {renderCSTVisualNode(value, depth + 1, true, `${path}-sub`)}
+        {/* Horizontal flex of sub-children */}
+        {hasChildren && (
+          <div className="flex flex-row items-start justify-center gap-x-8 relative">
+            {children.map((child: any, idx: number) => {
+              const isFirst = idx === 0;
+              const isLast = idx === children.length - 1;
+              return (
+                <div key={`${path}-${idx}`} className="flex flex-col items-center relative">
+                  {/* Left and right connecting segments */}
+                  {children.length > 1 && (
+                    <>
+                      {!isFirst && <div className="absolute top-0 left-0 right-1/2 h-px bg-indigo-500/30" />}
+                      {!isLast && <div className="absolute top-0 left-1/2 right-0 h-px bg-indigo-500/30" />}
+                    </>
+                  )}
+                  {/* Incoming line of the child itself */}
+                  <div className="w-px h-6 bg-indigo-500/30 relative">
+                    <div className="absolute -bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-500 rounded-full" />
+                  </div>
+                  
+                  {/* Recurse on children */}
+                  {renderCSTVisualNode(child, depth + 1, idx === children.length - 1, `${path}-${idx}`)}
+                </div>
+              );
+            })}
           </div>
         )}
-      </motion.div>
+      </div>
     );
   };
 
@@ -3553,6 +3586,10 @@ export default function App() {
                 </div>
                 <div ref={editorScrollContainerRef} className="flex-1 overflow-auto custom-scrollbar bg-[#161618] relative flex flex-row">
                   <TestCodeMirror
+                    editorRef={testEditorRef}
+                    onGotoDefinition={(def) => {
+                      setSelectedSymbol(def);
+                    }}
                     value={testInput}
                     onChange={(code, edit) => {
                       if (edit) {
@@ -3574,7 +3611,9 @@ export default function App() {
                       selectedSymbol,
                       hoveredReference,
                       selectedReference,
-                      parseError
+                      parseError,
+                      symbols: allSymbolsAndReferences.symbols,
+                      references: allSymbolsAndReferences.references
                     }}
                     className="h-full"
                   />
@@ -3843,7 +3882,7 @@ export default function App() {
                                 wrapperStyle={{ width: '100%', height: '100%' }}
                                 contentStyle={{ width: '100%', height: '100%' }}
                               >
-                                <div className="p-12 min-h-full min-w-full">
+                                <div className="p-16 min-h-full min-w-full flex items-center justify-center bg-transparent">
                                   {renderCSTVisualNode(visualizeMode === 'ast' ? astResult : parseResult)}
                                 </div>
                               </TransformComponent>

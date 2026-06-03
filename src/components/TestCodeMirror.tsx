@@ -327,7 +327,11 @@ interface TestCodeMirrorProps {
     hoveredReference: any;
     selectedReference: any;
     parseError: any;
+    symbols?: any[];
+    references?: any[];
   };
+  onGotoDefinition?: (definition: any) => void;
+  editorRef?: React.RefObject<any>;
   style?: React.CSSProperties;
   className?: string;
 }
@@ -337,6 +341,8 @@ export const TestCodeMirror: React.FC<TestCodeMirrorProps> = React.memo(({
   onChange,
   setCursorPosition,
   parserState,
+  onGotoDefinition,
+  editorRef,
   style,
   className
 }) => {
@@ -370,12 +376,67 @@ export const TestCodeMirror: React.FC<TestCodeMirrorProps> = React.memo(({
       }
     });
 
+    // CodeMirror DOM Event Handlers for Ctrl/Cmd Click or Double-Click to Goto Definition
+    const domHandlers = EditorView.domEventHandlers({
+      dblclick(event, view) {
+        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+        if (pos !== null) {
+          const refs = parserState.references || [];
+          const syms = parserState.symbols || [];
+          const clickedRef = refs.find((r: any) => pos >= r.start && pos <= r.end);
+          if (clickedRef && clickedRef.resolvedSymbolId) {
+            const definition = syms.find((s: any) => s.id === clickedRef.resolvedSymbolId);
+            if (definition) {
+              event.preventDefault();
+              event.stopPropagation();
+              view.dispatch({
+                selection: { anchor: definition.start, head: definition.end },
+                scrollIntoView: true
+              });
+              if (onGotoDefinition) {
+                onGotoDefinition(definition);
+              }
+              return true;
+            }
+          }
+        }
+        return false;
+      },
+      click(event, view) {
+        if (event.ctrlKey || event.metaKey) {
+          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+          if (pos !== null) {
+            const refs = parserState.references || [];
+            const syms = parserState.symbols || [];
+            const clickedRef = refs.find((r: any) => pos >= r.start && pos <= r.end);
+            if (clickedRef && clickedRef.resolvedSymbolId) {
+              const definition = syms.find((s: any) => s.id === clickedRef.resolvedSymbolId);
+              if (definition) {
+                event.preventDefault();
+                event.stopPropagation();
+                view.dispatch({
+                  selection: { anchor: definition.start, head: definition.end },
+                  scrollIntoView: true
+                });
+                if (onGotoDefinition) {
+                  onGotoDefinition(definition);
+                }
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      }
+    });
+
     return [
       cstViewPlugin,
       selectionUpdateListener,
+      domHandlers,
       testEditorTheme
     ];
-  }, [parserState, setCursorPosition]);
+  }, [parserState, setCursorPosition, onGotoDefinition]);
 
   const handleDocChange = (val: string, viewUpdate: ViewUpdate) => {
     let edit: EditDetail | undefined;
@@ -392,6 +453,7 @@ export const TestCodeMirror: React.FC<TestCodeMirrorProps> = React.memo(({
   return (
     <div className={`w-full h-full text-[13px] font-mono leading-relaxed overflow-hidden ${className || ''}`} style={style}>
       <CodeMirror
+        ref={editorRef}
         value={value}
         height="100%"
         theme="none"
