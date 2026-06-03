@@ -261,7 +261,7 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
         let tsType = "RedNode";
         let isList = false;
         
-        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy') {
+        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'separatedBy') {
           isList = true;
           const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
           if (leafValue instanceof SyntaxElement) {
@@ -320,8 +320,6 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
           rule.type === 'trailingTrivia' ||
           rule.type === 'zeroOrMore' ||
           rule.type === 'oneOrMore' ||
-          rule.type === 'zeroOrMoreOneOf' ||
-          rule.type === 'oneOrMoreOneOf' ||
           rule.type === 'not' ||
           rule.type === 'assert'
         ) {
@@ -382,7 +380,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
         if (!isSimpleCaseInsensitiveRegex(rule.value)) {
           registerPattern(rule.value, ruleId, 'Rule');
         }
-      } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
+      } else if ((rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && Array.isArray(rule.value)) {
         const patterns = rule.value as any[];
         for (const p of patterns) {
           if (p instanceof RegExp) {
@@ -474,7 +472,6 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
         rule.type === 'trailingTrivia' ||
         rule.type === 'optional' ||
         rule.type === 'zeroOrMore' ||
-        rule.type === 'zeroOrMoreOneOf' ||
         rule.type === 'not' ||
         rule.type === 'assert'
       ) {
@@ -1246,8 +1243,6 @@ export enum NodeType {
     ErrorNode = "ErrorNode",
     ZeroOrMore = "ZeroOrMore",
     OneOrMore = "OneOrMore",
-    ZeroOrMoreOneOf = "ZeroOrMoreOneOf",
-    OneOrMoreOneOf = "OneOrMoreOneOf",
     ${customNodeTypes.map(name => `${name} = "${name}"`).join(",\n    ")}
 }
 

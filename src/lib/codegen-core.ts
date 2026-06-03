@@ -49,18 +49,20 @@ export function collectElements(root: SyntaxElement): SyntaxElement[] {
     for (const rule of el.rules) {
       if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
         visit(rule.value);
-      } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
-        for (const child of rule.value) {
-          if (child instanceof SyntaxElement) {
-            visit(child);
+      } else if (rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+        if (Array.isArray(rule.value)) {
+          for (const child of rule.value) {
+            if (child instanceof SyntaxElement) {
+              visit(child);
+            }
           }
+        } else if (rule.value instanceof SyntaxElement) {
+          visit(rule.value);
         }
       } else if (
         rule.type === 'optional' ||
         rule.type === 'leadingTrivia' ||
         rule.type === 'trailingTrivia' ||
-        rule.type === 'zeroOrMore' ||
-        rule.type === 'oneOrMore' ||
         rule.type === 'not' ||
         rule.type === 'beginScope' ||
         rule.type === 'endScope' ||

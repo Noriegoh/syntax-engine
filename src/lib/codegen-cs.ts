@@ -282,7 +282,7 @@ ${enumsCode}${elements.map(el => {
         let isList = false;
         
         // Determine type based on rule content
-        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy') {
+        if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'separatedBy') {
           isList = true;
           const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
           if (leafValue instanceof SyntaxElement) {
@@ -352,8 +352,6 @@ ${enumsCode}${elements.map(el => {
           rule.type === 'trailingTrivia' ||
           rule.type === 'zeroOrMore' ||
           rule.type === 'oneOrMore' ||
-          rule.type === 'zeroOrMoreOneOf' ||
-          rule.type === 'oneOrMoreOneOf' ||
           rule.type === 'not' ||
           rule.type === 'assert'
         ) {
@@ -480,7 +478,7 @@ export function generateModularCSharp(
           let csharpType = "AstNode";
           let isList = false;
           
-          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy') {
+          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'separatedBy') {
             isList = true;
             const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
             if (leafValue instanceof SyntaxElement) {
@@ -550,8 +548,6 @@ export function generateModularCSharp(
             rule.type === 'trailingTrivia' ||
             rule.type === 'zeroOrMore' ||
             rule.type === 'oneOrMore' ||
-            rule.type === 'zeroOrMoreOneOf' ||
-            rule.type === 'oneOrMoreOneOf' ||
             rule.type === 'not' ||
             rule.type === 'assert'
           ) {
@@ -1644,7 +1640,7 @@ ${ruleTokenNamesInit}
             var result = new List<AstNode>();
             if (node == null) return result;
             
-            if (node.Type != NodeType.Whitespace && node.Type != NodeType.Optional && node.Type != NodeType.ZeroOrMore && node.Type != NodeType.OneOrMore && node.Type != NodeType.ZeroOrMoreOneOf && node.Type != NodeType.OneOrMoreOneOf)
+            if (node.Type != NodeType.Whitespace && node.Type != NodeType.Optional && node.Type != NodeType.ZeroOrMore && node.Type != NodeType.OneOrMore)
             {
                 result.Add(node);
             }
@@ -2403,7 +2399,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         if (!isSimpleCaseInsensitiveRegex(rule.value)) {
           registerPattern(rule.value, ruleId, 'Rule');
         }
-      } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
+      } else if ((rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && Array.isArray(rule.value)) {
         const patterns = rule.value as any[];
         for (const p of patterns) {
           if (p instanceof RegExp) {
@@ -2500,7 +2496,6 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         rule.type === 'trailingTrivia' ||
         rule.type === 'optional' ||
         rule.type === 'zeroOrMore' ||
-        rule.type === 'zeroOrMoreOneOf' ||
         rule.type === 'not' ||
         rule.type === 'assert'
       ) {
@@ -3542,8 +3537,6 @@ namespace ${namespaceName}
         ErrorNode,
         ZeroOrMore,
         OneOrMore,
-        ZeroOrMoreOneOf,
-        OneOrMoreOneOf,
         ${customNodeTypes.join(",\n        ")}
     }
     public struct GreenNodeKey : IEquatable<GreenNodeKey>

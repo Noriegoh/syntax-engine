@@ -1,6 +1,54 @@
 import React from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Code2, X, Check, Copy, FileCode } from "lucide-react";
+import { cn } from "../lib/utils";
+import CodeMirror from '@uiw/react-codemirror';
+import { javascript } from '@codemirror/lang-javascript';
+import { EditorView } from '@codemirror/view';
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { tags as t } from '@lezer/highlight';
+
+const tsTheme = EditorView.theme({
+  "&": {
+    color: "#cbd5e1",
+    backgroundColor: "transparent"
+  },
+  ".cm-content": {
+    caretColor: "#6366f1",
+    fontFamily: '"Fira Code", monospace',
+    fontSize: "13px"
+  },
+  "&.cm-focused .cm-cursor": {
+    borderLeftColor: "#6366f1"
+  },
+  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
+    backgroundColor: "rgba(99, 102, 241, 0.25)"
+  },
+  ".cm-gutters": {
+    backgroundColor: "transparent",
+    color: "#475569",
+    border: "none"
+  },
+  ".cm-activeLine": {
+    backgroundColor: "rgba(255, 255, 255, 0.04)"
+  },
+  ".cm-activeLineGutter": {
+    backgroundColor: "rgba(255, 255, 255, 0.04)"
+  }
+});
+
+const tsHighlightStyle = HighlightStyle.define([
+  { tag: t.comment, color: '#64748b', fontStyle: 'italic' },
+  { tag: t.keyword, color: '#f472b6', fontWeight: 'bold' }, // pink-400
+  { tag: t.string, color: '#fcd34d' }, // amber-300
+  { tag: t.number, color: '#22d3ee' }, // cyan-400
+  { tag: t.typeName, color: '#2dd4bf' }, // teal-400
+  { tag: t.className, color: '#38bdf8' }, // sky-400
+  { tag: t.function(t.variableName), color: '#34d399' }, // emerald-400
+  { tag: t.operator, color: '#818cf8' }, // indigo-400
+]);
+
+const tsExtensions = [javascript({ typescript: true }), tsTheme, syntaxHighlighting(tsHighlightStyle)];
 
 interface GeneratedFile {
   name: string;
@@ -18,7 +66,7 @@ interface TypeScriptExportModalProps {
   setCopiedFileIndex: (val: number | null) => void;
 }
 
-export const TypeScriptExportModal: React.FC<TypeScriptExportModalProps> = ({
+export const TypeScriptExportModal = React.memo<TypeScriptExportModalProps>(({
   showTSModal,
   setShowTSModal,
   tsGeneratedFiles,
@@ -130,11 +178,32 @@ export const TypeScriptExportModal: React.FC<TypeScriptExportModalProps> = ({
                 </div>
 
                 {/* Code Viewer Viewport */}
-                <div className="flex-1 overflow-auto p-6 font-mono text-[11px] text-slate-300 select-text leading-relaxed bg-slate-950/80 custom-scrollbar">
+                <div className="flex-1 bg-slate-950/80 relative overflow-hidden">
                   {tsGeneratedFiles[tsSelectedFileIndex] ? (
-                    <pre className="whitespace-pre overflow-auto font-mono text-[11px] select-all">
-                      <code>{tsGeneratedFiles[tsSelectedFileIndex].content}</code>
-                    </pre>
+                    <div className="w-full h-full text-[13px] font-mono leading-relaxed overflow-hidden">
+                      <CodeMirror
+                        value={tsGeneratedFiles[tsSelectedFileIndex].content}
+                        height="100%"
+                        theme="none"
+                        extensions={tsExtensions}
+                        editable={false}
+                        readOnly={true}
+                        basicSetup={{
+                          lineNumbers: true,
+                          foldGutter: true,
+                          dropCursor: false,
+                          allowMultipleSelections: false,
+                          indentOnInput: false,
+                          syntaxHighlighting: true,
+                          bracketMatching: true,
+                          closeBrackets: false,
+                          autocompletion: false,
+                          highlightActiveLineGutter: true,
+                          highlightActiveLine: true,
+                        }}
+                        className="h-full"
+                      />
+                    </div>
                   ) : (
                     <div className="flex items-center justify-center h-full text-slate-600 font-sans">No content available</div>
                   )}
@@ -146,4 +215,11 @@ export const TypeScriptExportModal: React.FC<TypeScriptExportModalProps> = ({
       )}
     </AnimatePresence>
   );
-};
+}, (prev, next) => {
+  return (
+    prev.showTSModal === next.showTSModal &&
+    prev.tsSelectedFileIndex === next.tsSelectedFileIndex &&
+    prev.copiedFileIndex === next.copiedFileIndex &&
+    prev.tsGeneratedFiles === next.tsGeneratedFiles
+  );
+});

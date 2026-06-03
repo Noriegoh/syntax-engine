@@ -19,8 +19,6 @@ export type RuleType =
   | 'trailingTrivia' 
   | 'zeroOrMore' 
   | 'oneOrMore' 
-  | 'zeroOrMoreOneOf'
-  | 'oneOrMoreOneOf'
   | 'eof' 
   | 'beginScope' 
   | 'endScope';
@@ -144,7 +142,7 @@ export class RedNode {
         const rule = SyntaxElement.ruleRegistry?.get(parentRuleId);
         if (rule && rule.label) {
           const label = rule.label;
-          const isList = rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf' || rule.type === 'separatedBy';
+          const isList = rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'separatedBy';
           
           // Store in our safe _fields mapping first to avoid colliding with built-in properties
           if (isList) {
@@ -559,10 +557,6 @@ export class SyntaxElement {
     return this;
   }
 
-  ZeroOrMoreOneOf(...patterns: any[]): this {
-    return this.ZeroOrMore(patterns);
-  }
-
   OneOrMore(pattern: any, ...additional: any[]): this {
     const flatten = (arr: any[]): any[] => {
       const res: any[] = [];
@@ -607,10 +601,6 @@ export class SyntaxElement {
       this.rules.push({ id, type: 'oneOrMore', value: valueToWrite });
     }
     return this;
-  }
-
-  OneOrMoreOneOf(...patterns: any[]): this {
-    return this.OneOrMore(patterns);
   }
 
   ExpectsEOF(): this {
@@ -721,7 +711,7 @@ export class SyntaxElement {
       name: this.name,
       rules: this.rules.map(r => {
         let val = r.value;
-        if (r.type === 'choice' || r.type === 'zeroOrMoreOneOf' || r.type === 'oneOrMoreOneOf') {
+        if ((r.type === 'choice' || r.type === 'zeroOrMore' || r.type === 'oneOrMore') && Array.isArray(r.value)) {
            val = (r.value as any[]).map(p => p instanceof SyntaxElement ? p.getHierarchy(nextVisited) : p);
         } else if (r.value instanceof SyntaxElement) {
            val = r.value.getHierarchy(nextVisited);
@@ -799,14 +789,14 @@ export class SyntaxElement {
             choice.autoInjectLoopBoundaries(visited);
           }
         }
-      } else if (rule.type === 'zeroOrMore' && rule.value instanceof SyntaxElement) {
-        rule.value.autoInjectLoopBoundaries(visited);
-      } else if (rule.type === 'oneOrMore' && rule.value instanceof SyntaxElement) {
-        rule.value.autoInjectLoopBoundaries(visited);
-      } else if ((rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') && Array.isArray(rule.value)) {
-        for (const choice of rule.value) {
-          if (choice instanceof SyntaxElement) {
-            choice.autoInjectLoopBoundaries(visited);
+      } else if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+        if (rule.value instanceof SyntaxElement) {
+          rule.value.autoInjectLoopBoundaries(visited);
+        } else if (Array.isArray(rule.value)) {
+          for (const choice of rule.value) {
+            if (choice instanceof SyntaxElement) {
+              choice.autoInjectLoopBoundaries(visited);
+            }
           }
         }
       } else if (rule.type === 'optional' && rule.value instanceof SyntaxElement) {
@@ -827,36 +817,38 @@ export class SyntaxElement {
     // 2. Scan for loops to inject boundaries
     for (let i = 0; i < this.rules.length; i++) {
       const rule = this.rules[i];
-      if ((rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && rule.value instanceof SyntaxElement) {
-        const loopChild = rule.value;
-        const followPatterns = this.gatherFollowPatterns(this.rules, i + 1, new Set());
-        if (followPatterns.length > 0) {
-          for (const rawPattern of followPatterns) {
-            const pattern = unwrapToken(rawPattern);
-            if (typeof pattern === 'string' || pattern instanceof RegExp) {
-              if (someStartPatternOverlaps(loopChild, pattern)) {
-                const alreadyHasNot = loopChild.rules.some(r => r.type === 'not' && r.value === pattern);
-                if (!alreadyHasNot) {
-                  const notRuleId = nextRuleId();
-                  loopChild.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+      if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+        if (rule.value instanceof SyntaxElement) {
+          const loopChild = rule.value;
+          const followPatterns = this.gatherFollowPatterns(this.rules, i + 1, new Set());
+          if (followPatterns.length > 0) {
+            for (const rawPattern of followPatterns) {
+              const pattern = unwrapToken(rawPattern);
+              if (typeof pattern === 'string' || pattern instanceof RegExp) {
+                if (someStartPatternOverlaps(loopChild, pattern)) {
+                  const alreadyHasNot = loopChild.rules.some(r => r.type === 'not' && r.value === pattern);
+                  if (!alreadyHasNot) {
+                    const notRuleId = nextRuleId();
+                    loopChild.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+                  }
                 }
               }
             }
           }
-        }
-      } else if ((rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') && Array.isArray(rule.value)) {
-        const followPatterns = this.gatherFollowPatterns(this.rules, i + 1, new Set());
-        if (followPatterns.length > 0) {
-          for (const rawPattern of followPatterns) {
-            const pattern = unwrapToken(rawPattern);
-            if (typeof pattern === 'string' || pattern instanceof RegExp) {
-              for (const choice of rule.value) {
-                if (choice instanceof SyntaxElement) {
-                  if (someStartPatternOverlaps(choice, pattern)) {
-                    const alreadyHasNot = choice.rules.some(r => r.type === 'not' && r.value === pattern);
-                    if (!alreadyHasNot) {
-                      const notRuleId = nextRuleId();
-                      choice.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+        } else if (Array.isArray(rule.value)) {
+          const followPatterns = this.gatherFollowPatterns(this.rules, i + 1, new Set());
+          if (followPatterns.length > 0) {
+            for (const rawPattern of followPatterns) {
+              const pattern = unwrapToken(rawPattern);
+              if (typeof pattern === 'string' || pattern instanceof RegExp) {
+                for (const choice of rule.value) {
+                  if (choice instanceof SyntaxElement) {
+                    if (someStartPatternOverlaps(choice, pattern)) {
+                      const alreadyHasNot = choice.rules.some(r => r.type === 'not' && r.value === pattern);
+                      if (!alreadyHasNot) {
+                        const notRuleId = nextRuleId();
+                        choice.rules.unshift({ id: notRuleId, type: 'not', value: pattern });
+                      }
                     }
                   }
                 }
@@ -886,21 +878,10 @@ export class SyntaxElement {
     if (rule.type === 'literal' || rule.type === 'beginScope' || rule.type === 'endScope') {
       return [rule.value];
     }
-    if (rule.type === 'regex') {
+    if (rule.type === 'regex' || rule.type === 'caseInsensitiveLiteral') {
       return [rule.value];
     }
     if (rule.type === 'choice' && Array.isArray(rule.value)) {
-      const pats: any[] = [];
-      for (const choice of rule.value) {
-        if (choice instanceof SyntaxElement) {
-          pats.push(...this.collectElementStartPatterns(choice, visitedElements));
-        } else {
-          pats.push(choice);
-        }
-      }
-      return pats;
-    }
-    if ((rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') && Array.isArray(rule.value)) {
       const pats: any[] = [];
       for (const choice of rule.value) {
         if (choice instanceof SyntaxElement) {
@@ -915,7 +896,17 @@ export class SyntaxElement {
       return this.collectElementStartPatterns(rule.value, visitedElements);
     }
     if ((rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && rule.value) {
-      if (rule.value instanceof SyntaxElement) {
+      if (Array.isArray(rule.value)) {
+        const pats: any[] = [];
+        for (const choice of rule.value) {
+          if (choice instanceof SyntaxElement) {
+            pats.push(...this.collectElementStartPatterns(choice, visitedElements));
+          } else {
+            pats.push(choice);
+          }
+        }
+        return pats;
+      } else if (rule.value instanceof SyntaxElement) {
         return this.collectElementStartPatterns(rule.value, visitedElements);
       } else {
         return [rule.value];
@@ -941,7 +932,7 @@ export class SyntaxElement {
 
   private isOptionalRule(rule: Rule): boolean {
     if (!rule) return true;
-    if (rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace') {
+    if (rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace') {
       return true;
     }
     return false;
@@ -1209,7 +1200,7 @@ export class SyntaxElement {
 
   private isRuleStructural(rule: Rule): boolean {
     if (rule.type === 'whitespace' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') return false;
-    if (rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'zeroOrMoreOneOf') return false;
+    if (rule.type === 'optional' || rule.type === 'zeroOrMore') return false;
     if (rule.type === 'not') return false;
     return true;
   }
@@ -1247,6 +1238,7 @@ export class SyntaxElement {
       switch (rule.type) {
         case 'element':
         case 'literal':
+        case 'caseInsensitiveLiteral':
         case 'regex':
         case 'beginScope':
         case 'endScope':
@@ -1271,16 +1263,8 @@ export class SyntaxElement {
           res = this.evaluateZeroOrMoreRule(rule, text, currentOffset, memo, ctx, results);
           break;
 
-        case 'zeroOrMoreOneOf':
-          res = this.evaluateZeroOrMoreOneOfRule(rule, text, currentOffset, memo, ctx, results);
-          break;
-
         case 'oneOrMore':
           res = this.evaluateOneOrMoreRule(rule, text, currentOffset, memo, ctx, results);
-          break;
-
-        case 'oneOrMoreOneOf':
-          res = this.evaluateOneOrMoreOneOfRule(rule, text, currentOffset, memo, ctx, results);
           break;
 
         case 'eof':
@@ -1597,17 +1581,6 @@ export class SyntaxElement {
     return { success: true, newOffset: currentOffset, dependencyLimit: localMaxOffset };
   }
 
-  private evaluateZeroOrMoreOneOfRule(
-    rule: Rule,
-    text: string,
-    currentOffset: number,
-    memo: Map<string, ParseResult>,
-    ctx: any,
-    results: any[]
-  ) {
-    return this.evaluateZeroOrMoreRule(rule, text, currentOffset, memo, ctx, results);
-  }
-
   private evaluateOneOrMoreRule(
     rule: Rule,
     text: string,
@@ -1675,17 +1648,6 @@ export class SyntaxElement {
     } else {
       return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: "Expected at least one match" };
     }
-  }
-
-  private evaluateOneOrMoreOneOfRule(
-    rule: Rule,
-    text: string,
-    currentOffset: number,
-    memo: Map<string, ParseResult>,
-    ctx: any,
-    results: any[]
-  ) {
-    return this.evaluateOneOrMoreRule(rule, text, currentOffset, memo, ctx, results);
   }
 
   private evaluateEofRule(
@@ -2011,7 +1973,7 @@ export class SyntaxElement {
             literals.push(lit);
           }
         }
-      } else if (rule.type === 'choice' && Array.isArray(rule.value)) {
+      } else if ((rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && Array.isArray(rule.value)) {
         for (const option of rule.value) {
           if (option instanceof SyntaxElement) {
             for (const lit of option.getTerminalLiterals(visited)) {

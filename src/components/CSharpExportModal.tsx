@@ -2,6 +2,53 @@ import React from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Code2, X, Check, Rocket, Copy, FileCode } from "lucide-react";
 import { cn } from "../lib/utils";
+import CodeMirror from '@uiw/react-codemirror';
+import { cpp } from '@codemirror/lang-cpp';
+import { EditorView } from '@codemirror/view';
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { tags as t } from '@lezer/highlight';
+
+const csTheme = EditorView.theme({
+  "&": {
+    color: "#cbd5e1",
+    backgroundColor: "transparent"
+  },
+  ".cm-content": {
+    caretColor: "#6366f1",
+    fontFamily: '"Fira Code", monospace',
+    fontSize: "13px"
+  },
+  "&.cm-focused .cm-cursor": {
+    borderLeftColor: "#6366f1"
+  },
+  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
+    backgroundColor: "rgba(99, 102, 241, 0.25)"
+  },
+  ".cm-gutters": {
+    backgroundColor: "transparent",
+    color: "#475569",
+    border: "none"
+  },
+  ".cm-activeLine": {
+    backgroundColor: "rgba(255, 255, 255, 0.04)"
+  },
+  ".cm-activeLineGutter": {
+    backgroundColor: "rgba(255, 255, 255, 0.04)"
+  }
+});
+
+const csHighlightStyle = HighlightStyle.define([
+  { tag: t.comment, color: '#64748b', fontStyle: 'italic' },
+  { tag: t.keyword, color: '#f472b6', fontWeight: 'bold' }, // pink-400
+  { tag: t.string, color: '#fcd34d' }, // amber-300
+  { tag: t.number, color: '#22d3ee' }, // cyan-400
+  { tag: t.typeName, color: '#2dd4bf' }, // teal-400
+  { tag: t.className, color: '#38bdf8' }, // sky-400
+  { tag: t.function(t.variableName), color: '#34d399' }, // emerald-400
+  { tag: t.operator, color: '#818cf8' }, // indigo-400
+]);
+
+const csExtensions = [cpp(), csTheme, syntaxHighlighting(csHighlightStyle)];
 
 interface GeneratedFile {
   name: string;
@@ -26,7 +73,7 @@ interface CSharpExportModalProps {
   setCopiedFileIndex: (val: number | null) => void;
 }
 
-export const CSharpExportModal: React.FC<CSharpExportModalProps> = ({
+export const CSharpExportModal = React.memo<CSharpExportModalProps>(({
   showCSharpModal,
   setShowCSharpModal,
   csNamespace,
@@ -233,11 +280,32 @@ export const CSharpExportModal: React.FC<CSharpExportModalProps> = ({
                 </div>
 
                 {/* Code Viewer Viewport */}
-                <div className="flex-1 overflow-auto p-6 font-mono text-[11px] text-slate-300 select-text leading-relaxed bg-slate-950/80 custom-scrollbar">
+                <div className="flex-1 bg-slate-950/80 relative overflow-hidden">
                   {csGeneratedFiles[csSelectedFileIndex] ? (
-                    <pre className="whitespace-pre overflow-auto font-mono text-[11px] select-all">
-                      <code>{csGeneratedFiles[csSelectedFileIndex].content}</code>
-                    </pre>
+                    <div className="w-full h-full text-[13px] font-mono leading-relaxed overflow-hidden">
+                      <CodeMirror
+                        value={csGeneratedFiles[csSelectedFileIndex].content}
+                        height="100%"
+                        theme="none"
+                        extensions={csExtensions}
+                        editable={false}
+                        readOnly={true}
+                        basicSetup={{
+                          lineNumbers: true,
+                          foldGutter: true,
+                          dropCursor: false,
+                          allowMultipleSelections: false,
+                          indentOnInput: false,
+                          syntaxHighlighting: true,
+                          bracketMatching: true,
+                          closeBrackets: false,
+                          autocompletion: false,
+                          highlightActiveLineGutter: true,
+                          highlightActiveLine: true,
+                        }}
+                        className="h-full"
+                      />
+                    </div>
                   ) : (
                     <div className="flex items-center justify-center h-full text-slate-600">No content available</div>
                   )}
@@ -249,4 +317,14 @@ export const CSharpExportModal: React.FC<CSharpExportModalProps> = ({
       )}
     </AnimatePresence>
   );
-};
+}, (prev, next) => {
+  return (
+    prev.showCSharpModal === next.showCSharpModal &&
+    prev.csNamespace === next.csNamespace &&
+    prev.csExportMode === next.csExportMode &&
+    prev.csAstSeparate === next.csAstSeparate &&
+    prev.csSelectedFileIndex === next.csSelectedFileIndex &&
+    prev.copiedFileIndex === next.copiedFileIndex &&
+    prev.csGeneratedFiles === next.csGeneratedFiles
+  );
+});

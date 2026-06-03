@@ -58,6 +58,33 @@ import { ParserProfiler } from './components/ParserProfiler';
 import { ProjectLibraryModal } from './components/ProjectLibraryModal';
 import { CSharpExportModal } from './components/CSharpExportModal';
 import { TypeScriptExportModal } from './components/TypeScriptExportModal';
+import { GrammarCodeMirror } from './components/GrammarCodeMirror';
+import { TestCodeMirror } from './components/TestCodeMirror';
+import CodeMirror from '@uiw/react-codemirror';
+import { EditorView } from '@codemirror/view';
+
+const queryEditorTheme = EditorView.theme({
+  "&": {
+    color: "#cbd5e1",
+    backgroundColor: "transparent",
+    outline: "none",
+  },
+  ".cm-content": {
+    caretColor: "#6366f1",
+    fontFamily: '"Fira Code", monospace',
+    fontSize: "12px",
+    padding: "10px 14px",
+  },
+  "&.cm-focused": {
+    outline: "none",
+  },
+  "&.cm-focused .cm-cursor": {
+    borderLeftColor: "#6366f1"
+  },
+  ".cm-gutters": {
+    display: "none"
+  }
+});
 const workbenchLogo = new URL('./assets/images/workbench_logo_1780160579859.png', import.meta.url).href;
 
 const SyntaxEngineLogo = ({ className }: { className?: string }) => (
@@ -934,8 +961,6 @@ const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'Optional', insertText: 'Optional(', type: 'method', description: 'Mark element rule as fully optional' },
   { label: 'ZeroOrMore', insertText: 'ZeroOrMore(', type: 'method', description: 'Repetition: loop consecutive matches. Overloaded to support choices if passed array/multiple parameters' },
   { label: 'OneOrMore', insertText: 'OneOrMore(', type: 'method', description: 'Repetition: loop consecutive matches requires at least 1 match. Overloaded to support choices if passed array/multiple parameters' },
-  { label: 'ZeroOrMoreOneOf', insertText: 'ZeroOrMoreOneOf(', type: 'method', description: 'Repetition: matches zero or more occurrences of any pattern in the list' },
-  { label: 'OneOrMoreOneOf', insertText: 'OneOrMoreOneOf(', type: 'method', description: 'Repetition: matches one or more occurrences of any pattern in the list' },
   { label: 'LeadingTrivia', insertText: 'LeadingTrivia(', type: 'method', description: 'Define expected default preceding layout whitespaces or comments' },
   { label: 'TrailingTrivia', insertText: 'TrailingTrivia(', type: 'method', description: 'Define expected default trailing layout whitespaces or comments' },
   { label: 'Whitespace', insertText: 'Whitespace()', type: 'method', description: 'Consume contiguous space layouts' },
@@ -1018,6 +1043,43 @@ const getCaretCoordinatesRelative = (element: HTMLTextAreaElement, position: num
     lineHeight: parseInt(style.lineHeight) || 16
   };
 };
+
+interface MemoizedEditorProps {
+  value: string;
+  onValueChange: (value: string) => void;
+  highlight: (value: string) => string;
+  className?: string;
+  style?: React.CSSProperties;
+  highlightDeps: any[];
+  [key: string]: any;
+}
+
+const MemoizedEditor = React.memo<MemoizedEditorProps>(
+  ({ value, highlight, onValueChange, className, style, highlightDeps, ...rest }) => {
+    return (
+      <Editor
+        value={value}
+        onValueChange={onValueChange}
+        highlight={highlight}
+        className={className}
+        style={style}
+        {...rest}
+      />
+    );
+  },
+  (prev, next) => {
+    if (prev.value !== next.value) return false;
+    if (prev.className !== next.className) return false;
+    if (prev.highlightDeps && next.highlightDeps) {
+      if (prev.highlightDeps.length !== next.highlightDeps.length) return false;
+      for (let i = 0; i < prev.highlightDeps.length; i++) {
+        if (prev.highlightDeps[i] !== next.highlightDeps[i]) return false;
+      }
+      return true;
+    }
+    return false;
+  }
+);
 
 export default function App() {
   const [grammarCode, setGrammarCode] = useState(DEFAULT_CODE);
@@ -1241,25 +1303,34 @@ export default function App() {
   // C# Code Export settings
   const [showCSharpModal, setShowCSharpModal] = useState(false);
   const [csNamespace, setCsNamespace] = useState("SyntaxEngine");
+  const [debouncedCsNamespace, setDebouncedCsNamespace] = useState("SyntaxEngine");
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedCsNamespace(csNamespace);
+    }, 400); // 400ms debounce
+    return () => clearTimeout(handler);
+  }, [csNamespace]);
+
   const [csExportMode, setCsExportMode] = useState<'bundle' | 'modular'>('bundle');
   const [csAstSeparate, setCsAstSeparate] = useState(false);
   const [csSelectedFileIndex, setCsSelectedFileIndex] = useState(0);
   const [copiedFileIndex, setCopiedFileIndex] = useState<number | null>(null);
-const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(null);
+  const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(null);
   
   const csGeneratedFiles = useMemo(() => {
-    if (!rootElement) return [];
+    if (!rootElement || !showCSharpModal) return [];
     if (csExportMode === 'bundle') {
-      const code = generateFullCSharp(rootElement, csNamespace, lastScopeBuilder || undefined);
+      const code = generateFullCSharp(rootElement, debouncedCsNamespace, lastScopeBuilder || undefined);
       return [{ name: `${rootElement.name ? rootElement.name.replace(/[^a-zA-Z0-9]/g, '') : 'Parser'}Bundle.cs`, content: code }];
     } else {
       return generateModularCSharp(rootElement, {
-        namespace: csNamespace,
+        namespace: debouncedCsNamespace,
         stronglyTypedAstSeparate: csAstSeparate,
         scopeBuilder: lastScopeBuilder || undefined
       });
     }
-  }, [rootElement, csNamespace, csExportMode, csAstSeparate, lastScopeBuilder]);
+  }, [rootElement, debouncedCsNamespace, csExportMode, csAstSeparate, lastScopeBuilder, showCSharpModal]);
 
   // TypeScript Code Export settings
   const [showTSModal, setShowTSModal] = useState(false);
@@ -1267,7 +1338,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
   const [tsCopiedFileIndex, setTsCopiedFileIndex] = useState<number | null>(null);
 
   const tsGeneratedFiles = useMemo(() => {
-    if (!rootElement) return [];
+    if (!rootElement || !showTSModal) return [];
     try {
       const code = generateFullTypeScript(rootElement);
       const name = `${rootElement.name ? rootElement.name.replace(/[^a-zA-Z0-9]/g, '') : 'Parser'}Bundle.ts`;
@@ -1276,7 +1347,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       console.error(e);
       return [{ name: "error.ts", content: `// Generation failed: ${e instanceof Error ? e.message : e}` }];
     }
-  }, [rootElement]);
+  }, [rootElement, showTSModal]);
 
   const downloadSingleFile = (name: string, content: string) => {
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -1531,6 +1602,39 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
   const pendingEditsRef = useRef<{ editOffset: number; removedLength: number; insertedText: string }[]>([]);
   const lastCapturedEditRef = useRef<{ editOffset: number; removedLength: number; insertedText: string } | null>(null);
   const latestCSTRef = useRef<any>(null);
+
+  const lastHighlightCache = useRef<{
+    code: string;
+    debouncedTestInput: string;
+    parseResult: any;
+    activeBlockStart: number;
+    activeBlockEnd: number;
+    activeSymStart: number;
+    activeSymEnd: number;
+    activeSymRefsStr: string;
+    activeRefStart: number;
+    activeRefEnd: number;
+    resultHtml: string;
+  } | null>(null);
+
+  const lastPrismCache = useRef<{
+    code: string;
+    lang: string;
+    result: string;
+  } | null>(null);
+
+  const cachedPrismHighlight = (code: string, lang: string) => {
+    if (
+      lastPrismCache.current &&
+      lastPrismCache.current.code === code &&
+      lastPrismCache.current.lang === lang
+    ) {
+      return lastPrismCache.current.result;
+    }
+    const result = Prism.highlight(code, Prism.languages[lang] || Prism.languages.javascript, lang);
+    lastPrismCache.current = { code, lang, result };
+    return result;
+  };
 
   const shiftAstAndStateOffsets = (editOffset: number, removedLength: number, delta: number) => {
     const shiftRedNode = (node: any) => {
@@ -2065,6 +2169,39 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
   };
 
   const highlightWithCST = (code: string) => {
+    const activeBlock = hoveredScope || selectedScope;
+    const hasActiveBlock = !!(activeBlock && activeBlock.type !== 'global');
+    const activeBlockStart = hasActiveBlock ? activeBlock.start : -1;
+    const activeBlockEnd = hasActiveBlock ? activeBlock.end : -1;
+
+    const activeSym = selectedSymbol || hoveredSymbol;
+    const activeSymStart = activeSym ? activeSym.start : -1;
+    const activeSymEnd = activeSym ? activeSym.end : -1;
+    const activeSymRefsStr = activeSym && activeSym.references 
+      ? JSON.stringify(activeSym.references.map((r: any) => ({ start: r.start, end: r.end }))) 
+      : "";
+
+    const activeRef = selectedReference || hoveredReference;
+    const activeRefStart = activeRef ? activeRef.start : -1;
+    const activeRefEnd = activeRef ? activeRef.end : -1;
+
+    // Check Cache Hit
+    if (
+      lastHighlightCache.current &&
+      lastHighlightCache.current.code === code &&
+      lastHighlightCache.current.debouncedTestInput === debouncedTestInput &&
+      lastHighlightCache.current.parseResult === parseResult &&
+      lastHighlightCache.current.activeBlockStart === activeBlockStart &&
+      lastHighlightCache.current.activeBlockEnd === activeBlockEnd &&
+      lastHighlightCache.current.activeSymStart === activeSymStart &&
+      lastHighlightCache.current.activeSymEnd === activeSymEnd &&
+      lastHighlightCache.current.activeSymRefsStr === activeSymRefsStr &&
+      lastHighlightCache.current.activeRefStart === activeRefStart &&
+      lastHighlightCache.current.activeRefEnd === activeRefEnd
+    ) {
+      return lastHighlightCache.current.resultHtml;
+    }
+
     const charStyles = new Int32Array(code.length);
 
     // 1. Pre-populate basic common tokens to guarantee robust basic highlighting on failure to parse
@@ -2171,12 +2308,6 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       walk(ast);
     }
 
-    const activeBlock = hoveredScope || selectedScope;
-    const hasActiveBlock = !!(activeBlock && activeBlock.type !== 'global');
-    const activeBlockStart = hasActiveBlock ? activeBlock.start : -1;
-    const activeBlockEnd = hasActiveBlock ? activeBlock.end : -1;
-
-    const activeSym = selectedSymbol || hoveredSymbol;
     if (activeSym) {
       const declStart = Math.max(0, activeSym.start);
       const declEnd = Math.min(code.length, activeSym.end);
@@ -2197,7 +2328,6 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       }
     }
 
-    const activeRef = selectedReference || hoveredReference;
     if (activeRef) {
       const refStart = Math.max(0, activeRef.start);
       const refEnd = Math.min(code.length, activeRef.end);
@@ -2243,6 +2373,21 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
       const cls = getStyleClass(prevStyleId, lastInActive);
       html += `<span class="${cls}">${escapeHtml(spanText)}</span>`;
     }
+
+    // Save output in cache
+    lastHighlightCache.current = {
+      code,
+      debouncedTestInput,
+      parseResult,
+      activeBlockStart,
+      activeBlockEnd,
+      activeSymStart,
+      activeSymEnd,
+      activeSymRefsStr,
+      activeRefStart,
+      activeRefEnd,
+      resultHtml: html
+    };
 
     return html;
   };
@@ -2827,7 +2972,7 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                     ) : (
                       <div className="flex-1 flex min-h-0 divide-x divide-white/5 relative items-stretch">
                         <div className="flex-1 overflow-auto custom-scrollbar relative grammar-editor-container">
-                          <Editor
+                          <GrammarCodeMirror
                             value={
                               designerEditorTab === 'grammar' 
                                 ? grammarCode 
@@ -2835,102 +2980,18 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                                 ? astCode
                                 : scopeResolverCode
                             }
-                            onValueChange={code => {
+                            onChange={code => {
                               if (designerEditorTab === 'grammar') {
                                 setGrammarCode(code);
-                                setTimeout(() => {
-                                  const textarea = document.querySelector('.grammar-editor-container textarea') as HTMLTextAreaElement;
-                                  if (textarea) handleAutocompleteCheck(textarea);
-                                }, 10);
                               } else if (designerEditorTab === 'ast') {
                                 setAstCode(code);
                               } else {
                                 setScopeResolverCode(code);
                               }
                             }}
-                            onKeyDown={handleKeyDown as any}
-                            onKeyUp={e => {
-                              if (designerEditorTab === 'grammar') {
-                                handleAutocompleteCheck(e.target as HTMLTextAreaElement);
-                              }
-                            }}
-                            onClick={e => {
-                              if (designerEditorTab === 'grammar') {
-                                handleAutocompleteCheck(e.target as HTMLTextAreaElement);
-                              }
-                            }}
-                            highlight={code => Prism.highlight(code, Prism.languages.javascript, 'javascript')}
-                            padding={20}
-                            style={{
-                              fontFamily: '"Fira Code", monospace',
-                              fontSize: 13,
-                              minHeight: '100%',
-                            }}
-                            className="outline-none"
+                            isGrammarTab={designerEditorTab === 'grammar'}
+                            className="h-full"
                           />
-                          
-                          {/* FLOATING DROPDOWN FOR ACTIVE INTELLISENSE */}
-                          {designerEditorTab === 'grammar' && autocomplete && autocomplete.show && (
-                            <div 
-                              className="absolute bg-slate-900/95 border border-indigo-500/30 rounded-lg shadow-xl shadow-black/80 z-50 p-1 min-w-[280px] max-w-[360px] flex flex-col gap-0.5 font-sans animate-fade"
-                              style={{
-                                left: `${Math.max(10, Math.min(autocomplete.left, (document.querySelector('.grammar-editor-container')?.clientWidth || 500) - 300))}px`,
-                                top: `${autocomplete.top + autocomplete.lineHeight + 4}px`
-                              }}
-                            >
-                              <div className="flex items-center justify-between border-b border-white/5 pb-1 mb-1 px-1.5 pt-0.5 shrink-0">
-                                <span className="text-[9px] uppercase tracking-wider font-extrabold text-indigo-400 flex items-center gap-1">
-                                  <Terminal className="w-3 h-3 animate-pulse" /> Keys: ↑ ↓ Enter
-                                </span>
-                                <span className="text-[8px] font-mono text-slate-500">
-                                  {autocomplete.suggestions.length} suggestion(s)
-                                </span>
-                              </div>
-                              <div className="max-h-[220px] overflow-auto custom-scrollbar flex flex-col gap-0.5">
-                                {autocomplete.suggestions.map((item, idx) => {
-                                  const isActive = idx === autocomplete.activeIndex;
-                                  return (
-                                    <button
-                                      key={idx}
-                                      onClick={() => insertSuggestion(item)}
-                                      className={cn(
-                                        "w-full text-left px-2 py-1.5 rounded flex flex-col gap-1 text-xs cursor-pointer transition-all",
-                                        isActive 
-                                          ? "bg-indigo-600 text-white" 
-                                          : "hover:bg-white/[0.04] text-slate-300"
-                                      )}
-                                    >
-                                      <div className="flex items-center justify-between gap-2">
-                                        <span className={cn(
-                                          "font-mono font-bold",
-                                          isActive ? "text-white" : "text-indigo-300"
-                                        )}>
-                                          {item.label}
-                                        </span>
-                                        <span className={cn(
-                                          "text-[7px] uppercase font-bold tracking-widest px-1 py-0.2 rounded border",
-                                          isActive 
-                                            ? "bg-white/20 border-white/30 text-white" 
-                                            : item.type === 'method' 
-                                            ? "bg-indigo-500/10 border-indigo-500/20 text-indigo-400" 
-                                            : "bg-amber-500/10 border-amber-500/20 text-amber-400"
-                                        )}>
-                                          {item.type}
-                                        </span>
-                                      </div>
-                                      <span className={cn(
-                                        "text-[10px] leading-relaxed",
-                                        isActive ? "text-indigo-100" : "text-slate-400"
-                                      )}>
-                                        {item.description}
-                                      </span>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-                        
                         </div>
                       </div>
                     )}
@@ -3491,149 +3552,32 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                   </div>
                 </div>
                 <div ref={editorScrollContainerRef} className="flex-1 overflow-auto custom-scrollbar bg-[#161618] relative flex flex-row">
-                  {/* Line Numbers Gutter */}
-                  <div className="sticky left-0 self-start select-none text-right pr-2 pl-3 pt-[20px] pb-[20px] bg-[#121214] border-r border-white/5 pointer-events-none z-10 flex flex-col items-end leading-[20px]">
-                    {testInput.split('\n').map((_, index) => {
-                      const lineNum = index + 1;
-                      const isCurrentLine = lineNum === cursorPosition.line;
-                      
-                      // Check for recovered errors on this exact line using constant-time Set lookup
-                      const hasRecovered = errorLines.has(lineNum);
-
-                      // Check for fatal errors on this exact line
-                      const hasFatal = lineNum === fatalErrorLine;
-
-                      return (
-                        <div 
-                          key={index} 
-                          className={cn(
-                            "h-[20px] min-w-[28px] pr-1 flex items-center justify-end font-mono select-none text-[10px] rounded transition-all duration-150 relative",
-                            isCurrentLine ? "text-emerald-400 font-extrabold bg-white/5 shadow-sm" : "text-slate-600/50",
-                            hasFatal ? "text-red-400 font-bold bg-red-500/15 border-r-2 border-red-500" : "",
-                            hasRecovered && !hasFatal ? "text-amber-400 font-bold bg-amber-500/15 border-r-2 border-amber-500" : ""
-                          )}
-                        >
-                          <span>{lineNum}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {/* Editor Wrapper */}
-                  <div className="flex-1 min-w-0">
-                    <Editor
-                      value={testInput}
-                      onValueChange={code => {
-                        let edit: { editOffset: number; removedLength: number; insertedText: string } | undefined;
-                        
-                        // Grab the edit recorded by onBeforeInput/onPaste/onCut in the same tick if present
-                        if (lastCapturedEditRef.current) {
-                          edit = lastCapturedEditRef.current;
-                          lastCapturedEditRef.current = null;
-                        } else {
-                          // Fallback to findDiff if the browser/event did not capture it in time
-                          edit = findDiff(testInput, code);
+                  <TestCodeMirror
+                    value={testInput}
+                    onChange={(code, edit) => {
+                      if (edit) {
+                        pendingEditsRef.current.push(edit);
+                        const delta = edit.insertedText.length - edit.removedLength;
+                        if (delta !== 0 || edit.removedLength > 0) {
+                          shiftAstAndStateOffsets(edit.editOffset, edit.removedLength, delta);
                         }
-
-                        if (edit) {
-                          pendingEditsRef.current.push(edit);
-                          const delta = edit.insertedText.length - edit.removedLength;
-                          if (delta !== 0 || edit.removedLength > 0) {
-                            shiftAstAndStateOffsets(edit.editOffset, edit.removedLength, delta);
-                          }
-                        }
-
-                        setTestInput(code);
-                        // Update cursor position directly when text changes to capture accurate cursor line metrics
-                        const activeEl = document.activeElement;
-                        if (activeEl && activeEl.tagName === 'TEXTAREA') {
-                          const textarea = activeEl as HTMLTextAreaElement;
-                          const start = textarea.selectionStart;
-                          const textBefore = textarea.value.slice(0, start);
-                          const lines = textBefore.split('\n');
-                          const line = lines.length;
-                          const col = lines[lines.length - 1].length + 1;
-                          setCursorPosition({ line, col });
-                        }
-                      }}
-                      onBeforeInput={e => {
-                        const textarea = (e.target || e.currentTarget) as any;
-                        if (!textarea) return;
-
-                        const start = textarea.selectionStart;
-                        const end = textarea.selectionEnd;
-                        const inputType = (e as any).inputType;
-                        const data = (e as any).data;
-
-                        let editOffset = start;
-                        let removedLength = end - start;
-                        let insertedText = "";
-
-                        if (inputType === 'insertLineBreak') {
-                          insertedText = "\n";
-                        } else if (inputType === 'deleteContentBackward') {
-                          if (removedLength === 0 && start > 0) {
-                            editOffset = start - 1;
-                            removedLength = 1;
-                          }
-                        } else if (inputType === 'deleteContentForward') {
-                          if (removedLength === 0 && start < textarea.value.length) {
-                            editOffset = start;
-                            removedLength = 1;
-                          }
-                        } else if (inputType === 'insertText' || inputType === 'insertCompositionText') {
-                          insertedText = data || "";
-                        } else {
-                          return;
-                        }
-
-                        lastCapturedEditRef.current = {
-                          editOffset,
-                          removedLength,
-                          insertedText
-                        };
-                      }}
-                      onPaste={e => {
-                        const textarea = (e.target || e.currentTarget) as any;
-                        if (!textarea) return;
-
-                        const start = textarea.selectionStart;
-                        const end = textarea.selectionEnd;
-                        const text = e.clipboardData.getData('text');
-
-                        lastCapturedEditRef.current = {
-                          editOffset: start,
-                          removedLength: end - start,
-                          insertedText: text
-                        };
-                      }}
-                      onCut={e => {
-                        const textarea = (e.target || e.currentTarget) as any;
-                        if (!textarea) return;
-
-                        const start = textarea.selectionStart;
-                        const end = textarea.selectionEnd;
-
-                        lastCapturedEditRef.current = {
-                          editOffset: start,
-                          removedLength: end - start,
-                          insertedText: ""
-                        };
-                      }}
-                      highlight={code => highlightWithCST(code)}
-                      padding={20}
-                      onKeyUp={handleEditorSelectionChange}
-                      onClick={handleEditorSelectionChange}
-                      onFocus={handleEditorSelectionChange}
-                      style={{
-                        fontFamily: '"Fira Code", monospace',
-                        fontSize: 13,
-                        lineHeight: '20px',
-                        minHeight: '100%',
-                        whiteSpace: 'pre',
-                      }}
-                      className="outline-none"
-                    />
-                  </div>
+                      }
+                      setTestInput(code);
+                    }}
+                    setCursorPosition={setCursorPosition}
+                    parserState={{
+                      debouncedTestInput,
+                      parseResult,
+                      hoveredScope,
+                      selectedScope,
+                      hoveredSymbol,
+                      selectedSymbol,
+                      hoveredReference,
+                      selectedReference,
+                      parseError
+                    }}
+                    className="h-full"
+                  />
                 </div>
                 {/* Editor Status Bar */}
                 <div className="shrink-0 bg-black/40 border-t border-white/5 py-1.5 px-4 text-[11px] font-mono text-slate-500 flex items-center justify-between select-none">
@@ -3990,18 +3934,32 @@ const [lastScopeBuilder, setLastScopeBuilder] = useState<ScopeBuilder | null>(nu
                     ) : cstViewMode === 'query' ? (
                       <div className="h-full flex flex-col overflow-hidden bg-slate-950/20">
                         <div className="p-4 border-b border-white/5 bg-white/[0.02]">
-                          <div className="relative group">
-                            <div className="absolute top-2.5 left-3 flex items-center pointer-events-none text-slate-500 group-focus-within:text-indigo-400 transition-colors">
+                          <div className="relative group border border-white/10 bg-slate-900/50 rounded-lg overflow-hidden flex min-h-[100px] items-stretch focus-within:border-indigo-500/50 focus-within:ring-1 focus-within:ring-indigo-500/20 transition-all max-h-[160px]">
+                            <div className="absolute top-3.5 left-3 flex items-center pointer-events-none text-slate-500 group-focus-within:text-indigo-400 transition-colors z-10">
                               <Search className="w-3.5 h-3.5" />
                             </div>
-                            <textarea 
-                              value={queryText}
-                              onChange={(e) => setQueryText(e.target.value)}
-                              placeholder="Enter S-expression query (e.g.&#10;(struct_decl&#10;  (id @name)))"
-                              rows={4}
-                              className="w-full bg-slate-900/50 border border-white/10 rounded-lg py-2.5 pl-9 pr-4 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all font-mono resize-y min-h-[90px] custom-scrollbar"
-                            />
-                            <div className="absolute right-3 bottom-2.5 flex gap-1 pointer-events-none">
+                            <div className="flex-1 pl-8 min-h-[100px]">
+                              <CodeMirror
+                                value={queryText}
+                                onChange={(val) => setQueryText(val)}
+                                theme="none"
+                                extensions={[queryEditorTheme]}
+                                basicSetup={{
+                                  lineNumbers: false,
+                                  foldGutter: false,
+                                  dropCursor: false,
+                                  allowMultipleSelections: false,
+                                  indentOnInput: false,
+                                  syntaxHighlighting: false,
+                                  bracketMatching: true,
+                                  closeBrackets: true,
+                                  autocompletion: false,
+                                }}
+                                className="w-full h-full text-xs font-mono"
+                                placeholder="Enter S-expression query (e.g. (struct_decl (id @name)))"
+                              />
+                            </div>
+                            <div className="absolute right-3 bottom-2.5 flex gap-1 pointer-events-none z-10">
                                <div className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-[8px] font-bold text-slate-500 uppercase tracking-tighter">S-Expr Parser</div>
                             </div>
                           </div>

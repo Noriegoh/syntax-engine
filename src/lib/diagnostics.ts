@@ -80,13 +80,14 @@ function isRuleNullable(rule: any, nullable: Map<SyntaxElement, boolean>): boole
       return false; // Requires at least one whitespace character (\s+) in syntax engine matching
     case 'optional':
     case 'zeroOrMore':
-    case 'zeroOrMoreOneOf':
       return true;
     case 'separatedBy':
       return isPatternNullable(unwrapPattern(rule.value.item), nullable);
     case 'oneOrMore':
+      if (Array.isArray(rule.value)) {
+        return rule.value.some((alt: any) => isPatternNullable(unwrapPattern(alt), nullable));
+      }
       return isPatternNullable(unwrapPattern(rule.value), nullable);
-    case 'oneOrMoreOneOf':
     case 'choice':
       if (Array.isArray(rule.value)) {
         return rule.value.some((alt: any) => isPatternNullable(unwrapPattern(alt), nullable));
@@ -106,8 +107,8 @@ function getFirstReachableElements(el: SyntaxElement, nullable: Map<SyntaxElemen
       referenced.add(rule.value);
     } else if (
       rule.type === 'choice' || 
-      rule.type === 'zeroOrMoreOneOf' || 
-      rule.type === 'oneOrMoreOneOf'
+      rule.type === 'zeroOrMore' || 
+      rule.type === 'oneOrMore'
     ) {
       if (Array.isArray(rule.value)) {
         for (const alt of rule.value) {
@@ -116,13 +117,16 @@ function getFirstReachableElements(el: SyntaxElement, nullable: Map<SyntaxElemen
             referenced.add(unwrapped);
           }
         }
+      } else {
+        const unwrapped = unwrapPattern(rule.value);
+        if (unwrapped instanceof SyntaxElement) {
+          referenced.add(unwrapped);
+        }
       }
     } else if (
       rule.type === 'optional' ||
       rule.type === 'leadingTrivia' ||
       rule.type === 'trailingTrivia' ||
-      rule.type === 'zeroOrMore' ||
-      rule.type === 'oneOrMore' ||
       rule.type === 'not' ||
       rule.type === 'beginScope' ||
       rule.type === 'endScope' ||
@@ -169,20 +173,20 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     for (const rule of el.rules) {
       if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
         visit(rule.value);
-      } else if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
+      } else if (rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
         if (Array.isArray(rule.value)) {
           for (const choice of rule.value) {
             if (choice instanceof SyntaxElement) {
               visit(choice);
             }
           }
+        } else if (rule.value instanceof SyntaxElement) {
+          visit(rule.value);
         }
       } else if (
         rule.type === 'optional' ||
         rule.type === 'leadingTrivia' ||
         rule.type === 'trailingTrivia' ||
-        rule.type === 'zeroOrMore' ||
-        rule.type === 'oneOrMore' ||
         rule.type === 'not' ||
         rule.type === 'assert'
       ) {
@@ -436,7 +440,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
           }
           
           const initialPath = `Rule(${rule.type})`;
-          if (rule.type === 'choice' || rule.type === 'zeroOrMoreOneOf' || rule.type === 'oneOrMoreOneOf') {
+          if (rule.type === 'choice') {
             collect(rule.value, initialPath);
           } else if (rule.type !== 'beginScope' && rule.type !== 'endScope' && rule.type !== 'not') {
             collect(rule.value, initialPath);
