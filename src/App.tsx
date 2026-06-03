@@ -28,6 +28,8 @@ import {
   ChevronLeft,
   ChevronRight,
   GitBranch,
+  GitFork,
+  List,
   Link,
   PanelLeftClose,
   PanelLeftOpen,
@@ -1369,6 +1371,8 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<'designer' | 'playground'>('designer');
   const [cstViewMode, setCstViewMode] = useState<'json' | 'visual' | 'query' | 'scopes' | 'performance' | 'investigate'>('json');
+  const [ruleViewMode, setRuleViewMode] = useState<'list' | 'graph'>('list');
+  const [ruleGraphScope, setRuleGraphScope] = useState<'current' | 'full'>('current');
   const [visualizeMode, setVisualizeMode] = useState<'cst' | 'ast'>('cst');
   const [hoveredOffset, setHoveredOffset] = useState<number | null>(null);
   const [pinnedOffset, setPinnedOffset] = useState<number | null>(null);
@@ -2599,6 +2603,413 @@ export default function App() {
     );
   };
 
+  interface RuleGraphNode {
+    id: string;
+    label: string;
+    type: string;
+    subtitle?: string;
+    children?: RuleGraphNode[];
+    targetElementId?: string;
+  }
+
+  const buildRuleGraphTree = (item: any, idPrefix: string = "root", visited: Set<string> = new Set()): RuleGraphNode | null => {
+    if (!item) return null;
+
+    if (item.name && Array.isArray(item.rules)) {
+      if (visited.has(item.id)) {
+        return {
+          id: `${idPrefix}-${item.id || item.name}-recursive`,
+          label: `⟳ ${item.name} (Recursive Ref)`,
+          type: 'recursive',
+          subtitle: 'CYCLE BOUNDARY',
+          targetElementId: item.id
+        };
+      }
+
+      const newVisited = new Set(visited);
+      if (item.id) newVisited.add(item.id);
+
+      return {
+        id: `${idPrefix}-${item.id || item.name}`,
+        label: item.name,
+        type: 'root',
+        subtitle: item.isHidden ? 'Hidden Node (AST-only)' : 'CST Node Producer',
+        children: item.rules
+          .map((r: any, idx: number) => buildRuleGraphTree(r, `${idPrefix}-${item.id || item.name}-rule-${idx}`, newVisited))
+          .filter(Boolean) as RuleGraphNode[]
+      };
+    }
+
+    if (item.type && item.id) {
+      const nodeType = item.type;
+      const ruleId = item.id;
+
+      let children: RuleGraphNode[] = [];
+      let label = '';
+      let subtitle = '';
+      let targetElementId: string | undefined = undefined;
+
+      switch (nodeType) {
+        case 'literal':
+          label = `"${String(item.value)}"`;
+          subtitle = 'LITERAL MATCH';
+          break;
+        case 'caseInsensitiveLiteral':
+          label = `"${String(item.value)}" (i)`;
+          subtitle = 'CASE-INSENSITIVE LITERAL';
+          break;
+        case 'regex':
+          const regexStr = item.value instanceof RegExp ? item.value.source : String(item.value);
+          label = `/${regexStr}/`;
+          subtitle = 'REGEX MATCH';
+          break;
+        case 'whitespace':
+          label = 'Whitespace / Comments';
+          subtitle = 'NOISE SKIP';
+          break;
+        case 'eof':
+          label = 'EOF';
+          subtitle = 'END OF FILE';
+          break;
+        case 'beginScope':
+          label = `Begin: "${String(item.value)}"`;
+          subtitle = 'BEGIN SCOPE';
+          break;
+        case 'endScope':
+          label = `End: "${String(item.value)}"`;
+          subtitle = 'END SCOPE';
+          break;
+        case 'element':
+          const calledEl = item.value;
+          label = calledEl?.name || 'anonymous';
+          subtitle = 'CALL RULE';
+          targetElementId = calledEl?.id;
+
+          if (ruleGraphScope === 'full' && calledEl && calledEl.id) {
+            if (visited.has(calledEl.id)) {
+              children = [{
+                id: `${idPrefix}-${ruleId}-call-recursive-${calledEl.id}`,
+                label: `⟳ ${calledEl.name} (Recursive Ref)`,
+                type: 'recursive',
+                subtitle: 'CYCLE BOUNDARY',
+                targetElementId: calledEl.id
+              }];
+            } else {
+              const nextVisited = new Set(visited);
+              nextVisited.add(calledEl.id);
+              if (Array.isArray(calledEl.rules)) {
+                children = calledEl.rules
+                  .map((r: any, idx: number) => buildRuleGraphTree(r, `${idPrefix}-${ruleId}-call-${calledEl.id}-rule-${idx}`, nextVisited))
+                  .filter(Boolean) as RuleGraphNode[];
+              }
+            }
+          }
+          break;
+        case 'choice':
+          label = 'OneOf Choice';
+          subtitle = 'PRECEDENCE BRANCH';
+          if (Array.isArray(item.value)) {
+            children = item.value
+              .map((branch: any, bIdx: number) => {
+                if (branch && branch.name && Array.isArray(branch.rules)) {
+                  if (ruleGraphScope === 'full' && branch.id) {
+                    if (visited.has(branch.id)) {
+                      return {
+                        id: `${idPrefix}-${ruleId}-choice-${bIdx}-recursive-${branch.id}`,
+                        label: `⟳ ${branch.name} (Recursive Ref)`,
+                        type: 'recursive',
+                        subtitle: 'CYCLE BOUNDARY',
+                        targetElementId: branch.id
+                      };
+                    } else {
+                      const nextVisited = new Set(visited);
+                      nextVisited.add(branch.id);
+                      return {
+                        id: `${idPrefix}-${ruleId}-choice-${bIdx}-${branch.id}`,
+                        label: branch.name,
+                        type: 'element',
+                        subtitle: 'CALL RULE',
+                        targetElementId: branch.id,
+                        children: branch.rules
+                          .map((r: any, idx: number) => buildRuleGraphTree(r, `${idPrefix}-${ruleId}-choice-${bIdx}-rule-${idx}`, nextVisited))
+                          .filter(Boolean) as RuleGraphNode[]
+                      };
+                    }
+                  } else {
+                    return {
+                      id: `${idPrefix}-${ruleId}-choice-${bIdx}-${branch.id || branch.name}`,
+                      label: branch.name,
+                      type: 'element',
+                      subtitle: 'CALL RULE',
+                      targetElementId: branch.id
+                    };
+                  }
+                } else if (branch instanceof RegExp || (branch && branch.source)) {
+                  const source = branch.source || String(branch);
+                  return {
+                    id: `${idPrefix}-${ruleId}-choice-${bIdx}-regex`,
+                    label: `/${source}/`,
+                    type: 'regex',
+                    subtitle: 'REGEX BRANCH'
+                  };
+                } else {
+                  return {
+                    id: `${idPrefix}-${ruleId}-choice-${bIdx}-lit`,
+                    label: `"${String(branch)}"`,
+                    type: 'literal',
+                    subtitle: 'LITERAL BRANCH'
+                  };
+                }
+              })
+              .filter(Boolean) as RuleGraphNode[];
+          }
+          break;
+        case 'optional':
+        case 'zeroOrMore':
+        case 'oneOrMore':
+        case 'not':
+          const wrapLabels: Record<string, { l: string; s: string }> = {
+            optional: { l: 'Optional Match (?)', s: 'ZERO-TO-ONE' },
+            zeroOrMore: { l: 'Any Count (*)', s: 'STAR REPETITION' },
+            oneOrMore: { l: 'Some Count (+)', s: 'PLUS REPETITION' },
+            not: { l: 'Negative Block (!)', s: 'NOT MATCHED' }
+          };
+          label = wrapLabels[nodeType]?.l || nodeType;
+          subtitle = wrapLabels[nodeType]?.s || '';
+
+          if (item.value) {
+            const innerVal = item.value;
+            if (innerVal.name && Array.isArray(innerVal.rules)) {
+              if (ruleGraphScope === 'full' && innerVal.id) {
+                if (visited.has(innerVal.id)) {
+                  children = [{
+                    id: `${idPrefix}-${ruleId}-inner-recursive-${innerVal.id}`,
+                    label: `⟳ ${innerVal.name} (Recursive Ref)`,
+                    type: 'recursive',
+                    subtitle: 'CYCLE BOUNDARY',
+                    targetElementId: innerVal.id
+                  }];
+                } else {
+                  const nextVisited = new Set(visited);
+                  nextVisited.add(innerVal.id);
+                  children = [{
+                    id: `${idPrefix}-${ruleId}-inner-${innerVal.id}`,
+                    label: innerVal.name,
+                    type: 'element',
+                    subtitle: 'CALL RULE',
+                    targetElementId: innerVal.id,
+                    children: innerVal.rules
+                      .map((r: any, idx: number) => buildRuleGraphTree(r, `${idPrefix}-${ruleId}-inner-rule-${idx}`, nextVisited))
+                      .filter(Boolean) as RuleGraphNode[]
+                  }];
+                }
+              } else {
+                children = [
+                  {
+                    id: `${idPrefix}-${ruleId}-inner-${innerVal.id || innerVal.name}`,
+                    label: innerVal.name,
+                    type: 'element',
+                    subtitle: 'CALL RULE',
+                    targetElementId: innerVal.id
+                  }
+                ];
+              }
+            } else if (innerVal instanceof RegExp || (innerVal && innerVal.source)) {
+              children = [
+                {
+                  id: `${idPrefix}-${ruleId}-inner-regex`,
+                  label: `/${innerVal.source || String(innerVal)}/`,
+                  type: 'regex',
+                  subtitle: 'REGEX PATTERN'
+                }
+              ];
+            } else if (innerVal.type && innerVal.id) {
+              const innerNode = buildRuleGraphTree(innerVal, `${idPrefix}-${ruleId}-inner`, visited);
+              if (innerNode) children = [innerNode];
+            } else {
+              children = [
+                {
+                  id: `${idPrefix}-${ruleId}-inner-lit`,
+                  label: `"${String(innerVal)}"`,
+                  type: 'literal',
+                  subtitle: 'LITERAL PATTERN'
+                }
+              ];
+            }
+          }
+          break;
+        default:
+          label = String(nodeType);
+          subtitle = 'RULE';
+          break;
+      }
+
+      return {
+        id: `${idPrefix}-${ruleId}`,
+        label,
+        type: nodeType,
+        subtitle,
+        children: children.length > 0 ? children : undefined,
+        targetElementId
+      };
+    }
+
+    return null;
+  };
+
+  const renderRuleGraphTreeElement = (node: RuleGraphNode, depth: number = 0, isLast: boolean = true, path: string = "root"): React.ReactNode => {
+    if (!node) return null;
+
+    const hasChildren = node.children && node.children.length > 0;
+    
+    let borderStyle = "border-white/10 bg-black/80 hover:bg-white/[0.04]";
+    let textAccent = "text-indigo-400";
+    let iconDotColor = "bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.4)]";
+    let badgeBg = "bg-indigo-500/10 text-indigo-400 border-indigo-500/20";
+
+    switch (node.type) {
+      case 'root':
+        borderStyle = "bg-indigo-950/40 border-indigo-500/50 hover:bg-indigo-950/60 shadow-[0_0_20px_rgba(99,102,241,0.15)]";
+        textAccent = "text-indigo-300 font-extrabold";
+        iconDotColor = "bg-indigo-400 ring-4 ring-indigo-500/20 shadow-[0_0_10px_rgba(129,140,248,0.6)]";
+        badgeBg = "bg-indigo-500/20 text-indigo-300 border-indigo-500/30";
+        break;
+      case 'literal':
+      case 'caseInsensitiveLiteral':
+        borderStyle = "bg-sky-500/5 border-sky-500/30 hover:bg-sky-500/10";
+        textAccent = "text-sky-300 font-mono";
+        iconDotColor = "bg-sky-400 ring-4 ring-sky-500/20 shadow-[0_0_10px_rgba(56,189,248,0.6)]";
+        badgeBg = "bg-sky-500/10 text-sky-400 border-sky-500/20";
+        break;
+      case 'regex':
+        borderStyle = "bg-emerald-500/5 border-emerald-500/30 hover:bg-emerald-500/10";
+        textAccent = "text-emerald-300 font-mono";
+        iconDotColor = "bg-emerald-400 ring-4 ring-emerald-500/20 shadow-[0_0_10px_rgba(52,211,153,0.6)]";
+        badgeBg = "bg-emerald-500/10 text-emerald-400 border-emerald-500/20";
+        break;
+      case 'recursive':
+        borderStyle = "bg-rose-500/10 border-rose-500/40 hover:bg-rose-500/20 shadow-[0_0_12px_rgba(244,63,94,0.15)] animate-pulse";
+        textAccent = "text-rose-300 font-mono italic";
+        iconDotColor = "bg-rose-400 ring-4 ring-rose-500/20 shadow-[0_0_10px_rgba(244,63,94,0.6)]";
+        badgeBg = "bg-rose-500/20 text-rose-400 border-rose-500/20";
+        break;
+      case 'element':
+        borderStyle = "bg-violet-500/5 border-violet-500/30 hover:bg-violet-500/10 shadow-[0_0_12px_rgba(139,92,246,0.1)]";
+        textAccent = "text-violet-300 font-mono font-semibold";
+        iconDotColor = "bg-violet-400 ring-4 ring-violet-500/20 shadow-[0_0_10px_rgba(167,139,250,0.6)]";
+        badgeBg = "bg-violet-500/10 text-violet-400 border-violet-500/20";
+        break;
+      case 'choice':
+        borderStyle = "bg-fuchsia-500/5 border-fuchsia-500/30 hover:bg-fuchsia-500/10";
+        textAccent = "text-fuchsia-300 font-bold";
+        iconDotColor = "bg-fuchsia-400 ring-4 ring-fuchsia-500/20 shadow-[0_0_10px_rgba(232,121,249,0.6)]";
+        badgeBg = "bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/20";
+        break;
+      case 'optional':
+      case 'zeroOrMore':
+      case 'oneOrMore':
+      case 'not':
+        borderStyle = "bg-amber-500/5 border-amber-500/30 hover:bg-amber-500/10";
+        textAccent = "text-amber-300";
+        iconDotColor = "bg-amber-400 ring-4 ring-amber-500/20 shadow-[0_0_10px_rgba(251,191,36,0.6)]";
+        badgeBg = "bg-amber-500/10 text-amber-400 border-amber-500/20";
+        break;
+      case 'whitespace':
+        borderStyle = "bg-slate-500/5 border-slate-500/20 hover:bg-slate-500/10";
+        textAccent = "text-slate-300";
+        iconDotColor = "bg-slate-400 ring-4 ring-slate-500/20 shadow-[0_0_10px_rgba(156,163,175,0.6)]";
+        badgeBg = "bg-slate-500/10 text-slate-400 border-slate-500/20";
+        break;
+      default:
+        borderStyle = "bg-zinc-500/5 border-zinc-500/25 hover:bg-zinc-500/10";
+        textAccent = "text-zinc-300";
+        iconDotColor = "bg-zinc-400 ring-4 ring-zinc-500/20";
+        badgeBg = "bg-zinc-500/10 text-zinc-400 border-zinc-500/20";
+        break;
+    }
+
+    return (
+      <div key={node.id} className="flex flex-col items-center relative font-sans">
+        {/* Main Node Box */}
+        <div 
+          onClick={(e) => {
+            if (node.targetElementId) {
+              e.stopPropagation();
+              selectElementWithHistory(node.targetElementId);
+            }
+          }}
+          className={cn(
+            "inline-flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border group shadow-md relative z-10 min-w-[140px] justify-center text-center",
+            borderStyle,
+            node.targetElementId ? "cursor-pointer ring-1 ring-violet-500/20 hover:ring-violet-500/40" : "cursor-default"
+          )}
+        >
+          <div className={cn(
+            "w-2 h-2 rounded-full shrink-0 ring-4 ring-black/40",
+            iconDotColor
+          )} />
+          
+          <div className="flex flex-col items-center">
+            {node.subtitle && (
+              <span className={cn(
+                "text-[8px] font-black uppercase tracking-[0.25em] leading-none mb-1.5 opacity-60",
+                badgeBg.split(' ')[1] || textAccent
+              )}>
+                {node.subtitle}
+              </span>
+            )}
+            <span className={cn(
+              "text-[11px] break-all max-w-[210px] leading-tight text-center font-medium",
+              textAccent
+            )}>
+              {node.label}
+            </span>
+            {node.targetElementId && (
+              <span className="text-[7.5px] text-violet-400/80 uppercase tracking-tighter mt-1 font-bold group-hover:text-violet-300 transition-colors">
+                explore rule &rarr;
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Vertical connective track going down to horizontal split line */}
+        {hasChildren && (
+          <div className="w-px h-6 bg-indigo-500/30 relative">
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1.5 h-1.5 bg-indigo-500/40 rounded-full" />
+          </div>
+        )}
+
+        {/* Horizontal flex of sub-children */}
+        {hasChildren && node.children && (
+          <div className="flex flex-row items-start justify-center gap-x-8 relative">
+            {node.children.map((child: RuleGraphNode, idx: number) => {
+              const isFirst = idx === 0;
+              const isLast = idx === node.children!.length - 1;
+              return (
+                <div key={child.id} className="flex flex-col items-center relative">
+                  {/* Left and right connecting segments */}
+                  {node.children!.length > 1 && (
+                    <>
+                      {!isFirst && <div className="absolute top-0 left-0 right-1/2 h-px bg-indigo-500/30" />}
+                      {!isLast && <div className="absolute top-0 left-1/2 right-0 h-px bg-indigo-500/30" />}
+                    </>
+                  )}
+                  {/* Incoming line of the child itself */}
+                  <div className="w-px h-6 bg-indigo-500/30 relative">
+                    <div className="absolute -bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-500 rounded-full" />
+                  </div>
+                  
+                  {/* Recurse on children */}
+                  {renderRuleGraphTreeElement(child, depth + 1, idx === node.children!.length - 1, child.id)}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderVisualNode = (node: any, level: number = 0) => {
     if (!node) return null;
     if (node.isLoop) {
@@ -2647,6 +3058,7 @@ export default function App() {
                     <span className={cn(
                       "px-2 py-1 rounded text-[10px] font-bold uppercase tracking-tighter",
                       rule.type === 'literal' && "bg-sky-500/20 text-sky-400",
+                      rule.type === 'caseInsensitiveLiteral' && "bg-sky-500/15 text-sky-300 border border-sky-500/10",
                       rule.type === 'regex' && "bg-emerald-500/20 text-emerald-400",
                       rule.type === 'element' && "bg-indigo-500/20 text-indigo-400",
                       rule.type === 'whitespace' && "bg-amber-500/20 text-amber-400",
@@ -2659,7 +3071,7 @@ export default function App() {
                       rule.type === 'endScope' && "bg-purple-500/20 text-purple-400",
                       rule.type === 'eof' && "bg-zinc-500/20 text-zinc-400"
                     )}>
-                      {rule.type === 'not' ? 'Not' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? 'Any' : rule.type === 'oneOrMore' ? 'Some' : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : 'Expects'}
+                      {rule.type === 'not' ? 'Not' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? 'Any' : rule.type === 'oneOrMore' ? 'Some' : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : rule.type === 'caseInsensitiveLiteral' ? 'CaseInsens' : 'Expects'}
                     </span>
                     
                     <code className={cn(
@@ -2676,6 +3088,7 @@ export default function App() {
                       rule.type === 'regex' ? `Regex("${rule.value?.source}")` : 
                       rule.type === 'eof' ? 'EOF' :
                       rule.type === 'beginScope' || rule.type === 'endScope' ? `${typeof rule.value === 'string' ? `"${rule.value}"` : (rule.value as any)?.name ? (rule.value as any).name : 'Pattern'}` :
+                      rule.type === 'caseInsensitiveLiteral' ? `"${rule.value}" (i)` :
                       (rule.value as any)?.name ? `${(rule.value as any).name}` :
                       `"${rule.value}"`}
                     </code>
@@ -2706,14 +3119,19 @@ export default function App() {
 
       {/* Header */}
       <header className="relative z-10 h-16 border-b border-white/10 backdrop-blur-md bg-white/5 px-6 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <SyntaxEngineLogo className="text-white w-5 h-5" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight text-white uppercase italic">
-              Syntax<span className="text-indigo-400 font-light">//Engine</span>
-            </h1>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20">
+              <SyntaxEngineLogo className="text-white w-5 h-5" />
+            </div>
+            <div className="flex flex-col">
+              <h1 className="text-lg font-semibold tracking-tight text-white uppercase italic leading-none">
+                Syntax<span className="text-indigo-400 font-light">//Engine</span>
+              </h1>
+              <span className="font-mono text-[9px] text-slate-500/80 leading-none mt-1">
+                v1.0.4-LATEST
+              </span>
+            </div>
           </div>
         </div>
         
@@ -2818,7 +3236,7 @@ export default function App() {
                     visualFlowCollapsed ? "flex-1" : "shrink-0"
                   )}
                 >
-                  <div className="flex items-center justify-between p-4 border-b border-white/5 shrink-0 bg-white/[0.02]">
+                  <div className="flex items-center justify-between p-3 border-b border-white/5 shrink-0 bg-[#0e0e11]/85 gap-4">
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => setDesignerEditorCollapsed(true)}
@@ -2829,74 +3247,75 @@ export default function App() {
                       </button>
                       <Terminal className="w-3.5 h-3.5 text-indigo-400" />
                       <span className="text-[10px] font-bold text-slate-200 uppercase tracking-widest">{projectName}</span>
-                    </div>
-                    {designerEditorTab === 'grammar' && codeError && (
-                      <div className="flex items-center gap-1.5 text-rose-400 text-[10px] font-bold animate-pulse">
-                        <AlertCircle className="w-3 h-3" /> Grammar Error
-                      </div>
-                    )}
-                    {designerEditorTab === 'scope' && scopeError && (
-                      <div className="flex items-center gap-1.5 text-rose-400 text-[10px] font-bold animate-pulse">
-                        <AlertCircle className="w-3 h-3" /> Scope Error
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Sub Tab Selection bar inside Editor Column */}
-                  <div className="flex border-b border-white/5 bg-slate-900/40 p-1.5 gap-1.5 shrink-0">
-                    <button
-                      onClick={() => setDesignerEditorTab('grammar')}
-                      className={cn(
-                        "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
-                        designerEditorTab === 'grammar'
-                          ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
-                          : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
-                      )}
-                    >
-                      <FileCode className="w-3.5 h-3.5 text-indigo-400" /> Grammar Rules
-                    </button>
-                    <button
-                      onClick={() => setDesignerEditorTab('scope')}
-                      className={cn(
-                        "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
-                        designerEditorTab === 'scope'
-                          ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
-                          : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
-                      )}
-                    >
-                      <GitBranch className="w-3.5 h-3.5 text-indigo-400" /> Scope Resolver
-                    </button>
-                    <button
-                      id="diag-console-tab-btn"
-                      onClick={() => setDesignerEditorTab('console')}
-                      className={cn(
-                        "flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm relative",
-                        designerEditorTab === 'console'
-                          ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
-                          : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
-                      )}
-                    >
-                      <Terminal className="w-3.5 h-3.5 text-indigo-400" /> Console
-                      {grammarDiagnostics.length > 0 && (
-                        <div className="absolute -top-1.5 -right-1.5 flex gap-0.5 pointer-events-none">
-                          {errorsCount > 0 && (
-                            <span className="flex h-3.5 min-w-[14px] px-1 items-center justify-center rounded-full text-[8px] font-extrabold text-white shadow-md bg-rose-500 border border-slate-900 leading-none">
-                              {errorsCount}
-                            </span>
-                          )}
-                          {warningsCount > 0 && (
-                            <span className="flex h-3.5 min-w-[14px] px-1 items-center justify-center rounded-full text-[8px] font-extrabold text-white shadow-md bg-amber-500 border border-slate-900 leading-none">
-                              {warningsCount}
-                            </span>
-                          )}
-                          {infosCount > 0 && (
-                            <span className="flex h-3.5 min-w-[14px] px-1 items-center justify-center rounded-full text-[8px] font-extrabold text-white shadow-md bg-indigo-500 border border-slate-900 leading-none">
-                              {infosCount}
-                            </span>
-                          )}
+                      
+                      {designerEditorTab === 'grammar' && codeError && (
+                        <div className="flex items-center gap-1.5 text-rose-400 text-[10px] font-bold animate-pulse ml-2 border border-rose-500/20 bg-rose-500/5 px-2 py-0.5 rounded-full">
+                          <AlertCircle className="w-3 h-3" /> Grammar Error
                         </div>
                       )}
-                    </button>
+                      {designerEditorTab === 'scope' && scopeError && (
+                        <div className="flex items-center gap-1.5 text-rose-400 text-[10px] font-bold animate-pulse ml-2 border border-rose-500/20 bg-rose-500/5 px-2 py-0.5 rounded-full">
+                          <AlertCircle className="w-3 h-3" /> Scope Error
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Sub Tab Selection bar inline */}
+                    <div className="flex items-center bg-slate-900/60 p-1 gap-1 rounded-xl border border-white/5 shrink-0">
+                      <button
+                        onClick={() => setDesignerEditorTab('grammar')}
+                        className={cn(
+                          "flex items-center gap-1.5 px-3 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
+                          designerEditorTab === 'grammar'
+                            ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
+                            : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
+                        )}
+                      >
+                        <FileCode className="w-3.5 h-3.5 text-indigo-400" /> Grammar Rules
+                      </button>
+                      <button
+                        onClick={() => setDesignerEditorTab('scope')}
+                        className={cn(
+                          "flex items-center gap-1.5 px-3 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm",
+                          designerEditorTab === 'scope'
+                            ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
+                            : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
+                        )}
+                      >
+                        <GitBranch className="w-3.5 h-3.5 text-indigo-400" /> Scope Resolver
+                      </button>
+                      <button
+                        id="diag-console-tab-btn"
+                        onClick={() => setDesignerEditorTab('console')}
+                        className={cn(
+                          "flex items-center gap-1.5 px-3 py-1.5 text-[9px] uppercase tracking-wider font-extrabold rounded-lg border transition-all cursor-pointer shadow-sm relative",
+                          designerEditorTab === 'console'
+                            ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300"
+                            : "bg-transparent border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
+                        )}
+                      >
+                        <Terminal className="w-3.5 h-3.5 text-indigo-400" /> Console
+                        {grammarDiagnostics.length > 0 && (
+                          <div className="absolute -top-1 -right-1 flex gap-0.5 pointer-events-none">
+                            {errorsCount > 0 && (
+                              <span className="flex h-3.5 min-w-[14px] px-1 items-center justify-center rounded-full text-[8px] font-extrabold text-white shadow-md bg-rose-500 border border-slate-900 leading-none">
+                                {errorsCount}
+                              </span>
+                            )}
+                            {warningsCount > 0 && (
+                              <span className="flex h-3.5 min-w-[14px] px-1 items-center justify-center rounded-full text-[8px] font-extrabold text-white shadow-md bg-amber-500 border border-slate-900 leading-none">
+                                {warningsCount}
+                              </span>
+                            )}
+                            {infosCount > 0 && (
+                              <span className="flex h-3.5 min-w-[14px] px-1 items-center justify-center rounded-full text-[8px] font-extrabold text-white shadow-md bg-indigo-500 border border-slate-900 leading-none">
+                                {infosCount}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </button>
+                    </div>
                   </div>
                   <div className="flex-1 overflow-hidden flex flex-col bg-[#1a1a1a]/55 relative">
                     {designerEditorTab === 'console' ? (
@@ -3105,7 +3524,7 @@ export default function App() {
                 <section className="flex-1 bg-[#09090c] flex flex-col overflow-hidden relative border-l border-white/5">
                   <div className="p-4 border-b border-white/5 bg-white/[0.02] flex items-center justify-between shrink-0">
                     <div className="flex items-center gap-2">
-                      <button
+                       <button
                         onClick={() => setVisualFlowCollapsed(true)}
                         className="p-1 hover:bg-white/10 rounded-md text-slate-400 hover:text-white transition-colors cursor-pointer mr-2"
                         title="Collapse Logic Flow"
@@ -3116,6 +3535,36 @@ export default function App() {
                         <Layers className="w-3.5 h-3.5" /> Visual Rules Inspector
                       </span>
                     </div>
+
+                    {/* View Switcher for Rules */}
+                    {hierarchy && activeGrammarElement && (
+                      <div className="flex items-center gap-1 bg-white/5 border border-white/10 p-0.5 rounded-lg shrink-0">
+                        <button
+                          onClick={() => setRuleViewMode('list')}
+                          className={cn(
+                            "px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-md transition-all cursor-pointer border flex items-center gap-1",
+                            ruleViewMode === 'list' 
+                              ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300 shadow-sm" 
+                              : "border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
+                          )}
+                          title="View linear sequence of match rules"
+                        >
+                          <List className="w-3 h-3" /> List Steps
+                        </button>
+                        <button
+                          onClick={() => setRuleViewMode('graph')}
+                          className={cn(
+                            "px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-md transition-all cursor-pointer border flex items-center gap-1",
+                            ruleViewMode === 'graph' 
+                              ? "bg-indigo-600/15 border-indigo-500/30 text-indigo-300 shadow-sm" 
+                              : "border-transparent text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]"
+                          )}
+                          title="View rule composition as an interactive tree graph"
+                        >
+                          <GitFork className="w-3 h-3" /> Graph Mode
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {hierarchy ? (
@@ -3210,13 +3659,9 @@ export default function App() {
                                         PRECEDENCE: {activeGrammarElement.precedence}
                                       </span>
                                     )}
-                                    {activeGrammarElement.isHidden ? (
+                                    {activeGrammarElement.isHidden && (
                                       <span className="bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5 text-[8.5px] font-extrabold text-amber-400/80 uppercase tracking-widest leading-none">
                                         Hidden Node
-                                      </span>
-                                    ) : (
-                                      <span className="bg-emerald-500/10 border border-emerald-500/30 rounded px-1.5 py-0.5 text-[8.5px] font-extrabold text-emerald-400/80 uppercase tracking-widest leading-none">
-                                        CST Producer
                                       </span>
                                     )}
                                   </div>
@@ -3227,19 +3672,13 @@ export default function App() {
                                   </p>
                                 </div>
 
-                                <div className="flex items-center gap-3 bg-white/5 border border-white/10 px-2.5 py-1 rounded-lg text-[9.5px] text-[#868e96] font-medium font-mono">
-                                  <span className="flex items-center gap-1.5">
-                                    <Database className="w-3 h-3 text-indigo-400" /> Memoized: <strong className="text-emerald-400">Yes</strong>
-                                  </span>
-                                  {activeGrammarElement.isAutoHealing && (
-                                    <>
-                                      <span className="text-slate-700">|</span>
-                                      <span className="flex items-center gap-1.5 text-emerald-400 font-bold">
-                                        <Zap className="w-3 h-3 text-emerald-400" /> Self-Healing Active
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
+                                {activeGrammarElement.isAutoHealing && (
+                                  <div className="flex items-center gap-3 bg-white/5 border border-white/10 px-2.5 py-1 rounded-lg text-[9.5px] text-[#868e96] font-medium font-mono">
+                                    <span className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                                      <Zap className="w-3 h-3 text-emerald-400" /> Self-Healing Active
+                                    </span>
+                                  </div>
+                                )}
                               </div>
 
                               {/* Tree Relationships Row */}
@@ -3284,182 +3723,256 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* Execution timeline tracker of sequence tracks */}
-                            <div className="space-y-4 max-w-2xl">
-                              {activeGrammarElement.rules?.length === 0 ? (
-                                <div className="text-center py-4 text-slate-500 italic text-[11px] font-mono">
-                                  No rules defined in this syntax element yet.
+                            {/* Execution representation (timeline track list or interactive graph) */}
+                            {ruleViewMode === 'graph' ? (
+                              <div className="flex-1 min-h-[500px] bg-slate-950/40 border border-white/5 rounded-2xl relative overflow-hidden flex flex-col shadow-inner backdrop-blur-md">
+                                <div className="absolute top-4 right-4 z-20 flex items-center gap-2 bg-slate-900/90 border border-white/10 px-3 py-1.5 rounded-xl backdrop-blur-md shadow-lg text-[9px] text-slate-400 font-mono select-none">
+                                  <MousePointer className="w-3 h-3 text-indigo-400 animate-pulse" />
+                                  <span>Drag to Pan &bull; Scroll to Zoom</span>
                                 </div>
-                              ) : (
-                                activeGrammarElement.rules?.map((rule: any, idx: number) => {
-                                  const isErrorHighlight = parseError?.ruleId === rule.id;
-                                  return (
-                                    <div key={rule.id} className="flex relative group">
-                                      {/* Connector timeline track line */}
-                                      <div className="w-8 flex flex-col items-center flex-shrink-0 relative">
-                                        <div className={cn(
-                                          "w-2 h-2 rounded-full z-10 transition-all border mt-4",
-                                          rule.type === 'not' ? "bg-rose-500 border-rose-400 ring-2 ring-rose-500/15" : "bg-indigo-500 border-indigo-400 ring-2 ring-indigo-500/15",
-                                          isErrorHighlight && "bg-red-500 border-red-400 ring-4 ring-red-500/15 animate-pulse"
-                                        )} />
-                                        {idx < activeGrammarElement.rules.length - 1 && (
-                                          <div className="absolute top-4 bottom-0 w-px bg-white/5 group-hover:bg-indigo-500/20 transition-all" />
-                                        )}
+
+                                {(() => {
+                                  const ruleGraphTree = buildRuleGraphTree(activeGrammarElement);
+                                  if (!ruleGraphTree) {
+                                    return (
+                                      <div className="flex-1 flex flex-col items-center justify-center text-slate-500 italic text-[11px] font-mono">
+                                        No rules defined to build visual rule graph.
                                       </div>
-
-                                      <div className={cn(
-                                        "flex-1 p-4 bg-white/[0.02] border border-white/5 backdrop-blur-md rounded-2xl flex flex-col gap-2.5 transition-all hover:bg-white/[0.04] hover:border-white/10 shadow-sm",
-                                        rule.type === 'not' && "bg-rose-500/5 border-rose-500/15 hover:border-rose-500/30",
-                                        isErrorHighlight && "border-red-500/30 bg-red-500/5"
-                                      )}>
-                                        <div className="flex items-center justify-between gap-4 shrink-0">
-                                          <div className="flex items-center gap-2">
-                                            <span className="text-[9px] font-bold text-slate-500 font-mono uppercase tracking-wider">
-                                              Step {idx + 1}
-                                            </span>
-                                            <span className={cn(
-                                              "px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter leading-none shrink-0",
-                                              rule.type === 'literal' && "bg-sky-500/10 text-sky-400 border border-sky-500/20",
-                                              rule.type === 'regex' && "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
-                                              rule.type === 'element' && "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20",
-                                              rule.type === 'whitespace' && "bg-amber-500/10 text-amber-400 border border-amber-500/20",
-                                              rule.type === 'not' && "bg-rose-500/10 text-rose-400 border border-rose-500/20",
-                                              rule.type === 'choice' && "bg-fuchsia-500/10 text-fuchsia-400 border border-fuchsia-500/20",
-                                              rule.type === 'optional' && "bg-teal-500/10 text-teal-400 border border-teal-500/20",
-                                              rule.type === 'zeroOrMore' && "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20",
-                                              rule.type === 'oneOrMore' && "bg-blue-500/10 text-blue-400 border border-blue-500/20",
-                                              rule.type === 'beginScope' && "bg-violet-500/10 text-violet-400 border border-violet-500/20",
-                                              rule.type === 'endScope' && "bg-purple-500/10 text-purple-400 border border-purple-500/20",
-                                              rule.type === 'eof' && "bg-zinc-500/10 text-zinc-400 border border-zinc-500/20"
-                                            )}>
-                                              {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? 'Any Count' : rule.type === 'oneOrMore' ? 'Some Count' : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : 'Expects Match'}
-                                            </span>
+                                    );
+                                  }
+                                  return (
+                                    <TransformWrapper
+                                      initialScale={1}
+                                      minScale={0.1}
+                                      maxScale={3}
+                                      limitToBounds={false}
+                                      centerOnInit={true}
+                                        panning={{
+                                        velocityDisabled: true,
+                                      }}
+                                    >
+                                      {({ zoomIn, zoomOut, resetTransform }) => (
+                                        <>
+                                          <div className="absolute top-4 left-4 z-20 flex gap-1.5 bg-slate-900/90 border border-white/10 p-1 rounded-xl backdrop-blur-md shadow-lg">
+                                            <button
+                                              onClick={() => zoomIn()}
+                                              className="p-1 px-1.5 hover:bg-white/10 rounded-md text-slate-300 hover:text-white transition-colors cursor-pointer text-[10px] font-bold flex items-center gap-1 border border-white/5"
+                                              title="Zoom In"
+                                            >
+                                              <ZoomIn className="w-3.5 h-3.5" />
+                                            </button>
+                                            <button
+                                              onClick={() => zoomOut()}
+                                              className="p-1 px-1.5 hover:bg-white/10 rounded-md text-slate-300 hover:text-white transition-colors cursor-pointer text-[10px] font-bold flex items-center gap-1 border border-white/5"
+                                              title="Zoom Out"
+                                            >
+                                              <ZoomOut className="w-3.5 h-3.5" />
+                                            </button>
+                                            <button
+                                              onClick={() => resetTransform()}
+                                              className="p-1 px-1.5 hover:bg-white/10 rounded-md text-slate-300 hover:text-white transition-colors cursor-pointer text-[10px] font-bold flex items-center gap-1 border border-white/5"
+                                              title="Recenter"
+                                            >
+                                              <Maximize className="w-3.5 h-3.5" />
+                                            </button>
                                           </div>
-                                        </div>
 
-                                        <div className="flex items-center gap-3">
-                                          {rule.type === 'whitespace' ? (
-                                            <span className="text-[11px] font-mono text-amber-300 bg-amber-500/5 px-2 py-0.5 rounded border border-amber-500/10">
-                                              Skip Whitespace &amp; Comments [\\s\\r\\n\\t]
-                                            </span>
-                                          ) : rule.type === 'eof' ? (
-                                            <span className="text-[11px] font-mono text-slate-500 bg-slate-500/5 px-2 py-0.5 rounded border border-slate-500/10">
-                                              EOF (End Of File)
-                                            </span>
-                                          ) : rule.type === 'regex' ? (
-                                            <code className="text-[11px] font-mono text-emerald-400 bg-emerald-500/5 px-2 py-0.5 rounded border border-emerald-500/10">
-                                              Regex("/{rule.value instanceof RegExp ? rule.value.source : String(rule.value)}/")
-                                            </code>
-                                          ) : (rule.type === 'beginScope' || rule.type === 'endScope') ? (
-                                            <code className="text-[11px] font-mono text-violet-300 bg-violet-500/5 px-2 py-0.5 rounded border border-violet-500/10 font-bold">
-                                              {rule.type === 'beginScope' ? 'Begin' : 'End'}: "{String(rule.value)}"
-                                            </code>
-                                          ) : rule.type === 'literal' ? (
-                                            <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
-                                              "{String(rule.value)}"
-                                            </code>
-                                          ) : rule.type === 'element' ? (
-                                            <div className="flex items-center gap-2">
-                                              <span className="text-[11px] font-mono text-indigo-300 bg-indigo-500/5 px-2 py-0.5 rounded border border-indigo-500/10">
-                                                {rule.value?.name || 'anonymous'}
-                                              </span>
-                                              <button
-                                                onClick={() => {
-                                                  if (rule.value?.id) selectElementWithHistory(rule.value.id);
-                                                }}
-                                                className="p-0.5 px-1.5 rounded hover:bg-white/10 text-indigo-400 hover:text-white text-[9.5px] font-bold flex items-center gap-1 transition-colors border border-white/5 cursor-pointer lowercase"
-                                              >
-                                                Explore &rarr;
-                                              </button>
+                                          <TransformComponent
+                                            wrapperStyle={{ width: "100%", height: "100%" }}
+                                            contentStyle={{ width: "100%", height: "100%" }}
+                                          >
+                                            <div className="p-16 flex items-center justify-center min-w-[800px] min-h-[500px] cursor-grab active:cursor-grabbing bg-transparent">
+                                              {renderRuleGraphTreeElement(ruleGraphTree)}
                                             </div>
-                                          ) : rule.type === 'choice' ? (
-                                            <div className="flex flex-col gap-1 w-full">
-                                              <div className="flex flex-wrap gap-1">
-                                                {(rule.value as any[]).map((branch, bIdx) => {
-                                                  const isElement = branch && branch.id && branch.name;
-                                                  return (
-                                                    <div 
-                                                      key={bIdx}
-                                                      className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/30 border border-white/5 text-[10.5px] font-mono"
-                                                    >
-                                                      <span className="text-[#ecc94b] font-bold">#{bIdx + 1}</span>
-                                                      <span className={isElement ? "text-indigo-300" : "text-slate-400"}>
-                                                        {isElement ? branch.name : String(branch)}
-                                                      </span>
-                                                      {isElement && (
-                                                        <button
-                                                          onClick={() => selectElementWithHistory(branch.id)}
-                                                          className="w-3.5 h-3.5 rounded hover:bg-white/10 text-indigo-400 flex items-center justify-center text-[9px] cursor-pointer"
-                                                        >
-                                                          &rarr;
-                                                        </button>
-                                                      )}
-                                                    </div>
-                                                  );
-                                                })}
-                                              </div>
-                                            </div>
-                                          ) : (
-                                            <div className="flex flex-col gap-1 w-full">
-                                              <div className="flex items-center gap-1.5">
-                                                {(() => {
-                                                  const val = rule.value;
-                                                  const isObj = val && typeof val === 'object';
-                                                  const isRegExp = val instanceof RegExp || (isObj && val.constructor?.name === 'RegExp');
-                                                  const isHierarchicalElement = isObj && 'name' in val && 'id' in val;
-
-                                                  if (isHierarchicalElement) {
-                                                    return (
-                                                      <div className="flex items-center gap-2">
-                                                        <span className="text-[11px] font-mono text-indigo-300 bg-indigo-500/5 px-2 py-0.5 rounded border border-indigo-500/10">
-                                                          {val.name}
-                                                        </span>
-                                                        <button
-                                                          onClick={() => selectElementWithHistory(val.id)}
-                                                          className="px-1.5 py-0.5 rounded hover:bg-white/10 text-indigo-400 hover:text-indigo-300 text-[10px] font-bold border border-white/5 cursor-pointer flex items-center gap-1"
-                                                        >
-                                                          Explore &rarr;
-                                                        </button>
-                                                      </div>
-                                                    );
-                                                  } else if (isRegExp) {
-                                                    const source = val.source || String(val);
-                                                    return (
-                                                      <code className="text-[11px] font-mono text-emerald-400 bg-emerald-500/5 px-2 py-0.5 rounded border border-emerald-500/10">
-                                                        Regex("/{source}/")
-                                                      </code>
-                                                    );
-                                                  } else {
-                                                    return (
-                                                      <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
-                                                        "{String(val)}"
-                                                      </code>
-                                                    );
-                                                  }
-                                                })()}
-                                              </div>
-                                            </div>
+                                          </TransformComponent>
+                                        </>
+                                      )}
+                                    </TransformWrapper>
+                                  );
+                                })()}
+                              </div>
+                            ) : (
+                              <div className="space-y-4 max-w-2xl">
+                                {activeGrammarElement.rules?.length === 0 ? (
+                                  <div className="text-center py-4 text-slate-500 italic text-[11px] font-mono">
+                                    No rules defined in this syntax element yet.
+                                  </div>
+                                ) : (
+                                  activeGrammarElement.rules?.map((rule: any, idx: number) => {
+                                    const isErrorHighlight = parseError?.ruleId === rule.id;
+                                    return (
+                                      <div key={rule.id} className="flex relative group">
+                                        {/* Connector timeline track line */}
+                                        <div className="w-8 flex flex-col items-center flex-shrink-0 relative">
+                                          <div className={cn(
+                                            "w-2 h-2 rounded-full z-10 transition-all border mt-4",
+                                            rule.type === 'not' ? "bg-rose-500 border-rose-400 ring-2 ring-rose-500/15" : "bg-indigo-500 border-indigo-400 ring-2 ring-indigo-500/15",
+                                            isErrorHighlight && "bg-red-500 border-red-400 ring-4 ring-red-500/15 animate-pulse"
+                                          )} />
+                                          {idx < activeGrammarElement.rules.length - 1 && (
+                                            <div className="absolute top-4 bottom-0 w-px bg-white/5 group-hover:bg-indigo-500/20 transition-all" />
                                           )}
                                         </div>
 
-                                        <p className="text-[10px] text-slate-500 font-sans italic">
-                                          {rule.type === 'literal' ? "Strict literal: matches the exact character sequence of this token keyword." :
-                                           rule.type === 'regex' ? "Regexp scan: matches standard compiler token patterns, identifiers, numbers, etc." :
-                                           rule.type === 'element' ? "Sub-element: executes another rule segment to build nested CST syntax nodes." :
-                                           rule.type === 'whitespace' ? "Noise filter: parses and skips spaces, comments, and formatting characters dynamically." :
-                                           rule.type === 'choice' ? "Precedence branch: tests each alternative branch option and resolves the longest matching path." :
-                                           rule.type === 'optional' ? "Zero-to-One: tries to match the rule pattern option, but continues safely if missing." :
-                                           rule.type === 'zeroOrMore' ? "Star repetition: iteratively compiles as many matches of this child as are found." :
-                                           rule.type === 'oneOrMore' ? "Plus repetition: loops through consecutive matches, requiring at least one successful parse." :
-                                           rule.type === 'not' ? "Negative constraint: verifies this token sequence is absent before matching starts." :
-                                           rule.type === 'eof' ? "EOF boundary: verifies the parser head has completed parsing the entire code document." : ""}
-                                        </p>
+                                        <div className={cn(
+                                          "flex-1 p-4 bg-white/[0.02] border border-white/5 backdrop-blur-md rounded-2xl flex flex-col gap-2.5 transition-all hover:bg-white/[0.04] hover:border-white/10 shadow-sm",
+                                          rule.type === 'not' && "bg-rose-500/5 border-rose-500/15 hover:border-rose-500/30",
+                                          isErrorHighlight && "border-red-500/30 bg-red-500/5"
+                                        )}>
+                                          <div className="flex items-center justify-between gap-4 shrink-0">
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-[9px] font-bold text-slate-500 font-mono uppercase tracking-wider">
+                                                Step {idx + 1}
+                                              </span>
+                                              <span className={cn(
+                                                "px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter leading-none shrink-0",
+                                                (rule.type === 'literal' || rule.type === 'caseInsensitiveLiteral') && "bg-sky-500/10 text-sky-400 border border-sky-500/20",
+                                                rule.type === 'regex' && "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+                                                rule.type === 'element' && "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20",
+                                                rule.type === 'whitespace' && "bg-amber-500/10 text-amber-400 border border-amber-500/20",
+                                                rule.type === 'not' && "bg-rose-500/10 text-rose-400 border border-rose-500/20",
+                                                rule.type === 'choice' && "bg-fuchsia-500/10 text-fuchsia-400 border border-fuchsia-500/20",
+                                                rule.type === 'optional' && "bg-teal-500/10 text-teal-400 border border-teal-500/20",
+                                                rule.type === 'zeroOrMore' && "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20",
+                                                rule.type === 'oneOrMore' && "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+                                                rule.type === 'beginScope' && "bg-violet-500/10 text-violet-400 border border-violet-500/20",
+                                                rule.type === 'endScope' && "bg-purple-500/10 text-purple-400 border border-purple-500/20",
+                                                rule.type === 'eof' && "bg-zinc-500/10 text-zinc-400 border border-zinc-500/20"
+                                              )}>
+                                                {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? 'Any Count' : rule.type === 'oneOrMore' ? 'Some Count' : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : rule.type === 'caseInsensitiveLiteral' ? 'Case-Insens' : 'Expects Match'}
+                                              </span>
+                                            </div>
+                                          </div>
+
+                                          <div className="flex items-center gap-3">
+                                            {rule.type === 'whitespace' ? (
+                                              <span className="text-[11px] font-mono text-amber-300 bg-amber-500/5 px-2 py-0.5 rounded border border-amber-500/10">
+                                                Skip Whitespace &amp; Comments [\\s\\r\\n\\t]
+                                              </span>
+                                            ) : rule.type === 'eof' ? (
+                                              <span className="text-[11px] font-mono text-slate-500 bg-slate-500/5 px-2 py-0.5 rounded border border-slate-500/10">
+                                                EOF (End Of File)
+                                              </span>
+                                            ) : rule.type === 'regex' ? (
+                                              <code className="text-[11px] font-mono text-emerald-400 bg-emerald-500/5 px-2 py-0.5 rounded border border-emerald-500/10">
+                                                Regex("/{rule.value instanceof RegExp ? rule.value.source : String(rule.value)}/")
+                                              </code>
+                                            ) : (rule.type === 'beginScope' || rule.type === 'endScope') ? (
+                                              <code className="text-[11px] font-mono text-violet-300 bg-violet-500/5 px-2 py-0.5 rounded border border-violet-500/10 font-bold">
+                                                {rule.type === 'beginScope' ? 'Begin' : 'End'}: "{String(rule.value)}"
+                                              </code>
+                                            ) : rule.type === 'literal' ? (
+                                              <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
+                                                "{String(rule.value)}"
+                                              </code>
+                                            ) : rule.type === 'caseInsensitiveLiteral' ? (
+                                              <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
+                                                "{String(rule.value)}" (case-insensitive)
+                                              </code>
+                                            ) : rule.type === 'element' ? (
+                                              <div className="flex items-center gap-2">
+                                                <span className="text-[11px] font-mono text-indigo-300 bg-indigo-500/5 px-2 py-0.5 rounded border border-indigo-500/10">
+                                                  {rule.value?.name || 'anonymous'}
+                                                </span>
+                                                <button
+                                                  onClick={() => {
+                                                    if (rule.value?.id) selectElementWithHistory(rule.value.id);
+                                                  }}
+                                                  className="p-0.5 px-1.5 rounded hover:bg-white/10 text-indigo-400 hover:text-white text-[9.5px] font-bold flex items-center gap-1 transition-colors border border-white/5 cursor-pointer lowercase"
+                                                >
+                                                  Explore &rarr;
+                                                </button>
+                                              </div>
+                                            ) : rule.type === 'choice' ? (
+                                              <div className="flex flex-col gap-1 w-full">
+                                                <div className="flex flex-wrap gap-1">
+                                                  {(rule.value as any[]).map((branch, bIdx) => {
+                                                    const isElement = branch && branch.id && branch.name;
+                                                    return (
+                                                      <div 
+                                                        key={bIdx}
+                                                        className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/30 border border-white/5 text-[10.5px] font-mono"
+                                                      >
+                                                        <span className="text-[#ecc94b] font-bold">#{bIdx + 1}</span>
+                                                        <span className={isElement ? "text-indigo-300" : "text-slate-400"}>
+                                                          {isElement ? branch.name : String(branch)}
+                                                        </span>
+                                                        {isElement && (
+                                                          <button
+                                                            onClick={() => selectElementWithHistory(branch.id)}
+                                                            className="w-3.5 h-3.5 rounded hover:bg-white/10 text-indigo-400 flex items-center justify-center text-[9px] cursor-pointer"
+                                                          >
+                                                            &rarr;
+                                                          </button>
+                                                        )}
+                                                      </div>
+                                                    );
+                                                  })}
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              <div className="flex flex-col gap-1 w-full">
+                                                <div className="flex items-center gap-1.5">
+                                                  {(() => {
+                                                    const val = rule.value;
+                                                    const isObj = val && typeof val === 'object';
+                                                    const isRegExp = val instanceof RegExp || (isObj && val.constructor?.name === 'RegExp');
+                                                    const isHierarchicalElement = isObj && 'name' in val && 'id' in val;
+
+                                                    if (isHierarchicalElement) {
+                                                      return (
+                                                        <div className="flex items-center gap-2">
+                                                          <span className="text-[11px] font-mono text-indigo-300 bg-indigo-500/5 px-2 py-0.5 rounded border border-indigo-500/10">
+                                                            {val.name}
+                                                          </span>
+                                                          <button
+                                                            onClick={() => selectElementWithHistory(val.id)}
+                                                            className="px-1.5 py-0.5 rounded hover:bg-white/10 text-indigo-400 hover:text-indigo-300 text-[10px] font-bold border border-white/5 cursor-pointer flex items-center gap-1"
+                                                          >
+                                                            Explore &rarr;
+                                                          </button>
+                                                        </div>
+                                                      );
+                                                    } else if (isRegExp) {
+                                                      const source = val.source || String(val);
+                                                      return (
+                                                        <code className="text-[11px] font-mono text-emerald-400 bg-emerald-500/5 px-2 py-0.5 rounded border border-emerald-500/10">
+                                                          Regex("/{source}/")
+                                                        </code>
+                                                      );
+                                                    } else {
+                                                      return (
+                                                        <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
+                                                          "{String(val)}"
+                                                        </code>
+                                                      );
+                                                    }
+                                                  })()}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          <p className="text-[10px] text-slate-500 font-sans italic">
+                                            {rule.type === 'literal' ? "Strict literal: matches the exact character sequence of this token keyword." :
+                                             rule.type === 'caseInsensitiveLiteral' ? "Case-insensitive literal: matches the exact character sequence of this token keyword, ignoring capitalization rules." :
+                                             rule.type === 'regex' ? "Regexp scan: matches standard compiler token patterns, identifiers, numbers, etc." :
+                                             rule.type === 'element' ? "Sub-element: executes another rule segment to build nested CST syntax nodes." :
+                                             rule.type === 'whitespace' ? "Noise filter: parses and skips spaces, comments, and formatting characters dynamically." :
+                                             rule.type === 'choice' ? "Precedence branch: tests each alternative branch option and resolves the longest matching path." :
+                                             rule.type === 'optional' ? "Zero-to-One: tries to match the rule pattern option, but continues safely if missing." :
+                                             rule.type === 'zeroOrMore' ? "Star repetition: iteratively compiles as many matches of this child as are found." :
+                                             rule.type === 'oneOrMore' ? "Plus repetition: loops through consecutive matches, requiring at least one successful parse." :
+                                             rule.type === 'not' ? "Negative constraint: verifies this token sequence is absent before matching starts." :
+                                             rule.type === 'eof' ? "EOF boundary: verifies the parser head has completed parsing the entire code document." : ""}
+                                          </p>
+                                        </div>
                                       </div>
-                                    </div>
-                                  );
-                                })
-                              )}
-                            </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div className="flex-1 flex flex-col items-center justify-center text-slate-600 gap-3 opacity-50">
@@ -4816,23 +5329,7 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Footer Status */}
-      <footer className="h-8 border-t border-white/5 bg-black/20 flex items-center justify-between px-4 text-[10px] font-medium text-slate-500 shrink-0 relative z-10 backdrop-blur-sm">
-        <div className="flex gap-6 items-center">
-          <span className="flex items-center gap-1.5 uppercase tracking-wider font-bold text-[9px]">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
-            Engine: Live
-          </span>
-          <span className="opacity-60 flex items-center gap-1.5"><Database className="w-3 h-3" /> Memory: 14.2 MB</span>
-          <span className="opacity-60 hidden sm:flex items-center gap-1.5"><Settings className="w-3 h-3" /> Backtracking: Off</span>
-        </div>
-        <div className="flex gap-6 items-center">
-          <span className="text-indigo-400 font-bold uppercase tracking-widest text-[9px] flex items-center gap-2">
-            <Zap className="w-3 h-3" /> Packrat Memoization Active
-          </span>
-          <span className="font-mono text-slate-600">v1.0.4-LATEST</span>
-        </div>
-      </footer>
+      {/* Footer has been removed and vital stats moved to header */}
 
       {/* Library Modal Overlay */}
       <ProjectLibraryModal

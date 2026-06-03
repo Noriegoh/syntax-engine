@@ -326,6 +326,9 @@ export class SyntaxElement {
   }
 
   BeginScope(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -341,6 +344,9 @@ export class SyntaxElement {
   }
 
   EndScope(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -356,6 +362,9 @@ export class SyntaxElement {
   }
 
   Expects(pattern: string | RegExp | SyntaxElement | TokenMarker | (string | RegExp | SyntaxElement | TokenMarker)[]): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     if (Array.isArray(pattern)) {
       for (const item of pattern) {
         this.Expects(item);
@@ -411,6 +420,9 @@ export class SyntaxElement {
   }
 
   Not(pattern: any, ...additional: any[]): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     const flatten = (arr: any[]): any[] => {
       const res: any[] = [];
       for (const item of arr) {
@@ -448,6 +460,9 @@ export class SyntaxElement {
   }
 
   ExpectsOneOf(...patterns: any[]): this {
+    if (patterns.length === 0) {
+      patterns = [""];
+    }
     const flatten = (arr: any[]): any[] => {
       const res: any[] = [];
       for (const item of arr) {
@@ -490,6 +505,9 @@ export class SyntaxElement {
   }
 
   Optional(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
       const inner = pattern.pattern;
       const lead = SyntaxElement.defaultLeadingTrivia;
@@ -512,6 +530,9 @@ export class SyntaxElement {
   }
 
   ZeroOrMore(pattern: any, ...additional: any[]): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     const flatten = (arr: any[]): any[] => {
       const res: any[] = [];
       for (const item of arr) {
@@ -558,6 +579,9 @@ export class SyntaxElement {
   }
 
   OneOrMore(pattern: any, ...additional: any[]): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     const flatten = (arr: any[]): any[] => {
       const res: any[] = [];
       for (const item of arr) {
@@ -610,18 +634,30 @@ export class SyntaxElement {
   }
 
   LeadingTrivia(pattern: string | RegExp | SyntaxElement): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     const id = nextRuleId();
     this.rules.push({ id, type: 'leadingTrivia', value: pattern });
     return this;
   }
 
   TrailingTrivia(pattern: string | RegExp | SyntaxElement): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     const id = nextRuleId();
     this.rules.push({ id, type: 'trailingTrivia', value: pattern });
     return this;
   }
 
   SeparatedBy(item: any, separator: any): this {
+    if (item === undefined || item === null) {
+      item = "";
+    }
+    if (separator === undefined || separator === null) {
+      separator = "";
+    }
     const id = nextRuleId();
     let unwrappedItem = item;
     let unwrappedSep = separator;
@@ -636,6 +672,9 @@ export class SyntaxElement {
   }
 
   Assert(pattern: any, ...additional: any[]): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
     const flatten = (arr: any[]): any[] => {
       const res: any[] = [];
       for (const item of arr) {
