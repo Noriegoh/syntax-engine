@@ -33,7 +33,7 @@ function compileSpeculativeMatchTypeScript(
   varId: number,
   childElements: Set<string>,
   dfaMethodName?: string
-): { code: string; matchedName: string; parsedAstName: string; newOffsetName: string; precName: string } {
+): { code: string; matchedName: string; parsedAstName: string; newOffsetName: string; precName: string; maxDepName: string } {
   const mVar = `matched_${varId}`;
   const astVar = `parsedAst_${varId}`;
   const offsetVar = `newOffset_${varId}`;
@@ -48,6 +48,8 @@ function compileSpeculativeMatchTypeScript(
                         const ${mVar} = ctx.matchLiteralIgnoreCase(text, currentOffset, lit_${varId}, litLen_${varId});
                         const ${astVar} = ${mVar} ? new GreenNode(NodeType.Literal, text.substring(currentOffset, currentOffset + litLen_${varId}), ${ruleId}, litLen_${varId}) : null;
                         const ${offsetVar} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset;
+                        const maxDep_${varId} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset + 1;
+                        localMaxOffset = Math.max(localMaxOffset, maxDep_${varId});
                         const ${precVar} = 0;`;
     } else {
       const fnName = dfaMethodName || `matchDFA_Spec_${ruleId}`;
@@ -56,6 +58,8 @@ function compileSpeculativeMatchTypeScript(
                         const ${mVar} = resDFA_${varId}.success;
                         const ${astVar} = ${mVar} ? new GreenNode(NodeType.Token, resDFA_${varId}.matchedValue, ${ruleId}, resDFA_${varId}.matchedValue.length) : null;
                         const ${offsetVar} = ${mVar} ? currentOffset + resDFA_${varId}.matchedValue.length : currentOffset;
+                        const maxDep_${varId} = ${mVar} ? currentOffset + resDFA_${varId}.matchedValue.length : currentOffset + 1;
+                        localMaxOffset = Math.max(localMaxOffset, maxDep_${varId});
                         const ${precVar} = 0;`;
     }
   } else if (typeof pattern === 'string') {
@@ -66,6 +70,8 @@ function compileSpeculativeMatchTypeScript(
                         const ${mVar} = ctx.matchLiteral(text, currentOffset, lit_${varId}, litLen_${varId});
                         const ${astVar} = ${mVar} ? new GreenNode(NodeType.Literal, lit_${varId}, ${ruleId}, litLen_${varId}) : null;
                         const ${offsetVar} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset;
+                        const maxDep_${varId} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset + 1;
+                        localMaxOffset = Math.max(localMaxOffset, maxDep_${varId});
                         const ${precVar} = 0;`;
   } else {
     // SyntaxElement
@@ -76,9 +82,11 @@ function compileSpeculativeMatchTypeScript(
                         const ${mVar} = res_${varId}.success;
                         const ${astVar} = ${mVar} ? res_${varId}.ast : null;
                         const ${offsetVar} = ${mVar} ? res_${varId}.newOffset : currentOffset;
+                        const maxDep_${varId} = res_${varId}.dependencyLimit;
+                        localMaxOffset = Math.max(localMaxOffset, maxDep_${varId});
                         const ${precVar} = ${pattern.precedence || 0};`;
   }
-  return { code, matchedName: mVar, parsedAstName: astVar, newOffsetName: offsetVar, precName: precVar };
+  return { code, matchedName: mVar, parsedAstName: astVar, newOffsetName: offsetVar, precName: precVar, maxDepName: `maxDep_${varId}` };
 }
 
 export function generateDFATypeScriptMethod(methodName: string, regex: RegExp, ruleId: number, type: 'Rule' | 'Spec'): string {
@@ -319,9 +327,7 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
           rule.type === 'leadingTrivia' ||
           rule.type === 'trailingTrivia' ||
           rule.type === 'zeroOrMore' ||
-          rule.type === 'oneOrMore' ||
-          rule.type === 'not' ||
-          rule.type === 'assert'
+          rule.type === 'oneOrMore'
         ) {
           if (rule.value instanceof SyntaxElement) {
             childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));

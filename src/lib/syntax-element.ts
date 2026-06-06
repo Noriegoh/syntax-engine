@@ -222,7 +222,7 @@ export class SyntaxElement {
   public static registry = new Map<string, SyntaxElement>();
   public static ruleRegistry = new Map<number, Rule>();
 
-  private static lastId = 0;
+  public static lastId = 0;
   
   public readonly id: number;
   public readonly name: string;
@@ -734,21 +734,17 @@ export class SyntaxElement {
     return this;
   }
 
-  LeadingTrivia(pattern: string | RegExp | SyntaxElement): this {
-    if (pattern === undefined || pattern === null) {
-      pattern = "";
-    }
+  LeadingTrivia(pattern?: string | RegExp | SyntaxElement): this {
+    const val = pattern !== undefined ? pattern : (SyntaxElement.defaultLeadingTrivia || "");
     const id = nextRuleId();
-    this.rules.push({ id, type: 'leadingTrivia', value: pattern });
+    this.rules.push({ id, type: 'leadingTrivia', value: val });
     return this;
   }
 
-  TrailingTrivia(pattern: string | RegExp | SyntaxElement): this {
-    if (pattern === undefined || pattern === null) {
-      pattern = "";
-    }
+  TrailingTrivia(pattern?: string | RegExp | SyntaxElement): this {
+    const val = pattern !== undefined ? pattern : (SyntaxElement.defaultTrailingTrivia || "");
     const id = nextRuleId();
-    this.rules.push({ id, type: 'trailingTrivia', value: pattern });
+    this.rules.push({ id, type: 'trailingTrivia', value: val });
     return this;
   }
 

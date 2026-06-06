@@ -206,6 +206,34 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
 
   visit(rootElement);
 
+  // Check for unbalanced default trivia rules
+  const hasLeading = !!SyntaxElement.defaultLeadingTrivia;
+  const hasTrailing = !!SyntaxElement.defaultTrailingTrivia;
+
+  // Find if they have explicitly added LeadingTrivia() or TrailingTrivia() to explicitly consume boundaries
+  const hasExplicitLeading = elements.some(el => el.rules.some(r => r.type === 'leadingTrivia'));
+  const hasExplicitTrailing = elements.some(el => el.rules.some(r => r.type === 'trailingTrivia'));
+
+  if (hasLeading && !hasTrailing && !hasExplicitLeading) {
+    const warningMsg = "Unbalanced trivia warning: DefaultLeadingTrivia is defined but DefaultTrailingTrivia is not. Since trailing trivia is never used, the last trivia at the ending of the token (if it exists) is never consumed.";
+    console.warn(warningMsg);
+    diagnostics.push({
+      type: "warning",
+      nodeName: "Global (" + rootElement.name + ")",
+      message: warningMsg,
+      suggestion: "To consume the final trailing whitespace/comments explicitly, either define DefaultTrailingTrivia, or add an explicit root.LeadingTrivia(...) at the end of your root element sequence."
+    });
+  } else if (!hasLeading && hasTrailing && !hasExplicitTrailing) {
+    const warningMsg = "Unbalanced trivia warning: DefaultTrailingTrivia is defined but DefaultLeadingTrivia is not. The first leading trivia preceding your first token will never satisfy the leading/trailing patterns and is never automatically consumed.";
+    console.warn(warningMsg);
+    diagnostics.push({
+      type: "warning",
+      nodeName: "Global (" + rootElement.name + ")",
+      message: warningMsg,
+      suggestion: "To consume the starting leading whitespace/comments explicitly, either define DefaultLeadingTrivia, or add an explicit root.TrailingTrivia(...) at the start of your root element sequence."
+    });
+  }
+
   // 1.5. Calculate nullability of elements for left-recursion and cycle analysis
   const nullable = new Map<SyntaxElement, boolean>();
   for (const el of elements) {

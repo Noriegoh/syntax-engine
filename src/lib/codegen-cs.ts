@@ -181,7 +181,7 @@ function compileSpeculativeMatch(
   varId: number,
   childElements: Set<string>,
   dfaMethodName?: string
-): { code: string; matchedName: string; parsedAstName: string; newOffsetName: string; precName: string } {
+): { code: string; matchedName: string; parsedAstName: string; newOffsetName: string; precName: string; maxDepName: string } {
   const mVar = `matched_${varId}`;
   const astVar = `parsedAst_${varId}`;
   const offsetVar = `newOffset_${varId}`;
@@ -196,14 +196,18 @@ function compileSpeculativeMatch(
                         bool ${mVar} = ctx.MatchLiteralIgnoreCase(text, currentOffset, lit_${varId}, litLen_${varId});
                         GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Literal, text.GetText(currentOffset, litLen_${varId}).ToString(), ${ruleId}, litLen_${varId}) : null;
                         int ${offsetVar} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset;
+                        int maxDep_${varId} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset + 1; // approximation for failures
+                        localMaxOffset = Math.Max(localMaxOffset, maxDep_${varId});
                         int ${precVar} = 0;`;
     } else {
       const fnName = dfaMethodName || `MatchDFA_Spec_${ruleId}`;
       code = `
                         string mval_${varId};
                         bool ${mVar} = ${fnName}(text, currentOffset, out mval_${varId});
-                        GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Token, mval_${varId}, ${ruleId}, mval_${varId}.Length) : null;
-                        int ${offsetVar} = ${mVar} ? currentOffset + mval_${varId}.Length : currentOffset;
+                        GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Token, mval_${varId}, ${ruleId}, mval_${varId}?.Length ?? 0) : null;
+                        int ${offsetVar} = ${mVar} ? currentOffset + (mval_${varId}?.Length ?? 0) : currentOffset;
+                        int maxDep_${varId} = ${mVar} ? currentOffset + (mval_${varId}?.Length ?? 0) : currentOffset + 1;
+                        localMaxOffset = Math.Max(localMaxOffset, maxDep_${varId});
                         int ${precVar} = 0;`;
     }
   } else if (typeof pattern === 'string') {
@@ -214,6 +218,8 @@ function compileSpeculativeMatch(
                         bool ${mVar} = ctx.MatchLiteral(text, currentOffset, lit_${varId}, litLen_${varId});
                         GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Literal, lit_${varId}, ${ruleId}, litLen_${varId}) : null;
                         int ${offsetVar} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset;
+                        int maxDep_${varId} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset + 1;
+                        localMaxOffset = Math.Max(localMaxOffset, maxDep_${varId});
                         int ${precVar} = 0;`;
   } else {
     // SyntaxElement
@@ -224,9 +230,11 @@ function compileSpeculativeMatch(
                         bool ${mVar} = res_${varId}.Success;
                         GreenNode ${astVar} = ${mVar} ? res_${varId}.Ast : null;
                         int ${offsetVar} = ${mVar} ? res_${varId}.NewOffset : currentOffset;
+                        int maxDep_${varId} = res_${varId}.DependencyLimit;
+                        localMaxOffset = Math.Max(localMaxOffset, maxDep_${varId});
                         int ${precVar} = ${pattern.precedence || 0};`;
   }
-  return { code, matchedName: mVar, parsedAstName: astVar, newOffsetName: offsetVar, precName: precVar };
+  return { code, matchedName: mVar, parsedAstName: astVar, newOffsetName: offsetVar, precName: precVar, maxDepName: `maxDep_${varId}` };
 }
 /**
  * Generates the strongly-typed AST node class structures.
@@ -351,9 +359,7 @@ ${enumsCode}${elements.map(el => {
           rule.type === 'leadingTrivia' ||
           rule.type === 'trailingTrivia' ||
           rule.type === 'zeroOrMore' ||
-          rule.type === 'oneOrMore' ||
-          rule.type === 'not' ||
-          rule.type === 'assert'
+          rule.type === 'oneOrMore'
         ) {
           if (rule.value instanceof SyntaxElement) {
             childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
@@ -547,9 +553,7 @@ export function generateModularCSharp(
             rule.type === 'leadingTrivia' ||
             rule.type === 'trailingTrivia' ||
             rule.type === 'zeroOrMore' ||
-            rule.type === 'oneOrMore' ||
-            rule.type === 'not' ||
-            rule.type === 'assert'
+            rule.type === 'oneOrMore'
           ) {
             if (rule.value instanceof SyntaxElement) {
               childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
@@ -622,10 +626,43 @@ function generateScopeBuilderConfigCode(scopeBuilder?: ScopeBuilder): string {
   const escapeCsString = (str: string) => {
     return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   };
+  const compileFormatToCsLambda = (format: string) => {
+    const regex = /\{([^}]+)\}/g;
+    let match;
+    const parts: string[] = [];
+    let lastIndex = 0;
+    let hasPlaceholders = false;
+    let idCounter = 0;
+    while ((match = regex.exec(format)) !== null) {
+      hasPlaceholders = true;
+      const literal = format.substring(lastIndex, match.index);
+      if (literal) {
+        parts.push(`"${escapeCsString(literal)}"`);
+      }
+      const key = match[1];
+      let capName = key;
+      if (key.includes(':')) {
+        const splitParts = key.split(':');
+        capName = splitParts[0];
+      }
+      const uId = ++idCounter;
+      parts.push(`(captures.TryGetValue("${escapeCsString(capName)}", out var list${uId}) && list${uId}.Count > 0 ? (list${uId}[0].Value?.ToString() ?? list${uId}[0].Type) : "")`);
+      lastIndex = regex.lastIndex;
+    }
+    const tail = format.substring(lastIndex);
+    if (tail) {
+      parts.push(`"${escapeCsString(tail)}"`);
+    }
+    if (!hasPlaceholders) {
+      return `(captures, raw, match) => "${escapeCsString(format)}"`;
+    }
+    return `(captures, raw, match) => ${parts.join(' + ')}`;
+  };
   // 1. Scope Rules
   for (const rule of scopeBuilder.scopeRules) {
     if (typeof rule.nameFn === 'string') {
-      lines.push(`            sb.DefineScope("${escapeCsString(rule.type)}", "${escapeCsString(rule.queryStr)}", "${escapeCsString(rule.nameFn)}");`);
+      const lambdaStr = compileFormatToCsLambda(rule.nameFn);
+      lines.push(`            sb.DefineScope("${escapeCsString(rule.type)}", "${escapeCsString(rule.queryStr)}", ${lambdaStr});`);
     } else {
       lines.push(`            // Functional rule type: ${rule.type}`);
       lines.push(`            // sb.DefineScope("${escapeCsString(rule.type)}", "${escapeCsString(rule.queryStr)}", (captures, raw, match) => ...);`);
@@ -637,7 +674,10 @@ function generateScopeBuilderConfigCode(scopeBuilder?: ScopeBuilder): string {
       lines.push(`            // Plural functional symbol rule:`);
       lines.push(`            // sb.DefineSymbols("${escapeCsString(rule.queryStr)}", (captures, raw, match) => ...);`);
     } else if (typeof rule.nameFn === 'string' && typeof rule.kindFn === 'string' && typeof rule.datatypeFn === 'string') {
-      lines.push(`            sb.DefineSymbol("${escapeCsString(rule.queryStr)}", "${escapeCsString(rule.nameFn)}", "${escapeCsString(rule.kindFn)}", "${escapeCsString(rule.datatypeFn)}");`);
+      const nameLambdaStr = compileFormatToCsLambda(rule.nameFn);
+      const kindLambdaStr = compileFormatToCsLambda(rule.kindFn);
+      const datatypeLambdaStr = compileFormatToCsLambda(rule.datatypeFn);
+      lines.push(`            sb.DefineSymbol("${escapeCsString(rule.queryStr)}", \n                ${nameLambdaStr}, \n                ${kindLambdaStr}, \n                ${datatypeLambdaStr}\n            );`);
     } else {
       lines.push(`            // Custom symbol rule mapping:`);
       lines.push(`            // sb.DefineSymbol("${escapeCsString(rule.queryStr)}", nameFn, kindFn, datatypeFn);`);
@@ -646,7 +686,8 @@ function generateScopeBuilderConfigCode(scopeBuilder?: ScopeBuilder): string {
   // 3. Reference Rules
   for (const rule of scopeBuilder.referenceRules) {
     if (typeof rule.nameFn === 'string') {
-      lines.push(`            sb.DefineReference("${escapeCsString(rule.queryStr)}", "${escapeCsString(rule.nameFn)}");`);
+      const lambdaStr = compileFormatToCsLambda(rule.nameFn);
+      lines.push(`            sb.DefineReference("${escapeCsString(rule.queryStr)}", ${lambdaStr});`);
     } else {
       lines.push(`            // Functional reference rule:`);
       lines.push(`            // sb.DefineReference("${escapeCsString(rule.queryStr)}", nameFn);`);
@@ -1488,41 +1529,20 @@ ${ruleTokenNamesInit}
             }
             return current;
         }
-        private void RunRecursively(
-            AstNode node,
-            List<int> path,
-            List<RelativeQueryMatch> tempMatches)
+        public List<RelativeQueryMatch> GetMatchesForNode(AstNode node)
         {
-            if (node == null) return;
-            if (_greenQueryCache.TryGetValue(node.Green, out var cacheMap))
+            if (node == null) return new List<RelativeQueryMatch>();
+            if (!_greenQueryCache.TryGetValue(node.Green, out var cacheMap))
             {
-                if (cacheMap.TryGetValue(this, out var cachedSub))
-                {
-                    foreach (var rel in cachedSub)
-                    {
-                        var fullNodePath = new List<int>(path);
-                        fullNodePath.AddRange(rel.NodePath);
-                        var caps = new List<RelativeQueryCapture>();
-                        foreach (var c in rel.Captures)
-                        {
-                            var fullCapPath = new List<int>(path);
-                            fullCapPath.AddRange(c.NodePath);
-                            caps.Add(new RelativeQueryCapture
-                            {
-                                Name = c.Name,
-                                NodePath = fullCapPath
-                            });
-                        }
-                        tempMatches.Add(new RelativeQueryMatch
-                        {
-                            PatternIndex = rel.PatternIndex,
-                            NodePath = fullNodePath,
-                            Captures = caps
-                        });
-                    }
-                    return;
-                }
+                cacheMap = new Dictionary<CSTQuery, List<RelativeQueryMatch>>();
+                _greenQueryCache.Remove(node.Green);
+                _greenQueryCache.Add(node.Green, cacheMap);
             }
+            if (cacheMap.TryGetValue(this, out var cached))
+            {
+                return cached;
+            }
+            var localMatches = new List<RelativeQueryMatch>();
             for (int i = 0; i < Patterns.Count; i++)
             {
                 var pat = Patterns[i];
@@ -1533,18 +1553,16 @@ ${ruleTokenNamesInit}
                     foreach (var c in captures)
                     {
                         var relPath = GetPathFromRoot(c.Node, node);
-                        var fullCapPath = new List<int>(path);
-                        fullCapPath.AddRange(relPath);
                         caps.Add(new RelativeQueryCapture
                         {
                             Name = c.Name,
-                            NodePath = fullCapPath
+                            NodePath = relPath
                         });
                     }
-                    tempMatches.Add(new RelativeQueryMatch
+                    localMatches.Add(new RelativeQueryMatch
                     {
                         PatternIndex = i,
-                        NodePath = new List<int>(path),
+                        NodePath = new List<int>(),
                         Captures = caps
                     });
                 }
@@ -1555,28 +1573,38 @@ ${ruleTokenNamesInit}
                 var child = children[idx];
                 if (child != null)
                 {
-                    var childPath = new List<int>(path) { idx };
-                    RunRecursively(child, childPath, tempMatches);
+                    var childMatches = GetMatchesForNode(child);
+                    foreach (var m in childMatches)
+                    {
+                        var shiftedPath = new List<int> { idx };
+                        shiftedPath.AddRange(m.NodePath);
+                        var shiftedCaps = new List<RelativeQueryCapture>();
+                        foreach (var c in m.Captures)
+                        {
+                            var shiftedCapPath = new List<int> { idx };
+                            shiftedCapPath.AddRange(c.NodePath);
+                            shiftedCaps.Add(new RelativeQueryCapture
+                            {
+                                Name = c.Name,
+                                NodePath = shiftedCapPath
+                            });
+                        }
+                        localMatches.Add(new RelativeQueryMatch
+                        {
+                            PatternIndex = m.PatternIndex,
+                            NodePath = shiftedPath,
+                            Captures = shiftedCaps
+                        });
+                    }
                 }
             }
+            cacheMap[this] = localMatches;
+            return localMatches;
         }
         public List<QueryMatch> Run(AstNode ast)
         {
             if (ast == null) return new List<QueryMatch>();
-            if (!_greenQueryCache.TryGetValue(ast.Green, out var cacheMap))
-            {
-                cacheMap = new Dictionary<CSTQuery, List<RelativeQueryMatch>>();
-                _greenQueryCache.Remove(ast.Green);
-                _greenQueryCache.Add(ast.Green, cacheMap);
-            }
-            if (!cacheMap.TryGetValue(this, out var cached))
-            {
-                var tempMatches = new List<RelativeQueryMatch>();
-                var tempRoot = AstNode.CreateRedNode(ast.Green, null, 0);
-                RunRecursively(tempRoot, new List<int>(), tempMatches);
-                cached = tempMatches;
-                cacheMap[this] = cached;
-            }
+            var cached = GetMatchesForNode(ast);
             var results = new List<QueryMatch>();
             foreach (var rel in cached)
             {
@@ -1876,9 +1904,6 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
             public string Type { get; set; }
             public CSTQuery Query { get; set; }
             public MatchSelectorDelegate NameFn { get; set; }
-            public string NameFormat { get; set; }
-            public Func<AstNode, bool> Matcher { get; set; }
-            public Func<AstNode, string> NameSelector { get; set; }
         }
         public class SymbolRule
         {
@@ -1886,29 +1911,12 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
             public MatchSelectorDelegate NameFn { get; set; }
             public MatchSelectorDelegate KindFn { get; set; }
             public MatchSelectorDelegate DatatypeFn { get; set; }
-            public string NameFormat { get; set; }
-            public string KindFormat { get; set; }
-            public string DatatypeFormat { get; set; }
-            public Func<AstNode, bool> Matcher { get; set; }
-            public Func<AstNode, string> NameSelector { get; set; }
-            public Func<AstNode, string> KindSelector { get; set; }
-            public Func<AstNode, string> DatatypeSelector { get; set; }
         }
         public class ReferenceRule
         {
             public CSTQuery Query { get; set; }
             public MatchSelectorDelegate NameFn { get; set; }
-            public string NameFormat { get; set; }
-            public Func<AstNode, bool> Matcher { get; set; }
-            public Func<AstNode, string> NameSelector { get; set; }
         }
-        public class CachedScope
-        {
-            public LexicalScope Scope { get; set; }
-            public int BaseOffset { get; set; }
-        }
-        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GreenNode, CachedScope> _nodeScopeCache = 
-            new System.Runtime.CompilerServices.ConditionalWeakTable<GreenNode, CachedScope>();
         private readonly List<ScopeRule> _scopeRules = new List<ScopeRule>();
         private readonly List<SymbolRule> _symbolRules = new List<SymbolRule>();
         private readonly List<ReferenceRule> _referenceRules = new List<ReferenceRule>();
@@ -1916,84 +1924,13 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
         {
             _scopeRules.Add(new ScopeRule { Type = type, Query = new CSTQuery(queryStr), NameFn = nameFn });
         }
-        public void DefineScope(string type, string queryStr, string nameFormat)
-        {
-            _scopeRules.Add(new ScopeRule { Type = type, Query = new CSTQuery(queryStr), NameFormat = nameFormat });
-        }
-        public void DefineScope(string type, Func<AstNode, bool> matcher, Func<AstNode, string> nameSelector)
-        {
-            _scopeRules.Add(new ScopeRule { Type = type, Matcher = matcher, NameSelector = nameSelector });
-        }
         public void DefineSymbol(string queryStr, MatchSelectorDelegate nameFn, MatchSelectorDelegate kindFn, MatchSelectorDelegate datatypeFn)
         {
             _symbolRules.Add(new SymbolRule { Query = new CSTQuery(queryStr), NameFn = nameFn, KindFn = kindFn, DatatypeFn = datatypeFn });
         }
-        public void DefineSymbol(string queryStr, string nameFormat, string kindFormat, string datatypeFormat)
-        {
-            _symbolRules.Add(new SymbolRule { Query = new CSTQuery(queryStr), NameFormat = nameFormat, KindFormat = kindFormat, DatatypeFormat = datatypeFormat });
-        }
-        public void DefineSymbol(Func<AstNode, bool> matcher, Func<AstNode, string> nameSelector, Func<AstNode, string> kindSelector, Func<AstNode, string> datatypeSelector)
-        {
-            _symbolRules.Add(new SymbolRule { Matcher = matcher, NameSelector = nameSelector, KindSelector = kindSelector, DatatypeSelector = datatypeSelector });
-        }
         public void DefineReference(string queryStr, MatchSelectorDelegate nameFn)
         {
             _referenceRules.Add(new ReferenceRule { Query = new CSTQuery(queryStr), NameFn = nameFn });
-        }
-        public void DefineReference(string queryStr, string nameFormat)
-        {
-            _referenceRules.Add(new ReferenceRule { Query = new CSTQuery(queryStr), NameFormat = nameFormat });
-        }
-        public void DefineReference(Func<AstNode, bool> matcher, Func<AstNode, string> nameSelector)
-        {
-            _referenceRules.Add(new ReferenceRule { Matcher = matcher, NameSelector = nameSelector });
-        }
-        private LexicalScope CloneAndShiftScope(LexicalScope scope, int delta, string parentId)
-        {
-            var cloned = new LexicalScope
-            {
-                Id = scope.Id,
-                Name = scope.Name,
-                Type = scope.Type,
-                Start = scope.Start + delta,
-                End = scope.End + delta,
-                Node = scope.Node,
-                ParentId = parentId,
-            };
-            foreach (var child in scope.Children)
-            {
-                cloned.Children.Add(CloneAndShiftScope(child, delta, cloned.Id));
-            }
-            foreach (var sym in scope.Symbols)
-            {
-                var clonedSym = new SymbolDefinition
-                {
-                    Id = sym.Id,
-                    Name = sym.Name,
-                    Kind = sym.Kind,
-                    Datatype = sym.Datatype,
-                    Start = sym.Start + delta,
-                    End = sym.End + delta,
-                    Node = sym.Node,
-                    ScopeId = cloned.Id
-                };
-                cloned.Symbols.Add(clonedSym);
-            }
-            foreach (var r in scope.References)
-            {
-                var clonedRef = new SymbolReference
-                {
-                    Id = r.Id,
-                    Name = r.Name,
-                    Start = r.Start + delta,
-                    End = r.End + delta,
-                    Node = r.Node,
-                    ScopeId = cloned.Id,
-                    ResolvedSymbolId = r.ResolvedSymbolId
-                };
-                cloned.References.Add(clonedRef);
-            }
-            return cloned;
         }
         private static Dictionary<string, List<AstNode>> GetCapturesDict(QueryMatch match)
         {
@@ -2012,10 +1949,6 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
         public LexicalScope Build(AstNode ast, int documentLength)
         {
             if (ast == null) return null;
-            if (_nodeScopeCache.TryGetValue(ast.Green, out var cachedRoot))
-            {
-                return CloneAndShiftScope(cachedRoot.Scope, ast.Offset - cachedRoot.BaseOffset, null);
-            }
             var globalScope = new LexicalScope
             {
                 Id = "global",
@@ -2029,15 +1962,6 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
             int scopeCounter = 0;
             int symbolCounter = 0;
             int refCounter = 0;
-            List<AstNode> allNodes = null;
-            List<AstNode> GetAllNodes()
-            {
-                if (allNodes == null)
-                {
-                    allNodes = FlattenAst(ast);
-                }
-                return allNodes;
-            }
             // 1. Find all scopes
             foreach (var rule in _scopeRules)
             {
@@ -2060,31 +1984,12 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
                         scopes.Add(new LexicalScope
                         {
                             Id = $"scope-{rule.Type}-{++scopeCounter}",
-                            Name = rule.NameFormat != null ? EvaluateFormat(rule.NameFormat, captures) : rule.NameFn(captures, match.Captures, match),
+                            Name = rule.NameFn(captures, match.Captures, match),
                             Type = rule.Type,
                             Start = targetNode.Start,
                             End = targetNode.End,
                             Node = targetNode
                         });
-                    }
-                }
-                else if (rule.Matcher != null)
-                {
-                    var nodes = GetAllNodes();
-                    foreach (var node in nodes)
-                    {
-                        if (rule.Matcher(node))
-                        {
-                            scopes.Add(new LexicalScope
-                            {
-                                Id = $"scope-{rule.Type}-{++scopeCounter}",
-                                Name = rule.NameSelector(node),
-                                Type = rule.Type,
-                                Start = node.Start,
-                                End = node.End,
-                                Node = node
-                            });
-                        }
                     }
                 }
             }
@@ -2151,41 +2056,15 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
                         parentScope.Symbols.Add(new SymbolDefinition
                         {
                             Id = symId,
-                            Name = rule.NameFormat != null ? EvaluateFormat(rule.NameFormat, captures) : rule.NameFn(captures, match.Captures, match),
-                            Kind = rule.KindFormat != null ? EvaluateFormat(rule.KindFormat, captures) : rule.KindFn(captures, match.Captures, match),
-                            Datatype = rule.DatatypeFormat != null ? EvaluateFormat(rule.DatatypeFormat, captures) : rule.DatatypeFn(captures, match.Captures, match),
+                            Name = rule.NameFn(captures, match.Captures, match),
+                            Kind = rule.KindFn(captures, match.Captures, match),
+                            Datatype = rule.DatatypeFn(captures, match.Captures, match),
                             Start = start,
                             End = end,
                             Node = targetNode,
                             ScopeId = parentScope.Id
                         });
                         mainDeclOffsets.Add(start);
-                    }
-                }
-                else if (rule.Matcher != null)
-                {
-                    var nodes = GetAllNodes();
-                    foreach (var node in nodes)
-                    {
-                        if (rule.Matcher(node))
-                        {
-                            int start = node.Start;
-                            int end = node.End;
-                            var parentScope = FindDeepestScope(globalScope, start, end);
-                            var symId = $"sym-{++symbolCounter}";
-                            parentScope.Symbols.Add(new SymbolDefinition
-                            {
-                                Id = symId,
-                                Name = rule.NameSelector(node),
-                                Kind = rule.KindSelector(node),
-                                Datatype = rule.DatatypeSelector(node),
-                                Start = start,
-                                End = end,
-                                Node = node,
-                                ScopeId = parentScope.Id
-                            });
-                            mainDeclOffsets.Add(start);
-                        }
                     }
                 }
             }
@@ -2215,35 +2094,12 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
                         parentScope.References.Add(new SymbolReference
                         {
                             Id = $"ref-{++refCounter}",
-                            Name = rule.NameFormat != null ? EvaluateFormat(rule.NameFormat, captures) : rule.NameFn(captures, match.Captures, match),
+                            Name = rule.NameFn(captures, match.Captures, match),
                             Start = start,
                             End = end,
                             Node = targetNode,
                             ScopeId = parentScope.Id
                         });
-                    }
-                }
-                else if (rule.Matcher != null)
-                {
-                    var nodes = GetAllNodes();
-                    foreach (var node in nodes)
-                    {
-                        if (mainDeclOffsets.Contains(node.Start)) continue;
-                        if (rule.Matcher(node))
-                        {
-                            int start = node.Start;
-                            int end = node.End;
-                            var parentScope = FindDeepestScope(globalScope, start, end);
-                            parentScope.References.Add(new SymbolReference
-                            {
-                                Id = $"ref-{++refCounter}",
-                                Name = rule.NameSelector(node),
-                                Start = start,
-                                End = end,
-                                Node = node,
-                                ScopeId = parentScope.Id
-                            });
-                        }
                     }
                 }
             }
@@ -2283,8 +2139,6 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
                 }
             }
             ResolveAllScopeReferences(globalScope);
-            _nodeScopeCache.Remove(ast.Green);
-            _nodeScopeCache.Add(ast.Green, new CachedScope { Scope = globalScope, BaseOffset = ast.Offset });
             return globalScope;
         }
         private void AddScopesToMap(LexicalScope scope, Dictionary<string, LexicalScope> map)
@@ -2294,75 +2148,6 @@ ${generateScopeBuilderConfigCode(scopeBuilder)}
             {
                 AddScopesToMap(child, map);
             }
-        }
-        private List<AstNode> FlattenAst(AstNode node)
-        {
-            var list = new List<AstNode>();
-            if (node == null) return list;
-            list.Add(node);
-            foreach (var child in node.Children)
-            {
-                list.AddRange(FlattenAst(child));
-            }
-            return list;
-        }
-        public static string ExtractId(AstNode n)
-        {
-            if (n == null) return "untitled";
-            if (n.Value is string s) return s;
-            if (n.Type == "id" && n.Value is string vs) return vs;
-            if (n.Children != null && n.Children.Count > 0)
-            {
-                foreach (var child in n.Children)
-                {
-                    var res = ExtractId(child);
-                    if (res != "untitled") return res;
-                }
-            }
-            return "untitled";
-        }
-        public static string ExtractType(AstNode n)
-        {
-            if (n == null) return "auto";
-            if (n.Type == "hlsl_type" || n.Type == "type")
-            {
-                return ExtractId(n);
-            }
-            if (n.Children != null && n.Children.Count > 0)
-            {
-                foreach (var child in n.Children)
-                {
-                    var t = ExtractType(child);
-                    if (t != "auto") return t;
-                }
-            }
-            return "auto";
-        }
-        public static string EvaluateFormat(string format, Dictionary<string, List<AstNode>> captures)
-        {
-            if (string.IsNullOrEmpty(format)) return string.Empty;
-            return System.Text.RegularExpressions.Regex.Replace(format, @"\{([^}]+)\}", m =>
-            {
-                var key = m.Groups[1].Value;
-                var mode = "id";
-                var capName = key;
-                if (key.Contains(":"))
-                {
-                    var parts = key.Split(':');
-                    capName = parts[0];
-                    mode = parts[1];
-                }
-                if (!captures.TryGetValue(capName, out var nodeList) || nodeList.Count == 0)
-                {
-                    return string.Empty;
-                }
-                var targetNode = nodeList[0];
-                if (mode == "type")
-                {
-                    return ExtractType(targetNode);
-                }
-                return ExtractId(targetNode);
-            });
         }
     }
     #endregion

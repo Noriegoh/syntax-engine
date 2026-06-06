@@ -2014,7 +2014,7 @@ export default function App() {
       SyntaxElement.ruleRegistry.clear();
       SyntaxElement.defaultLeadingTrivia = undefined;
       SyntaxElement.defaultTrailingTrivia = undefined;
-      
+      SyntaxElement.lastId = 0;
       // Execute the grammar code
       // We provide SyntaxElement and the Sort helper to the execution context
       const executionFunc = new Function('SyntaxElement', 'Sort', 'Token', 'DefaultLeadingTrivia', 'DefaultTrailingTrivia', 'BeginScope', 'EndScope', `
@@ -2827,7 +2827,61 @@ export default function App() {
 
           if (item.value) {
             const innerVal = item.value;
-            if (innerVal.name && Array.isArray(innerVal.rules)) {
+            if (Array.isArray(innerVal)) {
+              children = innerVal
+                .map((branch: any, bIdx: number) => {
+                  if (branch && branch.name && Array.isArray(branch.rules)) {
+                    if (ruleGraphScope === 'full' && branch.id) {
+                      if (visited.has(branch.id)) {
+                        return {
+                          id: `${idPrefix}-${ruleId}-choice-${bIdx}-recursive-${branch.id}`,
+                          label: `⟳ ${branch.name} (Recursive Ref)`,
+                          type: 'recursive',
+                          subtitle: 'CYCLE BOUNDARY',
+                          targetElementId: branch.id
+                        };
+                      } else {
+                        const nextVisited = new Set(visited);
+                        nextVisited.add(branch.id);
+                        return {
+                          id: `${idPrefix}-${ruleId}-choice-${bIdx}-${branch.id}`,
+                          label: branch.name,
+                          type: 'element',
+                          subtitle: 'CALL RULE',
+                          targetElementId: branch.id,
+                          children: branch.rules
+                            .map((r: any, idx: number) => buildRuleGraphTree(r, `${idPrefix}-${ruleId}-choice-${bIdx}-rule-${idx}`, nextVisited))
+                            .filter(Boolean) as RuleGraphNode[]
+                        };
+                      }
+                    } else {
+                      return {
+                        id: `${idPrefix}-${ruleId}-choice-${bIdx}-${branch.id || branch.name}`,
+                        label: branch.name,
+                        type: 'element',
+                        subtitle: 'CALL RULE',
+                        targetElementId: branch.id
+                      };
+                    }
+                  } else if (branch instanceof RegExp || (branch && branch.source)) {
+                    const source = branch.source || String(branch);
+                    return {
+                      id: `${idPrefix}-${ruleId}-choice-${bIdx}-regex`,
+                      label: `/${source}/`,
+                      type: 'regex',
+                      subtitle: 'REGEX BRANCH'
+                    };
+                  } else {
+                    return {
+                      id: `${idPrefix}-${ruleId}-choice-${bIdx}-lit`,
+                      label: `"${String(branch)}"`,
+                      type: 'literal',
+                      subtitle: 'LITERAL BRANCH'
+                    };
+                  }
+                })
+                .filter(Boolean) as RuleGraphNode[];
+            } else if (innerVal.name && Array.isArray(innerVal.rules)) {
               if (ruleGraphScope === 'full' && innerVal.id) {
                 if (visited.has(innerVal.id)) {
                   children = [{
@@ -3889,6 +3943,18 @@ export default function App() {
                                               )}>
                                                 {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'ZeroOrMoreToken' : 'Any Count') : rule.type === 'oneOrMore' ? (rule.isToken ? 'OneOrMoreToken' : 'Some Count') : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : rule.type === 'caseInsensitiveLiteral' ? 'Case-Insens' : 'Expects Match'}
                                               </span>
+                                              {rule.isToken && (
+                                                <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter leading-none shrink-0 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                                                  {(() => {
+                                                    const hasLead = !!SyntaxElement.defaultLeadingTrivia;
+                                                    const hasTrail = !!SyntaxElement.defaultTrailingTrivia;
+                                                    if (hasLead && hasTrail) return '✨ Leads & Trails Skipped';
+                                                    if (hasLead) return '✨ Leads Skipped';
+                                                    if (hasTrail) return '✨ Trails Skipped';
+                                                    return '✨ No Trivia';
+                                                  })()}
+                                                </span>
+                                              )}
                                             </div>
                                           </div>
 
@@ -3931,7 +3997,7 @@ export default function App() {
                                                   Explore &rarr;
                                                 </button>
                                               </div>
-                                            ) : rule.type === 'choice' ? (
+                                            ) : (rule.type === 'choice' || ((rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && Array.isArray(rule.value))) ? (
                                               <div className="flex flex-col gap-1 w-full">
                                                 <div className="flex flex-wrap gap-1">
                                                   {(rule.value as any[]).map((branch, bIdx) => {
@@ -3943,7 +4009,7 @@ export default function App() {
                                                       >
                                                         <span className="text-[#ecc94b] font-bold">#{bIdx + 1}</span>
                                                         <span className={isElement ? "text-indigo-300" : "text-slate-400"}>
-                                                          {isElement ? branch.name : String(branch)}
+                                                          {isElement ? branch.name : (branch instanceof RegExp ? `/${branch.source}/` : String(branch))}
                                                         </span>
                                                         {isElement && (
                                                           <button
