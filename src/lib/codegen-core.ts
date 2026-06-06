@@ -82,6 +82,15 @@ export function collectElements(root: SyntaxElement): SyntaxElement[] {
     }
   }
   visit(root);
+
+  // Also collect default leading and trailing trivias to make sure they are compiled if they are SyntaxElements!
+  if (SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement) {
+    visit(SyntaxElement.defaultLeadingTrivia);
+  }
+  if (SyntaxElement.defaultTrailingTrivia instanceof SyntaxElement) {
+    visit(SyntaxElement.defaultTrailingTrivia);
+  }
+
   return elements;
 }
 

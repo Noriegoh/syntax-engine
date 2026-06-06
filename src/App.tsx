@@ -959,10 +959,13 @@ interface SuggestionItem {
 const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'Expects', insertText: 'Expects(', type: 'method', description: 'Schedule standard terminal literal / sub-element rule' },
   { label: 'ExpectsOneOf', insertText: 'ExpectsOneOf(', type: 'method', description: 'Schedule a speculative choice selection (any matched pattern)' },
+  { label: 'ExpectsOneOfToken', insertText: 'ExpectsOneOfToken(', type: 'method', description: 'Schedule choice selection and surround each branch with default leading and trailing trivias (no warnings)' },
   { label: 'Token', insertText: 'Token(', type: 'method', description: 'Inject clean terminal lexical Token marker (wraps literals/regexes)' },
   { label: 'Optional', insertText: 'Optional(', type: 'method', description: 'Mark element rule as fully optional' },
   { label: 'ZeroOrMore', insertText: 'ZeroOrMore(', type: 'method', description: 'Repetition: loop consecutive matches. Overloaded to support choices if passed array/multiple parameters' },
+  { label: 'ZeroOrMoreToken', insertText: 'ZeroOrMoreToken(', type: 'method', description: 'Repetition loops through matches, automatically skipping default leading/trailing trivia around each loop item' },
   { label: 'OneOrMore', insertText: 'OneOrMore(', type: 'method', description: 'Repetition: loop consecutive matches requires at least 1 match. Overloaded to support choices if passed array/multiple parameters' },
+  { label: 'OneOrMoreToken', insertText: 'OneOrMoreToken(', type: 'method', description: 'Repetition loops through matches (at least 1 required), automatically skipping default leading/trailing trivia around each loop item' },
   { label: 'LeadingTrivia', insertText: 'LeadingTrivia(', type: 'method', description: 'Define expected default preceding layout whitespaces or comments' },
   { label: 'TrailingTrivia', insertText: 'TrailingTrivia(', type: 'method', description: 'Define expected default trailing layout whitespaces or comments' },
   { label: 'Whitespace', insertText: 'Whitespace()', type: 'method', description: 'Consume contiguous space layouts' },
@@ -2006,6 +2009,12 @@ export default function App() {
       // Clear previous error
       setCodeError(null);
       
+      // Reset SyntaxElement static states to avoid leaking previous grammar definitions or default trivias
+      SyntaxElement.registry.clear();
+      SyntaxElement.ruleRegistry.clear();
+      SyntaxElement.defaultLeadingTrivia = undefined;
+      SyntaxElement.defaultTrailingTrivia = undefined;
+      
       // Execute the grammar code
       // We provide SyntaxElement and the Sort helper to the execution context
       const executionFunc = new Function('SyntaxElement', 'Sort', 'Token', 'DefaultLeadingTrivia', 'DefaultTrailingTrivia', 'BeginScope', 'EndScope', `
@@ -2768,14 +2777,53 @@ export default function App() {
         case 'zeroOrMore':
         case 'oneOrMore':
         case 'not':
-          const wrapLabels: Record<string, { l: string; s: string }> = {
-            optional: { l: 'Optional Match (?)', s: 'ZERO-TO-ONE' },
-            zeroOrMore: { l: 'Any Count (*)', s: 'STAR REPETITION' },
-            oneOrMore: { l: 'Some Count (+)', s: 'PLUS REPETITION' },
-            not: { l: 'Negative Block (!)', s: 'NOT MATCHED' }
-          };
-          label = wrapLabels[nodeType]?.l || nodeType;
-          subtitle = wrapLabels[nodeType]?.s || '';
+          let labelVal = '';
+          let subtitleVal = '';
+          if (nodeType === 'zeroOrMore') {
+            if (item.isToken) {
+              labelVal = 'Zero Or More Token (*)';
+              const hasLead = !!SyntaxElement.defaultLeadingTrivia;
+              const hasTrail = !!SyntaxElement.defaultTrailingTrivia;
+              if (hasLead && hasTrail) {
+                subtitleVal = 'TOKEN REPETITION (LEAD / TRAIL)';
+              } else if (hasLead) {
+                subtitleVal = 'TOKEN REPETITION (LEAD)';
+              } else if (hasTrail) {
+                subtitleVal = 'TOKEN REPETITION (TRAIL)';
+              } else {
+                subtitleVal = 'TOKEN REPETITION (NO TRIVIA)';
+              }
+            } else {
+              labelVal = 'Any Count (*)';
+              subtitleVal = 'STAR REPETITION';
+            }
+          } else if (nodeType === 'oneOrMore') {
+            if (item.isToken) {
+              labelVal = 'One Or More Token (+)';
+              const hasLead = !!SyntaxElement.defaultLeadingTrivia;
+              const hasTrail = !!SyntaxElement.defaultTrailingTrivia;
+              if (hasLead && hasTrail) {
+                subtitleVal = 'TOKEN REPETITION (LEAD / TRAIL)';
+              } else if (hasLead) {
+                subtitleVal = 'TOKEN REPETITION (LEAD)';
+              } else if (hasTrail) {
+                subtitleVal = 'TOKEN REPETITION (TRAIL)';
+              } else {
+                subtitleVal = 'TOKEN REPETITION (NO TRIVIA)';
+              }
+            } else {
+              labelVal = 'Some Count (+)';
+              subtitleVal = 'PLUS REPETITION';
+            }
+          } else if (nodeType === 'optional') {
+            labelVal = 'Optional Match (?)';
+            subtitleVal = 'ZERO-TO-ONE';
+          } else if (nodeType === 'not') {
+            labelVal = 'Negative Block (!)';
+            subtitleVal = 'NOT MATCHED';
+          }
+          label = labelVal;
+          subtitle = subtitleVal;
 
           if (item.value) {
             const innerVal = item.value;
@@ -3071,7 +3119,7 @@ export default function App() {
                       rule.type === 'endScope' && "bg-purple-500/20 text-purple-400",
                       rule.type === 'eof' && "bg-zinc-500/20 text-zinc-400"
                     )}>
-                      {rule.type === 'not' ? 'Not' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? 'Any' : rule.type === 'oneOrMore' ? 'Some' : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : rule.type === 'caseInsensitiveLiteral' ? 'CaseInsens' : 'Expects'}
+                      {rule.type === 'not' ? 'Not' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'Any (Token)' : 'Any') : rule.type === 'oneOrMore' ? (rule.isToken ? 'Some (Token)' : 'Some') : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : rule.type === 'caseInsensitiveLiteral' ? 'CaseInsens' : 'Expects'}
                     </span>
                     
                     <code className={cn(
@@ -3839,7 +3887,7 @@ export default function App() {
                                                 rule.type === 'endScope' && "bg-purple-500/10 text-purple-400 border border-purple-500/20",
                                                 rule.type === 'eof' && "bg-zinc-500/10 text-zinc-400 border border-zinc-500/20"
                                               )}>
-                                                {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? 'Any Count' : rule.type === 'oneOrMore' ? 'Some Count' : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : rule.type === 'caseInsensitiveLiteral' ? 'Case-Insens' : 'Expects Match'}
+                                                {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'ZeroOrMoreToken' : 'Any Count') : rule.type === 'oneOrMore' ? (rule.isToken ? 'OneOrMoreToken' : 'Some Count') : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : rule.type === 'caseInsensitiveLiteral' ? 'Case-Insens' : 'Expects Match'}
                                               </span>
                                             </div>
                                           </div>
@@ -3961,8 +4009,8 @@ export default function App() {
                                              rule.type === 'whitespace' ? "Noise filter: parses and skips spaces, comments, and formatting characters dynamically." :
                                              rule.type === 'choice' ? "Precedence branch: tests each alternative branch option and resolves the longest matching path." :
                                              rule.type === 'optional' ? "Zero-to-One: tries to match the rule pattern option, but continues safely if missing." :
-                                             rule.type === 'zeroOrMore' ? "Star repetition: iteratively compiles as many matches of this child as are found." :
-                                             rule.type === 'oneOrMore' ? "Plus repetition: loops through consecutive matches, requiring at least one successful parse." :
+                                             rule.type === 'zeroOrMore' ? (rule.isToken ? "ZeroOrMoreToken repetition: loops through matches, automatically skipping default leading/trailing trivia around each loop item." : "Star repetition: iteratively compiles as many matches of this child as are found.") :
+                                             rule.type === 'oneOrMore' ? (rule.isToken ? "OneOrMoreToken repetition: loops through matches (at least 1 required), automatically skipping default leading/trailing trivia around each loop item." : "Plus repetition: loops through consecutive matches, requiring at least one successful parse.") :
                                              rule.type === 'not' ? "Negative constraint: verifies this token sequence is absent before matching starts." :
                                              rule.type === 'eof' ? "EOF boundary: verifies the parser head has completed parsing the entire code document." : ""}
                                           </p>

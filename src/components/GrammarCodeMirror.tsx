@@ -16,10 +16,13 @@ interface SuggestionItem {
 const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'Expects', insertText: 'Expects(', type: 'method', description: 'Schedule standard terminal literal / sub-element rule' },
   { label: 'ExpectsOneOf', insertText: 'ExpectsOneOf(', type: 'method', description: 'Schedule a speculative choice selection (any matched pattern)' },
+  { label: 'ExpectsOneOfToken', insertText: 'ExpectsOneOfToken(', type: 'method', description: 'Schedule choice selection and surround each branch with default leading and trailing trivias (no warnings)' },
   { label: 'Token', insertText: 'Token(', type: 'method', description: 'Inject clean terminal lexical Token marker (wraps literals/regexes)' },
   { label: 'Optional', insertText: 'Optional(', type: 'method', description: 'Mark element rule as fully optional' },
   { label: 'ZeroOrMore', insertText: 'ZeroOrMore(', type: 'method', description: 'Repetition: loop consecutive matches. Overloaded to support choices if passed array/multiple parameters' },
+  { label: 'ZeroOrMoreToken', insertText: 'ZeroOrMoreToken(', type: 'method', description: 'Repetition loops through matches, automatically skipping default leading/trailing trivia around each loop item' },
   { label: 'OneOrMore', insertText: 'OneOrMore(', type: 'method', description: 'Repetition: loop consecutive matches requires at least 1 match. Overloaded to support choices if passed array/multiple parameters' },
+  { label: 'OneOrMoreToken', insertText: 'OneOrMoreToken(', type: 'method', description: 'Repetition loops through matches (at least 1 required), automatically skipping default leading/trailing trivia around each loop item' },
   { label: 'LeadingTrivia', insertText: 'LeadingTrivia(', type: 'method', description: 'Define expected default preceding layout whitespaces or comments' },
   { label: 'TrailingTrivia', insertText: 'TrailingTrivia(', type: 'method', description: 'Define expected default trailing layout whitespaces or comments' },
   { label: 'Whitespace', insertText: 'Whitespace()', type: 'method', description: 'Consume contiguous space layouts' },

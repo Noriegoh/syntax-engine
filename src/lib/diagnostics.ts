@@ -304,6 +304,16 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     // Rule C: Shadowing & Sorting Hazard in Choices (Warning)
     for (const rule of el.rules) {
       if (rule.type === 'choice') {
+        // Warning check for Token() wrappers when used inside ExpectsOneOf
+        if (rule.hasTokenWarning) {
+          diagnostics.push({
+            type: "warning",
+            nodeName: elName,
+            message: `Mixed Token wrapper inside ExpectsOneOf: Calling ExpectsOneOf with Token(...) wrapping individual choices runs with trivia rules on the parent block instead. This causes non-Token choices to unexpectedly parse with trivas too.`,
+            suggestion: `Avoid wrapping choice alternatives of ExpectsOneOf inside Token(). Instead, call root.ExpectsOneOfToken(...) to explicitly match any choice branch with default leading and trailing trivas.`
+          });
+        }
+
         const choiceList = rule.value;
         if (Array.isArray(choiceList)) {
           const stringChoices = choiceList.filter(c => typeof c === 'string') as string[];
@@ -323,6 +333,15 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
               }
             }
           }
+        }
+      } else if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+        if (rule.hasTokenWarning) {
+          diagnostics.push({
+            type: "warning",
+            nodeName: elName,
+            message: `Mixed Token wrapper inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'}: Calling ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} with Token(...) wrapping individual elements runs with trivia rules on the parent block instead. This causes non-Token elements to unexpectedly parse with trivas too.`,
+            suggestion: `Avoid wrapping option elements of ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} inside Token(). Instead, call root.${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}(...) to explicitly match elements with default leading and trailing trivas per match.`
+          });
         }
       }
     }

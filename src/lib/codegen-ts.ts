@@ -718,6 +718,500 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
       
       if (rule.type === 'zeroOrMore') {
         const isArray = Array.isArray(rule.value);
+        const isToken = !!rule.isToken;
+        if (isToken) {
+          // compile leading trivia if present
+          let leadCode = "";
+          let leadMatchedName = "true";
+          let leadAstName = "null";
+          let leadNewOffsetName = "currentOffset";
+          const leadId = nextSpecId();
+          if (SyntaxElement.defaultLeadingTrivia) {
+            let dfaName: string | undefined;
+            if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
+              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
+            }
+            const specLead = compileSpeculativeMatchTypeScript(SyntaxElement.defaultLeadingTrivia, ruleId, leadId, childElements, dfaName);
+            leadCode = specLead.code;
+            leadMatchedName = specLead.matchedName;
+            leadAstName = specLead.parsedAstName;
+            leadNewOffsetName = specLead.newOffsetName;
+          }
+
+          // compile trailing trivia if present
+          let trailCode = "";
+          let trailMatchedName = "true";
+          let trailAstName = "null";
+          let trailNewOffsetName = "branchNewOffset";
+          const trailId = nextSpecId();
+          if (SyntaxElement.defaultTrailingTrivia) {
+            let dfaName: string | undefined;
+            if (SyntaxElement.defaultTrailingTrivia instanceof RegExp) {
+              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultTrailingTrivia, 'Spec', ruleId);
+            }
+            const specTrail = compileSpeculativeMatchTypeScript(SyntaxElement.defaultTrailingTrivia, ruleId, trailId, childElements, dfaName);
+            trailCode = specTrail.code;
+            trailMatchedName = specTrail.matchedName;
+            trailAstName = specTrail.parsedAstName;
+            trailNewOffsetName = specTrail.newOffsetName;
+          }
+
+          if (isArray) {
+            const patterns = rule.value as any[];
+            const escErrorsVar = `loopErrors_${ruleId}`;
+            const branchChecks: string[] = [];
+            
+            patterns.forEach((p, idx) => {
+              const sId = nextSpecId();
+              let specificDfaName: string | undefined;
+              if (p instanceof RegExp) {
+                specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+              }
+              const spec = compileSpeculativeMatchTypeScript(p, ruleId, sId, childElements, specificDfaName);
+              const isIterInline = p instanceof SyntaxElement && p.isHiddenElement;
+              branchChecks.push(`
+                      if (!matchedBranch) {
+                          const beforeBranchOffset = afterLeadOffset;
+                          const ${escErrorsVar}_branch = ctx.recoveredErrors.length;
+                          const savedOffset = currentOffset;
+                          currentOffset = afterLeadOffset;
+                          ${spec.code.trim()}
+                          currentOffset = savedOffset;
+                          if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset) {
+                              matchedBranch = true;
+                              matchedAst = ${spec.parsedAstName};
+                              branchNewOffset = ${spec.newOffsetName};
+                              isItemInline = ${isIterInline};
+                          } else {
+                              ctx.recoveredErrors.splice(${escErrorsVar}_branch, ctx.recoveredErrors.length - ${escErrorsVar}_branch);
+                          }
+                      }`);
+            });
+
+            return `
+              // Zero Or More Token Rule (id: ${ruleId})
+              if (!panicked) {
+                  const startOffset_${ruleId} = currentOffset;
+                  const startLoopOffset = currentOffset;
+                  const loopResults: GreenNode[] = [];
+                  while (currentOffset < text.length) {
+                      const beforeLeadOffset = currentOffset;
+                      const ${escErrorsVar}_lead = ctx.recoveredErrors.length;
+                      
+                      // Match leading trivia
+                      ${leadCode}
+                      const afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
+                      
+                      let matchedBranch = false;
+                      let matchedAst: GreenNode | null = null;
+                      let branchNewOffset = afterLeadOffset;
+                      let isItemInline = false;
+                      
+                      ${branchChecks.join("\n").trim()}
+                      
+                      if (matchedBranch) {
+                          // Commit leading trivia
+                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset) {
+                              const isLeadInline = ${SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement && SyntaxElement.defaultLeadingTrivia.isHiddenElement};
+                              this.addNode(loopResults, ${leadAstName}, isLeadInline);
+                          }
+                          
+                          this.addNode(loopResults, matchedAst, isItemInline);
+                          
+                          // Match trailing trivia
+                          const beforeTrailOffset = branchNewOffset;
+                          const savedOffsetTrail = currentOffset;
+                          currentOffset = branchNewOffset;
+                          ${trailCode}
+                          currentOffset = savedOffsetTrail;
+                          
+                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset) {
+                              const isTrailInline = ${SyntaxElement.defaultTrailingTrivia instanceof SyntaxElement && SyntaxElement.defaultTrailingTrivia.isHiddenElement};
+                              this.addNode(loopResults, ${trailAstName}, isTrailInline);
+                              currentOffset = ${trailNewOffsetName};
+                          } else {
+                              currentOffset = branchNewOffset;
+                          }
+                      } else {
+                          // Revert leading trivia errors
+                          ctx.recoveredErrors.splice(${escErrorsVar}_lead, ctx.recoveredErrors.length - ${escErrorsVar}_lead);
+                          break;
+                      }
+                  }
+                  if (loopResults.length > 0) {
+                      this.addNode(results, new GreenNode(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset), ${isInline});
+                      ${structUpdate}
+                  }
+              }`;
+          } else {
+            const sId = nextSpecId();
+            const escErrorsVar = `loopErrors_${ruleId}`;
+            let specificDfaName: string | undefined;
+            if (rule.value instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatchTypeScript(rule.value, ruleId, sId, childElements, specificDfaName);
+            const isIterInline = rule.value instanceof SyntaxElement && rule.value.isHiddenElement;
+
+            return `
+              // Zero Or More Token Rule (id: ${ruleId})
+              if (!panicked) {
+                  const startOffset_${ruleId} = currentOffset;
+                  const startLoopOffset = currentOffset;
+                  const loopResults: GreenNode[] = [];
+                  while (currentOffset < text.length) {
+                      const beforeLeadOffset = currentOffset;
+                      const ${escErrorsVar}_lead = ctx.recoveredErrors.length;
+                      
+                      // Match leading trivia
+                      ${leadCode}
+                      const afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
+                      
+                      // Speculatively match pattern starting from afterLeadOffset
+                      const savedOffset = currentOffset;
+                      currentOffset = afterLeadOffset;
+                      ${spec.code.trim()}
+                      currentOffset = savedOffset;
+                      
+                      if (${spec.matchedName} && ${spec.newOffsetName} > afterLeadOffset) {
+                          // Commit leading trivia
+                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset) {
+                              const isLeadInline = ${SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement && SyntaxElement.defaultLeadingTrivia.isHiddenElement};
+                              this.addNode(loopResults, ${leadAstName}, isLeadInline);
+                          }
+                          
+                          this.addNode(loopResults, ${spec.parsedAstName}, ${isIterInline});
+                          
+                          // Match trailing trivia
+                          const beforeTrailOffset = ${spec.newOffsetName};
+                          const savedOffsetTrail = currentOffset;
+                          currentOffset = ${spec.newOffsetName};
+                          ${trailCode}
+                          currentOffset = savedOffsetTrail;
+                          
+                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset) {
+                              const isTrailInline = ${SyntaxElement.defaultTrailingTrivia instanceof SyntaxElement && SyntaxElement.defaultTrailingTrivia.isHiddenElement};
+                              this.addNode(loopResults, ${trailAstName}, isTrailInline);
+                              currentOffset = ${trailNewOffsetName};
+                          } else {
+                              currentOffset = ${spec.newOffsetName};
+                          }
+                      } else {
+                          // Revert leading trivia errors
+                          ctx.recoveredErrors.splice(${escErrorsVar}_lead, ctx.recoveredErrors.length - ${escErrorsVar}_lead);
+                          break;
+                      }
+                  }
+                  if (loopResults.length > 0) {
+                      this.addNode(results, new GreenNode(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset), ${isInline});
+                      ${structUpdate}
+                  }
+              }`;
+          }
+        } else {
+
+        if (isArray) {
+          const patterns = rule.value as any[];
+          const escErrorsVar = `loopErrors_${ruleId}`;
+          const branchChecks: string[] = [];
+          patterns.forEach((p, idx) => {
+            const sId = nextSpecId();
+            let specificDfaName: string | undefined;
+            if (p instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatchTypeScript(p, ruleId, sId, childElements, specificDfaName);
+            const isIterInline = p instanceof SyntaxElement && p.isHiddenElement;
+            branchChecks.push(`
+                    if (!matchedBranch) {
+                        const beforeBranchOffset = currentOffset;
+                        const ${escErrorsVar}_branch = ctx.recoveredErrors.length;
+                        ${spec.code.trim()}
+                        if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset) {
+                            matchedBranch = true;
+                            matchedAst = ${spec.parsedAstName};
+                            branchNewOffset = ${spec.newOffsetName};
+                            isItemInline = ${isIterInline};
+                        } else {
+                            ctx.recoveredErrors.splice(${escErrorsVar}_branch, ctx.recoveredErrors.length - ${escErrorsVar}_branch);
+                        }
+                    }`);
+          });
+          
+          return `
+            // Zero Or More Rule (id: ${ruleId})
+            if (!panicked) {
+                const startOffset_${ruleId} = currentOffset;
+                const startLoopOffset = currentOffset;
+                const loopResults: GreenNode[] = [];
+                while (currentOffset < text.length) {
+                    let matchedBranch = false;
+                    let matchedAst: GreenNode | null = null;
+                    let branchNewOffset = currentOffset;
+                    let isItemInline = false;
+                    
+                    ${branchChecks.join("\n").trim()}
+                    
+                    if (matchedBranch) {
+                        this.addNode(loopResults, matchedAst, isItemInline);
+                        currentOffset = branchNewOffset;
+                    } else {
+                        break;
+                    }
+                }
+                if (loopResults.length > 0) {
+                    this.addNode(results, new GreenNode(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset), ${isInline});
+                    ${structUpdate}
+                }
+            }`;
+        } else {
+          const sId = nextSpecId();
+          const escErrorsVar = `loopErrors_${ruleId}`;
+          let specificDfaName: string | undefined;
+          if (rule.value instanceof RegExp) {
+            specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+          }
+          const spec = compileSpeculativeMatchTypeScript(rule.value, ruleId, sId, childElements, specificDfaName);
+          const isIterInline = rule.value instanceof SyntaxElement && rule.value.isHiddenElement;
+          return `
+            // Zero Or More Rule (id: ${ruleId})
+            if (!panicked) {
+                const startOffset_${ruleId} = currentOffset;
+                const startLoopOffset = currentOffset;
+                const loopResults: GreenNode[] = [];
+                while (currentOffset < text.length) {
+                    const beforeIterOffset = currentOffset;
+                    const ${escErrorsVar} = ctx.recoveredErrors.length;
+                    ${spec.code.trim()}
+                    if (${spec.matchedName} && ${spec.newOffsetName} > beforeIterOffset) {
+                        this.addNode(loopResults, ${spec.parsedAstName}, ${isIterInline});
+                        currentOffset = ${spec.newOffsetName};
+                    } else {
+                        ctx.recoveredErrors.splice(${escErrorsVar}, ctx.recoveredErrors.length - ${escErrorsVar});
+                        break;
+                    }
+                }
+                if (loopResults.length > 0) {
+                    this.addNode(results, new GreenNode(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset), ${isInline});
+                    ${structUpdate}
+                }
+            }`;
+        }
+      }
+      }
+      
+      if (rule.type === 'oneOrMore') {
+        const isArray = Array.isArray(rule.value);
+        const isToken = !!rule.isToken;
+        if (isToken) {
+          // compile leading trivia if present
+          let leadCode = "";
+          let leadMatchedName = "true";
+          let leadAstName = "null";
+          let leadNewOffsetName = "currentOffset";
+          const leadId = nextSpecId();
+          if (SyntaxElement.defaultLeadingTrivia) {
+            let dfaName: string | undefined;
+            if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
+              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
+            }
+            const specLead = compileSpeculativeMatchTypeScript(SyntaxElement.defaultLeadingTrivia, ruleId, leadId, childElements, dfaName);
+            leadCode = specLead.code;
+            leadMatchedName = specLead.matchedName;
+            leadAstName = specLead.parsedAstName;
+            leadNewOffsetName = specLead.newOffsetName;
+          }
+
+          // compile trailing trivia if present
+          let trailCode = "";
+          let trailMatchedName = "true";
+          let trailAstName = "null";
+          let trailNewOffsetName = "branchNewOffset";
+          const trailId = nextSpecId();
+          if (SyntaxElement.defaultTrailingTrivia) {
+            let dfaName: string | undefined;
+            if (SyntaxElement.defaultTrailingTrivia instanceof RegExp) {
+              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultTrailingTrivia, 'Spec', ruleId);
+            }
+            const specTrail = compileSpeculativeMatchTypeScript(SyntaxElement.defaultTrailingTrivia, ruleId, trailId, childElements, dfaName);
+            trailCode = specTrail.code;
+            trailMatchedName = specTrail.matchedName;
+            trailAstName = specTrail.parsedAstName;
+            trailNewOffsetName = specTrail.newOffsetName;
+          }
+
+          if (isArray) {
+            const patterns = rule.value as any[];
+            const escErrorsVar = `loopErrors_${ruleId}`;
+            const branchChecks: string[] = [];
+            
+            patterns.forEach((p, idx) => {
+              const sId = nextSpecId();
+              let specificDfaName: string | undefined;
+              if (p instanceof RegExp) {
+                specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+              }
+              const spec = compileSpeculativeMatchTypeScript(p, ruleId, sId, childElements, specificDfaName);
+              const isIterInline = p instanceof SyntaxElement && p.isHiddenElement;
+              branchChecks.push(`
+                      if (!matchedBranch) {
+                          const beforeBranchOffset = afterLeadOffset;
+                          const ${escErrorsVar}_branch = ctx.recoveredErrors.length;
+                          const savedOffset = currentOffset;
+                          currentOffset = afterLeadOffset;
+                          ${spec.code.trim()}
+                          currentOffset = savedOffset;
+                          if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset) {
+                              matchedBranch = true;
+                              matchedAst = ${spec.parsedAstName};
+                              branchNewOffset = ${spec.newOffsetName};
+                              isItemInline = ${isIterInline};
+                          } else {
+                              ctx.recoveredErrors.splice(${escErrorsVar}_branch, ctx.recoveredErrors.length - ${escErrorsVar}_branch);
+                          }
+                      }`);
+            });
+
+            return `
+              // One Or More Token Rule (id: ${ruleId})
+              if (!panicked) {
+                  const startOffset_${ruleId} = currentOffset;
+                  const startLoopOffset = currentOffset;
+                  const loopResults: GreenNode[] = [];
+                  while (currentOffset < text.length) {
+                      const beforeLeadOffset = currentOffset;
+                      const ${escErrorsVar}_lead = ctx.recoveredErrors.length;
+                      
+                      // Match leading trivia
+                      ${leadCode}
+                      const afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
+                      
+                      let matchedBranch = false;
+                      let matchedAst: GreenNode | null = null;
+                      let branchNewOffset = afterLeadOffset;
+                      let isItemInline = false;
+                      
+                      ${branchChecks.join("\n").trim()}
+                      
+                      if (matchedBranch) {
+                          // Commit leading trivia
+                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset) {
+                              const isLeadInline = ${SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement && SyntaxElement.defaultLeadingTrivia.isHiddenElement};
+                              this.addNode(loopResults, ${leadAstName}, isLeadInline);
+                          }
+                          
+                          this.addNode(loopResults, matchedAst, isItemInline);
+                          
+                          // Match trailing trivia
+                          const beforeTrailOffset = branchNewOffset;
+                          const savedOffsetTrail = currentOffset;
+                          currentOffset = branchNewOffset;
+                          ${trailCode}
+                          currentOffset = savedOffsetTrail;
+                          
+                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset) {
+                              const isTrailInline = ${SyntaxElement.defaultTrailingTrivia instanceof SyntaxElement && SyntaxElement.defaultTrailingTrivia.isHiddenElement};
+                              this.addNode(loopResults, ${trailAstName}, isTrailInline);
+                              currentOffset = ${trailNewOffsetName};
+                          } else {
+                              currentOffset = branchNewOffset;
+                          }
+                      } else {
+                          // Revert leading trivia errors
+                          ctx.recoveredErrors.splice(${escErrorsVar}_lead, ctx.recoveredErrors.length - ${escErrorsVar}_lead);
+                          break;
+                      }
+                  }
+                  if (loopResults.length > 0) {
+                      this.addNode(results, new GreenNode(NodeType.OneOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset), ${isInline});
+                      hasCommitted = true;
+                      ${structUpdate}
+                  } else {
+                      const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                      if (rec.recovered) {
+                          currentOffset = rec.recoveredOffset;
+                          panicked = true;
+                      } else {
+                          return rec.failResult!;
+                      }
+                  }
+              }`;
+          } else {
+            const sId = nextSpecId();
+            const escErrorsVar = `loopErrors_${ruleId}`;
+            let specificDfaName: string | undefined;
+            if (rule.value instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatchTypeScript(rule.value, ruleId, sId, childElements, specificDfaName);
+            const isIterInline = rule.value instanceof SyntaxElement && rule.value.isHiddenElement;
+
+            return `
+              // One Or More Token Rule (id: ${ruleId})
+              if (!panicked) {
+                  const startOffset_${ruleId} = currentOffset;
+                  const startLoopOffset = currentOffset;
+                  const loopResults: GreenNode[] = [];
+                  while (currentOffset < text.length) {
+                      const beforeLeadOffset = currentOffset;
+                      const ${escErrorsVar}_lead = ctx.recoveredErrors.length;
+                      
+                      // Match leading trivia
+                      ${leadCode}
+                      const afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
+                      
+                      // Speculatively match pattern starting from afterLeadOffset
+                      const savedOffset = currentOffset;
+                      currentOffset = afterLeadOffset;
+                      ${spec.code.trim()}
+                      currentOffset = savedOffset;
+                      
+                      if (${spec.matchedName} && ${spec.newOffsetName} > afterLeadOffset) {
+                          // Commit leading trivia
+                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset) {
+                              const isLeadInline = ${SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement && SyntaxElement.defaultLeadingTrivia.isHiddenElement};
+                              this.addNode(loopResults, ${leadAstName}, isLeadInline);
+                          }
+                          
+                          this.addNode(loopResults, ${spec.parsedAstName}, ${isIterInline});
+                          
+                          // Match trailing trivia
+                          const beforeTrailOffset = ${spec.newOffsetName};
+                          const savedOffsetTrail = currentOffset;
+                          currentOffset = ${spec.newOffsetName};
+                          ${trailCode}
+                          currentOffset = savedOffsetTrail;
+                          
+                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset) {
+                              const isTrailInline = ${SyntaxElement.defaultTrailingTrivia instanceof SyntaxElement && SyntaxElement.defaultTrailingTrivia.isHiddenElement};
+                              this.addNode(loopResults, ${trailAstName}, isTrailInline);
+                              currentOffset = ${trailNewOffsetName};
+                          } else {
+                              currentOffset = ${spec.newOffsetName};
+                          }
+                      } else {
+                          // Revert leading trivia errors
+                          ctx.recoveredErrors.splice(${escErrorsVar}_lead, ctx.recoveredErrors.length - ${escErrorsVar}_lead);
+                          break;
+                      }
+                  }
+                  if (loopResults.length > 0) {
+                      this.addNode(results, new GreenNode(NodeType.OneOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset), ${isInline});
+                      hasCommitted = true;
+                      ${structUpdate}
+                  } else {
+                      const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                      if (rec.recovered) {
+                          currentOffset = rec.recoveredOffset;
+                          panicked = true;
+                      } else {
+                          return rec.failResult!;
+                      }
+                  }
+              }`;
+          }
+        } else {
+
         if (isArray) {
           const patterns = rule.value as any[];
           const escErrorsVar = `loopErrors_${ruleId}`;
@@ -915,6 +1409,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
             }`;
         }
       }
+      }
       
       if (rule.type === 'not') {
         const sId = nextSpecId();
@@ -923,12 +1418,44 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
           specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
         }
         const spec = compileSpeculativeMatchTypeScript(rule.value, ruleId, sId, childElements, specificDfaName);
+
+        let triviaSkipCode = "";
+        if (SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement) {
+          const triviaName = sanitize(SyntaxElement.defaultLeadingTrivia.name);
+          childElements.add(triviaName);
+          triviaSkipCode = `
+                const skipRes_${ruleId} = this.parse${triviaName}(text, scanOffset_${ruleId}, memo, ctx);
+                if (skipRes_${ruleId}.success) {
+                    scanOffset_${ruleId} = skipRes_${ruleId}.newOffset;
+                }`;
+        } else if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
+          const dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
+          triviaSkipCode = `
+                const resDFA_${ruleId} = this.${dfaName}(text, scanOffset_${ruleId});
+                if (resDFA_${ruleId}.success) {
+                    scanOffset_${ruleId} += resDFA_${ruleId}.matchedValue.length;
+                }`;
+        } else if (typeof SyntaxElement.defaultLeadingTrivia === 'string') {
+          const escTrivia = escapeString(SyntaxElement.defaultLeadingTrivia);
+          triviaSkipCode = `
+                const litTrivia_${ruleId} = "${escTrivia}";
+                if (ctx.matchLiteral(text, scanOffset_${ruleId}, litTrivia_${ruleId}, ${SyntaxElement.defaultLeadingTrivia.length})) {
+                    scanOffset_${ruleId} += ${SyntaxElement.defaultLeadingTrivia.length};
+                }`;
+        }
+
         return `
             // Not Rule (id: ${ruleId})
             if (!panicked) {
-                const startOffset_${ruleId} = currentOffset;
                 const optErrorsCount_${ruleId} = ctx.recoveredErrors.length;
+                let scanOffset_${ruleId} = currentOffset;
+                // ----- SKIP TRIVIA START -----
+                ${triviaSkipCode.trim()}
+                // ----- SKIP TRIVIA END -----
+                const savedOffset_${ruleId} = currentOffset;
+                currentOffset = scanOffset_${ruleId};
                 ${spec.code.trim()}
+                currentOffset = savedOffset_${ruleId};
                 ctx.recoveredErrors.splice(optErrorsCount_${ruleId}, ctx.recoveredErrors.length - optErrorsCount_${ruleId});
                 if (${spec.matchedName}) {
                     const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Rule negative constraint matched", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
@@ -949,12 +1476,44 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
           specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
         }
         const spec = compileSpeculativeMatchTypeScript(rule.value, ruleId, sId, childElements, specificDfaName);
+
+        let triviaSkipCode = "";
+        if (SyntaxElement.defaultLeadingTrivia instanceof SyntaxElement) {
+          const triviaName = sanitize(SyntaxElement.defaultLeadingTrivia.name);
+          childElements.add(triviaName);
+          triviaSkipCode = `
+                const skipRes_${ruleId} = this.parse${triviaName}(text, scanOffset_${ruleId}, memo, ctx);
+                if (skipRes_${ruleId}.success) {
+                    scanOffset_${ruleId} = skipRes_${ruleId}.newOffset;
+                }`;
+        } else if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
+          const dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
+          triviaSkipCode = `
+                const resDFA_${ruleId} = this.${dfaName}(text, scanOffset_${ruleId});
+                if (resDFA_${ruleId}.success) {
+                    scanOffset_${ruleId} += resDFA_${ruleId}.matchedValue.length;
+                }`;
+        } else if (typeof SyntaxElement.defaultLeadingTrivia === 'string') {
+          const escTrivia = escapeString(SyntaxElement.defaultLeadingTrivia);
+          triviaSkipCode = `
+                const litTrivia_${ruleId} = "${escTrivia}";
+                if (ctx.matchLiteral(text, scanOffset_${ruleId}, litTrivia_${ruleId}, ${SyntaxElement.defaultLeadingTrivia.length})) {
+                    scanOffset_${ruleId} += ${SyntaxElement.defaultLeadingTrivia.length};
+                }`;
+        }
+
         return `
             // Assert Rule (id: ${ruleId})
             if (!panicked) {
-                const startOffset_${ruleId} = currentOffset;
                 const optErrorsCount_${ruleId} = ctx.recoveredErrors.length;
+                let scanOffset_${ruleId} = currentOffset;
+                // ----- SKIP TRIVIA START -----
+                ${triviaSkipCode.trim()}
+                // ----- SKIP TRIVIA END -----
+                const savedOffset_${ruleId} = currentOffset;
+                currentOffset = scanOffset_${ruleId};
                 ${spec.code.trim()}
+                currentOffset = savedOffset_${ruleId};
                 ctx.recoveredErrors.splice(optErrorsCount_${ruleId}, ctx.recoveredErrors.length - optErrorsCount_${ruleId});
                 if (!${spec.matchedName}) {
                     const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Assertion check failed", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);

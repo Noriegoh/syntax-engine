@@ -30,6 +30,8 @@ export interface Rule {
   label?: string;
   ignored?: boolean;
   tokenName?: string;
+  hasTokenWarning?: boolean; // Set when Token wraps choice elements inside ExpectsOneOf
+  isToken?: boolean; // Set when using ExpectsOneOfToken, ZeroOrMoreToken, OneOrMoreToken
 }
 
 export interface ParseError {
@@ -494,13 +496,48 @@ export class SyntaxElement {
       if (lead) this.LeadingTrivia(lead);
       
       const id = nextRuleId();
-      this.rules.push({ id, type: 'choice', value: unwrapped });
+      // Tag the choice rule with hasTokenWarning so diagnostics can highlight the mixed usage
+      this.rules.push({ id, type: 'choice', value: unwrapped, hasTokenWarning: true });
       
       if (trail) this.TrailingTrivia(trail);
     } else {
       const id = nextRuleId();
       this.rules.push({ id, type: 'choice', value: unwrapped as any });
     }
+    return this;
+  }
+
+  ExpectsOneOfToken(...patterns: any[]): this {
+    if (patterns.length === 0) {
+      patterns = [""];
+    }
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const item of arr) {
+        if (Array.isArray(item)) {
+          res.push(...flatten(item));
+        } else {
+          res.push(item);
+        }
+      }
+      return res;
+    };
+    
+    const flatPatterns = flatten(patterns);
+    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    for (const p of flatPatterns) {
+      unwrapped.push(unwrapToken(p));
+    }
+    
+    const lead = SyntaxElement.defaultLeadingTrivia;
+    const trail = SyntaxElement.defaultTrailingTrivia;
+    if (lead) this.LeadingTrivia(lead);
+    
+    const id = nextRuleId();
+    // This is the clean, warning-free way to match choice branches with default leading/trailing trivias
+    this.rules.push({ id, type: 'choice', value: unwrapped });
+    
+    if (trail) this.TrailingTrivia(trail);
     return this;
   }
 
@@ -568,13 +605,45 @@ export class SyntaxElement {
       if (lead) this.LeadingTrivia(lead);
       
       const id = nextRuleId();
-      this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite });
+      this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite, hasTokenWarning: true });
       
       if (trail) this.TrailingTrivia(trail);
     } else {
       const id = nextRuleId();
       this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite });
     }
+    return this;
+  }
+
+  ZeroOrMoreToken(pattern: any, ...additional: any[]): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const item of arr) {
+        if (Array.isArray(item)) {
+          res.push(...flatten(item));
+        } else {
+          res.push(item);
+        }
+      }
+      return res;
+    };
+
+    const hasAdditional = additional.length > 0;
+    const isArrayInput = Array.isArray(pattern);
+    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
+
+    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    for (const p of allPatterns) {
+      unwrapped.push(unwrapToken(p));
+    }
+
+    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
+
+    const id = nextRuleId();
+    this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite, isToken: true });
     return this;
   }
 
@@ -617,13 +686,45 @@ export class SyntaxElement {
       if (lead) this.LeadingTrivia(lead);
       
       const id = nextRuleId();
-      this.rules.push({ id, type: 'oneOrMore', value: valueToWrite });
+      this.rules.push({ id, type: 'oneOrMore', value: valueToWrite, hasTokenWarning: true });
       
       if (trail) this.TrailingTrivia(trail);
     } else {
       const id = nextRuleId();
       this.rules.push({ id, type: 'oneOrMore', value: valueToWrite });
     }
+    return this;
+  }
+
+  OneOrMoreToken(pattern: any, ...additional: any[]): this {
+    if (pattern === undefined || pattern === null) {
+      pattern = "";
+    }
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const item of arr) {
+        if (Array.isArray(item)) {
+          res.push(...flatten(item));
+        } else {
+          res.push(item);
+        }
+      }
+      return res;
+    };
+
+    const hasAdditional = additional.length > 0;
+    const isArrayInput = Array.isArray(pattern);
+    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
+
+    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    for (const p of allPatterns) {
+      unwrapped.push(unwrapToken(p));
+    }
+
+    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
+
+    const id = nextRuleId();
+    this.rules.push({ id, type: 'oneOrMore', value: valueToWrite, isToken: true });
     return this;
   }
 
@@ -1716,10 +1817,6 @@ export class SyntaxElement {
       if (skipRes.success) {
         scanOffset = skipRes.newOffset;
       }
-    } else {
-      while (scanOffset < text.length && /\s/.test(text[scanOffset])) {
-        scanOffset++;
-      }
     }
     const isArray = Array.isArray(rule.value);
     if (isArray) {
@@ -1761,10 +1858,6 @@ export class SyntaxElement {
       const skipRes = this.parsePattern(SyntaxElement.defaultLeadingTrivia, text, scanOffset, memo, rule.id, ctx);
       if (skipRes.success) {
         scanOffset = skipRes.newOffset;
-      }
-    } else {
-      while (scanOffset < text.length && /\s/.test(text[scanOffset])) {
-        scanOffset++;
       }
     }
     const isArray = Array.isArray(rule.value);

@@ -2732,6 +2732,221 @@ ${choiceChecks.join("\n")}
       }
       if (rule.type === 'zeroOrMore') {
         const isArray = Array.isArray(rule.value);
+        const isToken = !!rule.isToken;
+        if (isToken) {
+          // compile leading trivia if present
+          let leadCode = "";
+          let leadMatchedName = "true";
+          let leadAstName = "null";
+          let leadNewOffsetName = "currentOffset";
+          const leadId = nextSpecId();
+          if (SyntaxElement.defaultLeadingTrivia) {
+            let dfaName: string | undefined;
+            if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
+              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
+            }
+            const specLead = compileSpeculativeMatch(SyntaxElement.defaultLeadingTrivia, ruleId, leadId, childElements, dfaName);
+            leadCode = specLead.code;
+            leadMatchedName = specLead.matchedName;
+            leadAstName = specLead.parsedAstName;
+            leadNewOffsetName = specLead.newOffsetName;
+          }
+
+          // compile trailing trivia if present
+          let trailCode = "";
+          let trailMatchedName = "true";
+          let trailAstName = "null";
+          let trailNewOffsetName = "branchNewOffset";
+          const trailId = nextSpecId();
+          if (SyntaxElement.defaultTrailingTrivia) {
+            let dfaName: string | undefined;
+            if (SyntaxElement.defaultTrailingTrivia instanceof RegExp) {
+              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultTrailingTrivia, 'Spec', ruleId);
+            }
+            const specTrail = compileSpeculativeMatch(SyntaxElement.defaultTrailingTrivia, ruleId, trailId, childElements, dfaName);
+            trailCode = specTrail.code;
+            trailMatchedName = specTrail.matchedName;
+            trailAstName = specTrail.parsedAstName;
+            trailNewOffsetName = specTrail.newOffsetName;
+          }
+
+          if (isArray) {
+            const patterns = rule.value as any[];
+            const escErrorsVar = `loopErrors_${ruleId}`;
+            const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
+            const branchChecks: string[] = [];
+            
+            patterns.forEach((p, idx) => {
+              const sId = nextSpecId();
+              let specificDfaName: string | undefined;
+              if (p instanceof RegExp) {
+                specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+              }
+              const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+              branchChecks.push(`
+                      {
+                          int beforeBranchOffset = afterLeadOffset;
+                          int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
+                          int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
+                          int savedOffset = currentOffset;
+                          currentOffset = afterLeadOffset;
+                          ${spec.code.trim()}
+                          currentOffset = savedOffset;
+                          if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
+                          {
+                              matchedBranch = true;
+                              matchedAst = ${spec.parsedAstName};
+                              branchNewOffset = ${spec.newOffsetName};
+                          }
+                          else
+                          {
+                              ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
+                              if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
+                              {
+                                  ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
+                              }
+                          }
+                      }
+                      if (matchedBranch) goto matched_branch_${ruleId};
+              `);
+            });
+
+            return `
+              // Zero Or More Token Rule (id: ${ruleId})
+              if (!panicked)
+              {
+                  int startOffset_${ruleId} = currentOffset;
+                  int startLoopOffset = currentOffset;
+                  var loopResults = new List<GreenNode>();
+                  while (currentOffset < text.Length)
+                  {
+                      int beforeLeadOffset = currentOffset;
+                      int ${escErrorsVar}_lead = ctx.RecoveredErrors.Count;
+                      
+                      // Match leading trivia
+                      ${leadCode}
+                      int afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
+                      
+                      bool matchedBranch = false;
+                      GreenNode matchedAst = null;
+                      int branchNewOffset = afterLeadOffset;
+                      
+                      ${branchChecks.join("\n").trim()}
+                      
+                      matched_branch_${ruleId}:
+                      if (matchedBranch)
+                      {
+                          // Commit leading trivia
+                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset)
+                          {
+                              loopResults.Add(${leadAstName});
+                          }
+                          
+                          loopResults.Add(matchedAst);
+                          
+                          // Match trailing trivia
+                          int beforeTrailOffset = branchNewOffset;
+                          int savedOffsetTrail = currentOffset;
+                          currentOffset = branchNewOffset;
+                          ${trailCode}
+                          currentOffset = savedOffsetTrail;
+                          
+                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset)
+                          {
+                              loopResults.Add(${trailAstName});
+                              currentOffset = ${trailNewOffsetName};
+                          }
+                          else
+                          {
+                              currentOffset = branchNewOffset;
+                          }
+                      }
+                      else
+                      {
+                          // Revert leading trivia errors
+                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_lead, ctx.RecoveredErrors.Count - ${escErrorsVar}_lead);
+                          break;
+                      }
+                  }
+                  if (loopResults.Count > 0)
+                  {
+                      results.Add(GreenNode.Create(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                      ${structUpdate}
+                  }
+              }`;
+          } else {
+            const sId = nextSpecId();
+            const escErrorsVar = `loopErrors_${ruleId}`;
+            let specificDfaName: string | undefined;
+            if (rule.value instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
+            return `
+              // Zero Or More Token Rule (id: ${ruleId})
+              if (!panicked)
+              {
+                  int startOffset_${ruleId} = currentOffset;
+                  int startLoopOffset = currentOffset;
+                  var loopResults = new List<GreenNode>();
+                  while (currentOffset < text.Length)
+                  {
+                      int beforeLeadOffset = currentOffset;
+                      int ${escErrorsVar}_lead = ctx.RecoveredErrors.Count;
+                      
+                      // Match leading trivia
+                      ${leadCode}
+                      int afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
+                      
+                      // Speculative match starting from afterLeadOffset
+                      int savedOffset = currentOffset;
+                      currentOffset = afterLeadOffset;
+                      ${spec.code.trim()}
+                      currentOffset = savedOffset;
+                      
+                      if (${spec.matchedName} && ${spec.newOffsetName} > afterLeadOffset)
+                      {
+                          // Commit leading trivia
+                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset)
+                          {
+                              loopResults.Add(${leadAstName});
+                          }
+                          
+                          loopResults.Add(${spec.parsedAstName});
+                          
+                          // Match trailing trivia
+                          int beforeTrailOffset = ${spec.newOffsetName};
+                          int savedOffsetTrail = currentOffset;
+                          currentOffset = ${spec.newOffsetName};
+                          ${trailCode}
+                          currentOffset = savedOffsetTrail;
+                          
+                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset)
+                          {
+                              loopResults.Add(${trailAstName});
+                              currentOffset = ${trailNewOffsetName};
+                          }
+                          else
+                          {
+                              currentOffset = ${spec.newOffsetName};
+                          }
+                      }
+                      else
+                      {
+                          // Revert leading trivia errors
+                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_lead, ctx.RecoveredErrors.Count - ${escErrorsVar}_lead);
+                          break;
+                      }
+                  }
+                  if (loopResults.Count > 0)
+                  {
+                      results.Add(GreenNode.Create(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                      ${structUpdate}
+                  }
+              }`;
+          }
+        }
+
         if (isArray) {
           const patterns = rule.value as any[];
           const escErrorsVar = `loopErrors_${ruleId}`;
@@ -2843,6 +3058,233 @@ ${choiceChecks.join("\n")}
       }
       if (rule.type === 'oneOrMore') {
         const isArray = Array.isArray(rule.value);
+        const isToken = !!rule.isToken;
+        if (isToken) {
+          // compile leading trivia if present
+          let leadCode = "";
+          let leadMatchedName = "true";
+          let leadAstName = "null";
+          let leadNewOffsetName = "currentOffset";
+          const leadId = nextSpecId();
+          if (SyntaxElement.defaultLeadingTrivia) {
+            let dfaName: string | undefined;
+            if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
+              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
+            }
+            const specLead = compileSpeculativeMatch(SyntaxElement.defaultLeadingTrivia, ruleId, leadId, childElements, dfaName);
+            leadCode = specLead.code;
+            leadMatchedName = specLead.matchedName;
+            leadAstName = specLead.parsedAstName;
+            leadNewOffsetName = specLead.newOffsetName;
+          }
+
+          // compile trailing trivia if present
+          let trailCode = "";
+          let trailMatchedName = "true";
+          let trailAstName = "null";
+          let trailNewOffsetName = "branchNewOffset";
+          const trailId = nextSpecId();
+          if (SyntaxElement.defaultTrailingTrivia) {
+            let dfaName: string | undefined;
+            if (SyntaxElement.defaultTrailingTrivia instanceof RegExp) {
+              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultTrailingTrivia, 'Spec', ruleId);
+            }
+            const specTrail = compileSpeculativeMatch(SyntaxElement.defaultTrailingTrivia, ruleId, trailId, childElements, dfaName);
+            trailCode = specTrail.code;
+            trailMatchedName = specTrail.matchedName;
+            trailAstName = specTrail.parsedAstName;
+            trailNewOffsetName = specTrail.newOffsetName;
+          }
+
+          if (isArray) {
+            const patterns = rule.value as any[];
+            const escErrorsVar = `loopErrors_${ruleId}`;
+            const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
+            const branchChecks: string[] = [];
+            
+            patterns.forEach((p, idx) => {
+              const sId = nextSpecId();
+              let specificDfaName: string | undefined;
+              if (p instanceof RegExp) {
+                specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+              }
+              const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+              branchChecks.push(`
+                      {
+                          int beforeBranchOffset = afterLeadOffset;
+                          int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
+                          int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
+                          int savedOffset = currentOffset;
+                          currentOffset = afterLeadOffset;
+                          ${spec.code.trim()}
+                          currentOffset = savedOffset;
+                          if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
+                          {
+                              matchedBranch = true;
+                              matchedAst = ${spec.parsedAstName};
+                              branchNewOffset = ${spec.newOffsetName};
+                          }
+                          else
+                          {
+                              ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
+                              if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
+                              {
+                                  ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
+                              }
+                          }
+                      }
+                      if (matchedBranch) goto matched_branch_${ruleId};
+              `);
+            });
+
+            return `
+              // One Or More Token Rule (id: ${ruleId})
+              if (!panicked)
+              {
+                  int startOffset_${ruleId} = currentOffset;
+                  int startLoopOffset = currentOffset;
+                  var loopResults = new List<GreenNode>();
+                  while (currentOffset < text.Length)
+                  {
+                      int beforeLeadOffset = currentOffset;
+                      int ${escErrorsVar}_lead = ctx.RecoveredErrors.Count;
+                      
+                      // Match leading trivia
+                      ${leadCode}
+                      int afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
+                      
+                      bool matchedBranch = false;
+                      GreenNode matchedAst = null;
+                      int branchNewOffset = afterLeadOffset;
+                      
+                      ${branchChecks.join("\n").trim()}
+                      
+                      matched_branch_${ruleId}:
+                      if (matchedBranch)
+                      {
+                          // Commit leading trivia
+                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset)
+                          {
+                              loopResults.Add(${leadAstName});
+                          }
+                          
+                          loopResults.Add(matchedAst);
+                          
+                          // Match trailing trivia
+                          int beforeTrailOffset = branchNewOffset;
+                          int savedOffsetTrail = currentOffset;
+                          currentOffset = branchNewOffset;
+                          ${trailCode}
+                          currentOffset = savedOffsetTrail;
+                          
+                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset)
+                          {
+                              loopResults.Add(${trailAstName});
+                              currentOffset = ${trailNewOffsetName};
+                          }
+                          else
+                          {
+                              currentOffset = branchNewOffset;
+                          }
+                      }
+                      else
+                      {
+                          // Revert leading trivia errors
+                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_lead, ctx.RecoveredErrors.Count - ${escErrorsVar}_lead);
+                          break;
+                      }
+                  }
+                  if (loopResults.Count > 0)
+                  {
+                      results.Add(GreenNode.Create(NodeType.OneOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                      hasCommitted = true;
+                      ${structUpdate}
+                  }
+                  else
+                  {
+                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                          return failRes;
+                  }
+              }`;
+          } else {
+            const sId = nextSpecId();
+            const escErrorsVar = `loopErrors_${ruleId}`;
+            let specificDfaName: string | undefined;
+            if (rule.value instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
+            return `
+              // One Or More Token Rule (id: ${ruleId})
+              if (!panicked)
+              {
+                  int startOffset_${ruleId} = currentOffset;
+                  int startLoopOffset = currentOffset;
+                  var loopResults = new List<GreenNode>();
+                  while (currentOffset < text.Length)
+                  {
+                      int beforeLeadOffset = currentOffset;
+                      int ${escErrorsVar}_lead = ctx.RecoveredErrors.Count;
+                      
+                      // Match leading trivia
+                      ${leadCode}
+                      int afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
+                      
+                      // Speculative match starting from afterLeadOffset
+                      int savedOffset = currentOffset;
+                      currentOffset = afterLeadOffset;
+                      ${spec.code.trim()}
+                      currentOffset = savedOffset;
+                      
+                      if (${spec.matchedName} && ${spec.newOffsetName} > afterLeadOffset)
+                      {
+                          // Commit leading trivia
+                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset)
+                          {
+                              loopResults.Add(${leadAstName});
+                          }
+                          
+                          loopResults.Add(${spec.parsedAstName});
+                          
+                          // Match trailing trivia
+                          int beforeTrailOffset = ${spec.newOffsetName};
+                          int savedOffsetTrail = currentOffset;
+                          currentOffset = ${spec.newOffsetName};
+                          ${trailCode}
+                          currentOffset = savedOffsetTrail;
+                          
+                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset)
+                          {
+                              loopResults.Add(${trailAstName});
+                              currentOffset = ${trailNewOffsetName};
+                          }
+                          else
+                          {
+                              currentOffset = ${spec.newOffsetName};
+                          }
+                      }
+                      else
+                      {
+                          // Revert leading trivia errors
+                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_lead, ctx.RecoveredErrors.Count - ${escErrorsVar}_lead);
+                          break;
+                      }
+                  }
+                  if (loopResults.Count > 0)
+                  {
+                      results.Add(GreenNode.Create(NodeType.OneOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
+                      hasCommitted = true;
+                      ${structUpdate}
+                  }
+                  else
+                  {
+                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                          return failRes;
+                  }
+              }`;
+          }
+        }
+
         if (isArray) {
           const patterns = rule.value as any[];
           const escErrorsVar = `loopErrors_${ruleId}`;
@@ -3048,12 +3490,6 @@ ${choiceChecks.join("\n")}
                 {
                     scanOffset_${ruleId} += ${SyntaxElement.defaultLeadingTrivia.length};
                 }`;
-        } else {
-          triviaSkipCode = `
-                while (scanOffset_${ruleId} < text.Length && char.IsWhiteSpace(text[scanOffset_${ruleId}]))
-                {
-                    scanOffset_${ruleId}++;
-                }`;
         }
 
         return `
@@ -3170,12 +3606,6 @@ ${choiceChecks.join("\n")}
                 if (ctx.MatchLiteral(text, scanOffset_${ruleId}, litTrivia_${ruleId}, ${SyntaxElement.defaultLeadingTrivia.length}))
                 {
                     scanOffset_${ruleId} += ${SyntaxElement.defaultLeadingTrivia.length};
-                }`;
-        } else {
-          triviaSkipCode = `
-                while (scanOffset_${ruleId} < text.Length && char.IsWhiteSpace(text[scanOffset_${ruleId}]))
-                {
-                    scanOffset_${ruleId}++;
                 }`;
         }
 
