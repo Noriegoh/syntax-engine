@@ -799,6 +799,9 @@ namespace ${namespaceName}
     {
         public Dictionary<int, Dictionary<int, CSTNode>> NodesByOffset { get; set; } = new Dictionary<int, Dictionary<int, CSTNode>>();
         public int TotalNodes { get; set; } = 0;
+        public int LastInvalidatedStart { get; set; } = int.MaxValue;
+        public int LastInvalidatedEnd { get; set; } = -1;
+        public List<CSTNode> LastDiscardedNodes { get; set; } = new List<CSTNode>();
         public bool Has(int ruleId, int offset)
         {
             if (NodesByOffset.TryGetValue(offset, out var ruleMap))
@@ -828,6 +831,7 @@ namespace ${namespaceName}
                     return true;
                 }
             }
+            cached = null;
             return false;
         }
         public void Set(int ruleId, int offset, ParseResult result)
@@ -856,11 +860,17 @@ namespace ${namespaceName}
         {
             NodesByOffset.Clear();
             TotalNodes = 0;
+            LastInvalidatedStart = int.MaxValue;
+            LastInvalidatedEnd = -1;
+            LastDiscardedNodes.Clear();
         }
         public void ApplyEdit(int editOffset, int removedLength, int delta)
         {
             var nextNodesByOffset = new Dictionary<int, Dictionary<int, CSTNode>>();
             int nextTotalNodes = 0;
+            int minInvalidStart = int.MaxValue;
+            int maxInvalidEnd = -1;
+            var discarded = new List<CSTNode>();
             foreach (var kvp in NodesByOffset)
             {
                 int startOffset = kvp.Key;
@@ -874,6 +884,9 @@ namespace ${namespaceName}
                     {
                         if (dependencyLimit >= editOffset)
                         {
+                            if (node.Start < minInvalidStart) minInvalidStart = node.Start;
+                            if (node.End > maxInvalidEnd) maxInvalidEnd = node.End;
+                            discarded.Add(node);
                             continue; // Overlaps with edit, discard
                         }
                         if (!nextNodesByOffset.TryGetValue(node.Start, out var rMap))
@@ -887,6 +900,9 @@ namespace ${namespaceName}
                     // Case 2: Parse started inside edited/deleted range
                     else if (node.Start >= editOffset && node.Start < editOffset + removedLength)
                     {
+                        if (node.Start < minInvalidStart) minInvalidStart = node.Start;
+                        if (node.End > maxInvalidEnd) maxInvalidEnd = node.End;
+                        discarded.Add(node);
                         continue; // Discard completely
                     }
                     // Case 3: Parse started after the edited/deleted range
@@ -929,6 +945,9 @@ namespace ${namespaceName}
             }
             NodesByOffset = nextNodesByOffset;
             TotalNodes = nextTotalNodes;
+            LastInvalidatedStart = minInvalidStart;
+            LastInvalidatedEnd = maxInvalidEnd;
+            LastDiscardedNodes = discarded;
         }
     }
     public class ParserContext
@@ -1003,6 +1022,7 @@ namespace ${namespaceName}
     public interface IParserRunner
     {
         ParseResult Parse(ITextDocument text, int offset, SpatialCSTIndex memo, ParserContext ctx);
+        ParseResult ParseRule(int ruleId, ITextDocument text, int offset, SpatialCSTIndex memo, ParserContext ctx);
     }
     public class IncrementalParser
     {
@@ -1051,6 +1071,71 @@ namespace ${namespaceName}
             {
                 _memo.ApplyEdit(editOffset, removedLength, delta);
             }
+
+            // --- CONVERGENCE CHECK START ---
+            if (_lastResult != null && _lastResult.Ast != null)
+            {
+                var candidates = new List<CSTNode>();
+                foreach (var node in _memo.LastDiscardedNodes)
+                {
+                    if (node.Start <= editOffset && node.DependencyLimit >= editOffset)
+                    {
+                        candidates.Add(node);
+                    }
+                }
+
+                if (candidates.Count > 0)
+                {
+                    candidates.Sort((a, b) => (a.End - a.Start).CompareTo(b.End - b.Start));
+
+                    foreach (var candidateNode in candidates)
+                    {
+                        var candidateCtx = new ParserContext();
+                        var result = parser.ParseRule(candidateNode.RuleId, newText, candidateNode.Start, _memo, candidateCtx);
+                        if (result != null && result.Success && result.Error == null)
+                        {
+                            if (result.NewOffset == candidateNode.End + delta)
+                            {
+                                var oldRoot = _lastResult.Ast;
+                                var replacedRoot = ReplaceInGreenTree(
+                                    oldRoot,
+                                    0,
+                                    candidateNode.Start,
+                                    candidateNode.RuleId,
+                                    candidateNode.End - candidateNode.Start,
+                                    result.Ast,
+                                    out bool matched,
+                                    out int widthDelta
+                                );
+
+                                if (matched && replacedRoot != null)
+                                {
+                                    var finalResult = new ParseResult
+                                    {
+                                        Success = _lastResult.Success,
+                                        NewOffset = _lastResult.NewOffset + delta,
+                                        DependencyLimit = _lastResult.DependencyLimit + delta,
+                                        Error = _lastResult.Error,
+                                        RuleId = _lastResult.RuleId,
+                                        Ast = replacedRoot,
+                                        RecoveredErrors = _lastResult.RecoveredErrors?.Select(err => new ParseError
+                                        {
+                                            Message = err.Message,
+                                            Offset = err.Offset + delta
+                                        }).ToList() ?? new List<ParseError>()
+                                    };
+
+                                    _lastText = newText;
+                                    _lastResult = finalResult;
+                                    return finalResult;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // --- CONVERGENCE CHECK END ---
+
             var ctx = new ParserContext();
             var nextRes = parser.Parse(newText, 0, _memo, ctx);
             _lastText = newText;
@@ -1067,6 +1152,94 @@ namespace ${namespaceName}
             var nextRes = parser.Parse(_lastText, 0, _memo, ctx);
             _lastResult = nextRes;
             return _lastResult;
+        }
+        private static GreenNode ReplaceInGreenTree(
+            GreenNode node,
+            int currentOffset,
+            int targetStart,
+            int targetRuleId,
+            int targetWidth,
+            GreenNode replacement,
+            out bool matched,
+            out int widthDelta
+        )
+        {
+            if (node == null)
+            {
+                matched = false;
+                widthDelta = 0;
+                return null;
+            }
+            bool isMatch = currentOffset == targetStart &&
+                           node.Width == targetWidth &&
+                           node.RuleId == targetRuleId;
+
+            if (isMatch)
+            {
+                matched = true;
+                int replacementWidth = replacement != null ? replacement.Width : 0;
+                widthDelta = replacementWidth - node.Width;
+                return replacement;
+            }
+
+            if (targetStart >= currentOffset + node.Width || targetStart < currentOffset)
+            {
+                matched = false;
+                widthDelta = 0;
+                return node;
+            }
+
+            object value = node.Value;
+            if (value is List<GreenNode> list)
+            {
+                int childOffset = currentOffset;
+                var newChildren = new List<GreenNode>();
+                bool matchedAny = false;
+                int accumulatedDelta = 0;
+
+                foreach (var childNode in list)
+                {
+                    if (childNode != null)
+                    {
+                        var resNode = ReplaceInGreenTree(childNode, childOffset, targetStart, targetRuleId, targetWidth, replacement, out bool m, out int d);
+                        if (resNode != null)
+                        {
+                            newChildren.Add(resNode);
+                        }
+                        if (m)
+                        {
+                            matchedAny = true;
+                            accumulatedDelta += d;
+                        }
+                        childOffset += childNode.Width;
+                    }
+                    else
+                    {
+                        newChildren.Add(null);
+                    }
+                }
+
+                if (matchedAny)
+                {
+                    matched = true;
+                    widthDelta = accumulatedDelta;
+                    return GreenNode.Create(node.Type, newChildren, node.RuleId, node.Width + accumulatedDelta);
+                }
+            }
+            else if (value is GreenNode childNode)
+            {
+                var resNode = ReplaceInGreenTree(childNode, currentOffset, targetStart, targetRuleId, targetWidth, replacement, out bool m, out int d);
+                if (m)
+                {
+                    matched = true;
+                    widthDelta = d;
+                    return resNode != null ? GreenNode.Create(node.Type, resNode, node.RuleId, node.Width + d) : null;
+                }
+            }
+
+            matched = false;
+            widthDelta = 0;
+            return node;
         }
         private static (int editOffset, int removedLength, string insertedText) FindDiff(ReadOnlyMemory<char> oldStr, ReadOnlyMemory<char> newStr)
         {
@@ -3736,6 +3909,10 @@ ${ruleBlocks}
         }`;
   }).join("\n\n");
   const combinedRegexes = Array.from(new Set([...regexFields, ...speculativeRegexes]));
+  const ruleCases = elements.map(el => {
+    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+    return `                case ${el.id}: return Parse${elName}(text, offset, memo, ctx);`;
+  }).join("\n");
   return `using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
@@ -4002,6 +4179,14 @@ ${combinedRegexes.join("\n")}
         public ParseResult Parse(ITextDocument text, int offset, SpatialCSTIndex memo, ParserContext ctx)
         {
             return Parse${rootName}(text, offset, memo, ctx);
+        }
+        public ParseResult ParseRule(int ruleId, ITextDocument text, int offset, SpatialCSTIndex memo, ParserContext ctx)
+        {
+            switch (ruleId)
+            {
+${ruleCases}
+                default: return null;
+            }
         }
 ${parserMethods}
         private bool TryRecover(

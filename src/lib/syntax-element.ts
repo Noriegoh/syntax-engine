@@ -1232,7 +1232,14 @@ export class SyntaxElement {
       SyntaxElement.ruleRegistry.set(rule.id, rule);
     }
 
-    const memoKey = `${this.id}-${offset}`;
+    const isSpatial = 'tryGet' in memo && typeof (memo as any).tryGet === 'function';
+    let cached: ParseResult | undefined = undefined;
+    if (isSpatial) {
+      cached = (memo as any).tryGet(this.id, offset);
+    } else {
+      cached = memo.get(`${this.id}-${offset}`);
+    }
+
     const ctx: any = context || { maxOffset: -1, maxError: null, expectedPaths: [], recoveredErrors: [], activeScopeEnds: [] };
     if (ctx.maxOffset === undefined) ctx.maxOffset = -1;
     if (ctx.maxError === undefined) ctx.maxError = null;
@@ -1265,11 +1272,10 @@ export class SyntaxElement {
       profilerStartTime = performance.now();
     }
 
-    if (memo.has(memoKey)) {
+    if (cached !== undefined) {
       if (typeof ctx.cacheHits === 'number') {
         ctx.cacheHits++;
       }
-      const cached = memo.get(memoKey)!;
       
       if (cached.astDelta && cached.astDelta !== 0) {
         const d = cached.astDelta;
@@ -1319,7 +1325,11 @@ export class SyntaxElement {
       }
     }
 
-    memo.set(memoKey, res);
+    if (isSpatial) {
+      (memo as any).trySet(this.id, offset, res);
+    } else {
+      memo.set(`${this.id}-${offset}`, res);
+    }
 
     if (ctx.profile && profilerNode) {
       profilerNode.duration = performance.now() - profilerStartTime;
