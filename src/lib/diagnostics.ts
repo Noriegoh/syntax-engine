@@ -206,6 +206,56 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
 
   visit(rootElement);
 
+  // Compute callers mapped for element analysis
+  const callers = new Map<SyntaxElement, Set<SyntaxElement>>();
+  for (const el of elements) {
+    callers.set(el, new Set<SyntaxElement>());
+  }
+
+  function addCaller(target: any, caller: SyntaxElement) {
+    if (!target) return;
+    if (target instanceof SyntaxElement) {
+      callers.get(target)?.add(caller);
+    } else if (Array.isArray(target)) {
+      for (const item of target) {
+        addCaller(item, caller);
+      }
+    } else if (typeof target === 'object') {
+      if ('pattern' in target) {
+        addCaller(target.pattern, caller);
+      }
+      if ('item' in target) {
+        addCaller(target.item, caller);
+      }
+      if ('separator' in target) {
+        addCaller(target.separator, caller);
+      }
+    }
+  }
+
+  for (const el of elements) {
+    for (const rule of el.rules) {
+      if (rule.type === 'element') {
+        addCaller(rule.value, el);
+      } else if (rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+        addCaller(rule.value, el);
+      } else if (
+        rule.type === 'optional' ||
+        rule.type === 'leadingTrivia' ||
+        rule.type === 'trailingTrivia' ||
+        rule.type === 'not' ||
+        rule.type === 'assert' ||
+        rule.type === 'beginScope' ||
+        rule.type === 'endScope'
+      ) {
+        addCaller(rule.value, el);
+      } else if (rule.type === 'separatedBy' && rule.value) {
+        addCaller(rule.value.item, el);
+        addCaller(rule.value.separator, el);
+      }
+    }
+  }
+
   // Check for unbalanced default trivia rules
   const hasLeading = !!SyntaxElement.defaultLeadingTrivia;
   const hasTrailing = !!SyntaxElement.defaultTrailingTrivia;
@@ -716,6 +766,100 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
               suggestion: "Simplify your rule definition by replacing ExpectsOneOf with a direct Expects() call."
             });
           }
+        }
+      }
+    }
+
+    // New Custom Checking: Ignored/Inlined elements constraints (.Ignore() / isHiddenElement)
+    if (el.isHiddenElement) {
+      // Rule 1: Cannot contain loop rules
+      const hasLoop = el.rules.some(r => r.type === 'zeroOrMore' || r.type === 'oneOrMore' || r.type === 'separatedBy');
+      if (hasLoop) {
+        diagnostics.push({
+          type: "error",
+          nodeName: elName,
+          message: `Ignored element "${elName}" cannot contain loop rules like ZeroOrMore, OneOrMore, or SeparatedBy.`,
+          suggestion: "Remove the .Ignore() call from this element, or pull the loop rules out into a separate node."
+        });
+      }
+
+      // Rule 2: Cannot have multiple callers
+      const elCallers = callers.get(el);
+      if (elCallers && elCallers.size > 1) {
+        const parentNames = Array.from(elCallers).map(p => p.name).join(", ");
+        diagnostics.push({
+          type: "error",
+          nodeName: elName,
+          message: `Rule "${elName}" is ignored (inlined) but has ${elCallers.size} callers: ${parentNames}.`,
+          suggestion: "An ignored/inlined element should strictly have only a single caller to inline its evaluation correctly. Remove the .Ignore() call."
+        });
+      }
+    }
+
+    // Rule 3: Loop rule cannot target ignored element
+    for (const rule of el.rules) {
+      if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+        const unwrapped = unwrapPattern(rule.value);
+        const checkTargetIgnored = (p: any) => {
+          if (p instanceof SyntaxElement && p.isHiddenElement) {
+            diagnostics.push({
+              type: "error",
+              nodeName: elName,
+              message: `Loop rule '${rule.type}' cannot target ignored/inlined element "${p.name}".`,
+              suggestion: `An ignored rule cannot be processed under loops since it flattens multiple parsed items at once. Remove .Ignore() from "${p.name}".`
+            });
+          }
+        };
+        if (Array.isArray(unwrapped)) {
+          unwrapped.forEach(checkTargetIgnored);
+        } else {
+          checkTargetIgnored(unwrapped);
+        }
+      } else if (rule.type === 'separatedBy' && rule.value) {
+        const checkTargetIgnored = (p: any, role: string) => {
+          if (p instanceof SyntaxElement && p.isHiddenElement) {
+            diagnostics.push({
+              type: "error",
+              nodeName: elName,
+              message: `SeparatedBy list rule cannot use ignored/inlined element "${p.name}" as ${role}.`,
+              suggestion: `An ignored rule cannot be processed under loops since it flattens multiple parsed items at once. Remove .Ignore() from "${p.name}".`
+            });
+          }
+        };
+        checkTargetIgnored(unwrapPattern(rule.value.item), "list item");
+        checkTargetIgnored(unwrapPattern(rule.value.separator), "separator");
+      }
+    }
+
+    // Rule 4: Suggest ignoring if exactly one caller
+    if (!el.isHiddenElement && el !== rootElement) {
+      const elCallers = callers.get(el);
+      if (elCallers && elCallers.size === 1) {
+        const parent = Array.from(elCallers)[0];
+        const hasLoop = el.rules.some(r => r.type === 'zeroOrMore' || r.type === 'oneOrMore' || r.type === 'separatedBy');
+        
+        let parentUsesInLoop = false;
+        for (const rule of parent.rules) {
+          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+            const unwrapped = unwrapPattern(rule.value);
+            const isTarget = (p: any): boolean => p === el || (Array.isArray(p) && p.includes(el));
+            if (isTarget(unwrapped)) {
+              parentUsesInLoop = true;
+            }
+          } else if (rule.type === 'separatedBy' && rule.value) {
+            if (unwrapPattern(rule.value.item) === el || unwrapPattern(rule.value.separator) === el) {
+              parentUsesInLoop = true;
+            }
+          }
+        }
+
+        if (!hasLoop && !parentUsesInLoop) {
+          diagnostics.push({
+            type: "info",
+            nodeName: elName,
+            message: `Rule "${elName}" has exactly one caller ("${parent.name}").`,
+            suggestion: `To optimize parsing performance and simplify generated code, consider ignoring/inlining it by appending .Ignore() to its definition.`
+          });
         }
       }
     }

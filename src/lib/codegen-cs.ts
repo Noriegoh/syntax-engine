@@ -9,6 +9,63 @@ import {
 } from './codegen-core';
 import { isSimpleCaseInsensitiveRegex } from './utils';
 
+function getCSharpPrimitiveType(primitiveType: string): string {
+  switch (primitiveType) {
+    case 'Integer': return 'int';
+    case 'Float': return 'float';
+    case 'Literal': return 'string';
+    case 'Text': return 'string';
+    case 'Byte': return 'byte';
+    case 'SByte': return 'sbyte';
+    case 'Int16': return 'short';
+    case 'UInt16': return 'ushort';
+    case 'Int32': return 'int';
+    case 'UInt32': return 'uint';
+    case 'Int64': return 'long';
+    case 'UInt64': return 'ulong';
+    case 'Single': return 'float';
+    case 'Double': return 'double';
+    case 'Boolean': return 'bool';
+    default: return 'string';
+  }
+}
+
+function generatePropertiesStrForGroups(
+  propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number, primitiveType?: string }>,
+  elName: string
+): string {
+  return Array.from(propertyGroups.entries()).map(([label, mapping]) => {
+     const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
+     if (mapping.isList) {
+         return `        public List<${mapping.type}> ${label} => Children.OfType<${mapping.type}>().ToList();
+         public ${elName}Node With${capLabel}(List<${mapping.type}> newChildren)
+         {
+             return this;
+         }`;
+     } else {
+         if (mapping.primitiveType) {
+             const primitiveCSharpType = getCSharpPrimitiveType(mapping.primitiveType);
+             return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
+         public ${elName}Node With${capLabel}(${primitiveCSharpType} value)
+         {
+             var oldChild = this.${label}?.Green;
+             var newChild = AstNode.As${mapping.primitiveType}(value);
+             var newGreen = Green.ReplaceChild(oldChild, newChild?.Green);
+             return new ${elName}Node(newGreen, Parent, Offset);
+         }`;
+         } else {
+             return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
+         public ${elName}Node With${capLabel}(${mapping.type} newNode)
+         {
+             var oldChild = this.${label}?.Green;
+             var newGreen = Green.ReplaceChild(oldChild, newNode?.Green);
+             return new ${elName}Node(newGreen, Parent, Offset);
+         }`;
+         }
+     }
+  }).join("\n\n");
+}
+
 
 export function generateDFACSharpMethod(methodName: string, regex: RegExp, ruleId: number, type: 'Rule' | 'Spec'): string {
   const patternStr = regex.source;
@@ -210,6 +267,17 @@ function compileSpeculativeMatch(
                         localMaxOffset = Math.Max(localMaxOffset, maxDep_${varId});
                         int ${precVar} = 0;`;
     }
+  } else if (pattern != null && typeof pattern === 'object' && 'literal' in pattern && 'pattern' in pattern) {
+    const fnName = dfaMethodName || `MatchDFA_Spec_${ruleId}`;
+    const targetLiteral = escapeString(pattern.literal);
+    code = `
+                        string mval_${varId};
+                        bool ${mVar} = ${fnName}(text, currentOffset, out mval_${varId}) && mval_${varId} == "${targetLiteral}";
+                        GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Literal, mval_${varId}, ${ruleId}, mval_${varId}?.Length ?? 0) : null;
+                        int ${offsetVar} = ${mVar} ? currentOffset + (mval_${varId}?.Length ?? 0) : currentOffset;
+                        int maxDep_${varId} = ${mVar} ? currentOffset + (mval_${varId}?.Length ?? 0) : currentOffset + 1;
+                        localMaxOffset = Math.Max(localMaxOffset, maxDep_${varId});
+                        int ${precVar} = 0;`;
   } else if (typeof pattern === 'string') {
     const esc = escapeString(pattern);
     code = `
@@ -236,6 +304,307 @@ function compileSpeculativeMatch(
   }
   return { code, matchedName: mVar, parsedAstName: astVar, newOffsetName: offsetVar, precName: precVar, maxDepName: `maxDep_${varId}` };
 }
+
+/**
+ * Generates a helper SyntaxFactory class for manual, elegant AST construction.
+ */
+function generateSyntaxFactory(visibleElements: SyntaxElement[]): string {
+  let factoryMethods: string[] = [];
+
+  const csharpKeywords = new Set([
+    "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char", "checked",
+    "class", "const", "continue", "decimal", "default", "delegate", "do", "double", "else",
+    "enum", "event", "explicit", "extern", "false", "finally", "fixed", "float", "for",
+    "foreach", "goto", "if", "implicit", "in", "int", "interface", "internal", "is", "lock",
+    "long", "namespace", "new", "null", "object", "operator", "out", "override", "params",
+    "private", "protected", "public", "readonly", "ref", "return", "sbyte", "sealed",
+    "short", "sizeof", "stackalloc", "static", "string", "struct", "switch", "this", "throw",
+    "true", "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort", "using", "virtual",
+    "void", "volatile", "while"
+  ]);
+
+  for (const el of visibleElements) {
+    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+    
+    // We analyze the rules of el to extract signature parameters
+    const paramsList: { name: string; type: string; decl: string; rule: any }[] = [];
+    const usedNames = new Set<string>();
+
+    for (const rule of el.rules) {
+      if (rule.ignored) continue;
+
+      // Determine parameter details if this rule is a parameter
+      const isParam = (
+        rule.type === 'element' ||
+        rule.type === 'optional' ||
+        rule.type === 'choice' ||
+        rule.type === 'zeroOrMore' ||
+        rule.type === 'oneOrMore' ||
+        rule.type === 'separatedBy' ||
+        (rule.type === 'regex' && rule.label) ||
+        (rule.type === 'strictLiteral' && rule.label)
+      );
+
+      if (!isParam) continue;
+
+      // Resolve parameter name
+      let baseName = "";
+      if (rule.label) {
+        baseName = rule.label;
+      } else if (rule.type === 'separatedBy' && rule.value && rule.value.item instanceof SyntaxElement) {
+        baseName = rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name);
+      } else if (rule.value instanceof SyntaxElement) {
+        baseName = rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name);
+      } else {
+        baseName = `param_${rule.id}`;
+      }
+
+      // camelCase and sanitize
+      let paramName = baseName.charAt(0).toLowerCase() + baseName.slice(1);
+      if (csharpKeywords.has(paramName)) {
+        paramName = "@" + paramName;
+      }
+
+      // Handle name collisions inside signature
+      const rawParamName = paramName.startsWith("@") ? paramName.slice(1) : paramName;
+      let checkName = rawParamName;
+      let counter = 1;
+      while (usedNames.has(checkName)) {
+        checkName = rawParamName + counter;
+        counter++;
+      }
+      usedNames.add(checkName);
+      paramName = paramName.startsWith("@") ? "@" + checkName : checkName;
+
+      // Resolve C# Type
+      let csharpType = "AstNode";
+      let isList = false;
+
+      if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'separatedBy') {
+        isList = true;
+        const leafValue = rule.type === 'separatedBy' ? (rule.value ? rule.value.item : null) : rule.value;
+        if (leafValue instanceof SyntaxElement) {
+          csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+        } else if (Array.isArray(leafValue)) {
+          const elNames = leafValue.filter((v: any) => v instanceof SyntaxElement).map((v: any) => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
+          if (elNames.length > 0) {
+            const uniqueNames = Array.from(new Set(elNames));
+            if (uniqueNames.length === 1) {
+              csharpType = uniqueNames[0];
+            }
+          }
+        }
+      } else {
+        if (rule.primitiveType) {
+          csharpType = getCSharpPrimitiveType(rule.primitiveType);
+        } else if (rule.type === 'element' || rule.type === 'optional' || rule.type === 'assert') {
+          const leafValue = rule.type === 'assert' ? rule.value : rule.value;
+          if (leafValue instanceof SyntaxElement) {
+            csharpType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+          }
+        }
+      }
+
+      // If it's a regex rule or strictLiteral with a label and no primitiveType, make it a string parameter
+      if ((rule.type === 'regex' || rule.type === 'strictLiteral') && !rule.primitiveType) {
+        csharpType = "string";
+      }
+
+      // Generate declaration with defaults
+      let decl = "";
+      if (isList) {
+        decl = `List<${csharpType}> ${paramName} = null`;
+      } else if (rule.type === 'optional' || rule.type === 'choice') {
+        decl = `${csharpType} ${paramName} = null`;
+      } else if (csharpType === "string" || csharpType === "AstNode" || csharpType.endsWith("Node")) {
+        decl = `${csharpType} ${paramName} = null`;
+      } else {
+        decl = `${csharpType} ${paramName}`;
+      }
+
+      paramsList.push({ name: paramName, type: csharpType, decl, rule });
+    }
+
+    // Now, build factory method body
+    const sigStr = paramsList.map(p => p.decl).join(", ");
+    
+    let bodyStatements: string[] = [];
+    bodyStatements.push("            var children = new List<GreenNode>();");
+
+    // We step through ALL rules in order to construct the Green children array correctly
+    for (const rule of el.rules) {
+      if (rule.ignored) continue;
+
+      if (rule.type === 'literal') {
+        const esc = escapeString(rule.value);
+        bodyStatements.push(`            children.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${rule.id}, ${rule.value.length}));`);
+      } else if (rule.type === 'caseInsensitiveLiteral') {
+        const esc = escapeString(rule.value.source);
+        bodyStatements.push(`            children.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${rule.id}, ${rule.value.source.length}));`);
+      } else if (rule.type === 'strictLiteral') {
+        const esc = escapeString(rule.value.literal);
+        bodyStatements.push(`            children.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${rule.id}, ${rule.value.literal.length}));`);
+      } else if (rule.type === 'whitespace') {
+        let defaultValue = " ";
+        if (rule.value && typeof rule.value === 'string') {
+          if (rule.value.includes("\n") || rule.value.includes("\r")) {
+            defaultValue = "\\n";
+          }
+        } else if (rule.value && rule.value instanceof RegExp) {
+          if (rule.value.source.includes("\\n") || rule.value.source.includes("\\r")) {
+            defaultValue = "\\n";
+          }
+        }
+        bodyStatements.push(`            children.Add(GreenNode.Create(NodeType.Token, "${defaultValue}", ${rule.id}, 1));`);
+      } else {
+        // This rule is a parameter. Look up parameter from paramsList
+        const param = paramsList.find(p => p.rule === rule);
+        if (param) {
+          const paramName = param.name;
+          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+            bodyStatements.push(`            if (${paramName} != null)`);
+            bodyStatements.push(`            {`);
+            bodyStatements.push(`                foreach (var item in ${paramName})`);
+            bodyStatements.push(`                {`);
+            bodyStatements.push(`                    if (item != null) children.Add(item.Green);`);
+            bodyStatements.push(`                }`);
+            bodyStatements.push(`            }`);
+          } else if (rule.type === 'separatedBy') {
+            let separatorChar = ",";
+            if (rule.value && rule.value.separator) {
+              if (rule.value.separator instanceof SyntaxElement) {
+                const literalRule = rule.value.separator.rules.find((r: any) => r.type === 'literal');
+                if (literalRule) separatorChar = literalRule.value;
+              } else if (typeof rule.value.separator === 'string') {
+                separatorChar = rule.value.separator;
+              }
+            }
+            bodyStatements.push(`            if (${paramName} != null)`);
+            bodyStatements.push(`            {`);
+            bodyStatements.push(`                for (int i = 0; i < ${paramName}.Count; i++)`);
+            bodyStatements.push(`                {`);
+            bodyStatements.push(`                    if (i > 0)`);
+            bodyStatements.push(`                    {`);
+            bodyStatements.push(`                        children.Add(GreenNode.Create(NodeType.Literal, "${escapeString(separatorChar)}", ${rule.id}, ${separatorChar.length}));`);
+            bodyStatements.push(`                    }`);
+            bodyStatements.push(`                    if (${paramName}[i] != null) children.Add(${paramName}[i].Green);`);
+            bodyStatements.push(`                }`);
+            bodyStatements.push(`            }`);
+          } else if (rule.primitiveType) {
+            bodyStatements.push(`            children.Add(AstNode.As${rule.primitiveType}(${paramName})?.Green);`);
+          } else if (rule.type === 'regex' && !rule.primitiveType) {
+            bodyStatements.push(`            children.Add(AstNode.AsText(${paramName})?.Green);`);
+          } else {
+            bodyStatements.push(`            children.Add(${paramName}?.Green);`);
+          }
+        }
+      }
+    }
+
+    bodyStatements.push("            int totalWidth = children.Sum(c => c?.Width ?? 0);");
+    bodyStatements.push(`            var parentGreen = GreenNode.Create(NodeType.${elName}, children, 0, totalWidth);`);
+    bodyStatements.push(`            return new ${elName}Node(parentGreen, null, 0);`);
+
+    factoryMethods.push(`        public static ${elName}Node ${elName}(${sigStr})
+        {
+${bodyStatements.join("\n")}
+        }`);
+  }
+
+  return `    public static class SyntaxFactory
+    {
+${factoryMethods.join("\n\n")}
+    }`;
+}
+
+/**
+ * Generates base AstVisitor and AstRewriter classes.
+ */
+function generateAstVisitorAndRewriter(visibleElements: SyntaxElement[]): string {
+  const visitorMethods: string[] = [];
+  const rewriterMethods: string[] = [];
+
+  for (const el of visibleElements) {
+    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+    visitorMethods.push(`        public virtual void Visit${elName}(${elName}Node node)
+        {
+            VisitDefault(node);
+        }`);
+    rewriterMethods.push(`        public virtual AstNode Visit${elName}(${elName}Node node)
+        {
+            return VisitDefault(node);
+        }`);
+  }
+
+  return `    public class AstVisitor
+    {
+        public virtual void Visit(AstNode node)
+        {
+            if (node == null) return;
+            node.Accept(this);
+        }
+
+        public virtual void VisitDefault(AstNode node)
+        {
+            foreach (var child in node.Children)
+            {
+                Visit(child);
+            }
+        }
+
+${visitorMethods.join("\n\n")}
+    }
+
+    public class AstRewriter
+    {
+        public virtual AstNode Visit(AstNode node)
+        {
+            if (node == null) return null;
+            return node.Accept(this);
+        }
+
+        public virtual AstNode VisitDefault(AstNode node)
+        {
+            bool anyChanged = false;
+            var newChildren = new List<GreenNode>();
+            
+            var greenList = node.Green.Value as List<GreenNode>;
+            if (greenList != null)
+            {
+                int redIndex = 0;
+                foreach (var gChild in greenList)
+                {
+                    if (gChild == null)
+                    {
+                        newChildren.Add(null);
+                    }
+                    else
+                    {
+                        var redChild = node.Children[redIndex];
+                        var rewrittenChild = Visit(redChild);
+                        if (rewrittenChild != redChild)
+                        {
+                            anyChanged = true;
+                        }
+                        newChildren.Add(rewrittenChild?.Green);
+                        redIndex++;
+                    }
+                }
+            }
+
+            if (anyChanged)
+            {
+                int totalWidth = newChildren.Sum(c => c?.Width ?? 0);
+                var newGreen = GreenNode.Create(node.Type, newChildren, node.RuleId, totalWidth);
+                return AstNode.CreateRedNode(newGreen, null, 0);
+            }
+            return node;
+        }
+
+${rewriterMethods.join("\n\n")}
+    }`;
+}
+
 /**
  * Generates the strongly-typed AST node class structures.
  */
@@ -268,19 +637,21 @@ export function generateStronglyTypedAstClasses(rootElement: SyntaxElement, name
     }
   }
 
+  const visibleElements = elements.filter(el => !el.isHiddenElement && !el.isIgnoredElement);
+
   return `using System;
 using System.Collections.Generic;
 using System.Linq;
 
 namespace ${namespaceName}
 {
-${enumsCode}${elements.map(el => {
+${enumsCode}${visibleElements.map(el => {
     const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
     
     let propertiesStr = "";
     
     // Explicit field binding workflow (Method 2)
-    const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number }> = new Map();
+    const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number, primitiveType?: string }> = new Map();
     
     let hasExplicitBindings = false;
     for (const rule of el.rules) {
@@ -317,29 +688,12 @@ ${enumsCode}${elements.map(el => {
           csharpType = "AstNode"; // General fallback
         }
         
-        propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id });
+        propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id, primitiveType: rule.primitiveType });
       }
     }
     
     if (hasExplicitBindings) {
-      propertiesStr = Array.from(propertyGroups.entries()).map(([label, mapping]) => {
-         const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
-         if (mapping.isList) {
-             return `        public List<${mapping.type}> ${label} => Children.OfType<${mapping.type}>().ToList();
-        public ${elName}Node With${capLabel}(List<${mapping.type}> newChildren)
-        {
-            return this;
-        }`;
-         } else {
-             return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
-        public ${elName}Node With${capLabel}(${mapping.type} newNode)
-        {
-            var oldChild = this.${label}?.Green;
-            var newGreen = Green.ReplaceChild(oldChild, newNode?.Green);
-            return new ${elName}Node(newGreen, Parent, Offset);
-        }`;
-         }
-      }).join("\n\n");
+      propertiesStr = generatePropertiesStrForGroups(propertyGroups, elName);
     } else {
       // Fallback: the old behavior for elements without explicit bindings
       const childrenNodeTypes = new Set<string>();
@@ -347,11 +701,15 @@ ${enumsCode}${elements.map(el => {
         if (rule.ignored) continue;
         
         if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
-          childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          if (!rule.value.isHiddenElement && !rule.value.isIgnoredElement) {
+            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          }
         } else if (rule.type === 'choice') {
           for (const child of rule.value) {
             if (child instanceof SyntaxElement) {
-              childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
+              if (!child.isHiddenElement && !child.isIgnoredElement) {
+                childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
+              }
             }
           }
         } else if (
@@ -362,20 +720,28 @@ ${enumsCode}${elements.map(el => {
           rule.type === 'oneOrMore'
         ) {
           if (rule.value instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+            if (!rule.value.isHiddenElement && !rule.value.isIgnoredElement) {
+              childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+            }
           } else if (Array.isArray(rule.value)) {
             for (const sub of rule.value) {
               if (sub instanceof SyntaxElement) {
-                childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
+                if (!sub.isHiddenElement && !sub.isIgnoredElement) {
+                  childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
+                }
               }
             }
           }
         } else if (rule.type === 'separatedBy' && rule.value) {
           if (rule.value.item instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
+            if (!rule.value.item.isHiddenElement && !rule.value.item.isIgnoredElement) {
+              childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
+            }
           }
           if (rule.value.separator instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
+            if (!rule.value.separator.isHiddenElement && !rule.value.separator.isIgnoredElement) {
+              childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
+            }
           }
         }
       }
@@ -394,8 +760,14 @@ ${enumsCode}${elements.map(el => {
         {
         }
 ${propertiesStr}${enumHelper}
+        public override void Accept(AstVisitor visitor) => visitor.Visit${elName}(this);
+        public override AstNode Accept(AstRewriter rewriter) => rewriter.Visit${elName}(this);
     }`;
   }).join("\n\n")}
+
+${generateSyntaxFactory(visibleElements)}
+
+${generateAstVisitorAndRewriter(visibleElements)}
 }
 `;
 }
@@ -475,7 +847,7 @@ export function generateModularCSharp(
       
       let propertiesStr = "";
       
-      const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number }> = new Map();
+      const propertyGroups: Map<string, { type: string, isList: boolean, ruleId: number, primitiveType?: string }> = new Map();
       
       let hasExplicitBindings = false;
       for (const rule of el.rules) {
@@ -511,30 +883,12 @@ export function generateModularCSharp(
             csharpType = "AstNode";
           }
           
-          propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id });
+          propertyGroups.set(rule.label, { type: csharpType, isList, ruleId: rule.id, primitiveType: rule.primitiveType });
         }
       }
       
       if (hasExplicitBindings) {
-        propertiesStr = Array.from(propertyGroups.entries()).map(([label, mapping]) => {
-           // Capitalize first letter for Method names
-           const capLabel = label.charAt(0).toUpperCase() + label.slice(1);
-           if (mapping.isList) {
-               return `        public List<${mapping.type}> ${label} => Children.OfType<${mapping.type}>().ToList();
-        public ${elName}Node With${capLabel}(List<${mapping.type}> newChildren)
-        {
-            // Simple list replacement (Warning: basic implementation for immutable mutation)
-            return this; // Placeholder for list replacements
-        }`;
-           } else {
-               return `        public ${mapping.type} ${label} => Children.OfType<${mapping.type}>().FirstOrDefault();
-        public ${elName}Node With${capLabel}(${mapping.type} newNode)
-        {
-            var oldChild = this.${label}?.Green;
-            return new ${elName}Node(Green.ReplaceChild(oldChild, newNode?.Green), Parent, Offset);
-        }`;
-           }
-        }).join("\n\n");
+        propertiesStr = generatePropertiesStrForGroups(propertyGroups, elName);
       } else {
         const childrenNodeTypes = new Set<string>();
         for (const rule of el.rules) {
@@ -593,6 +947,8 @@ namespace ${ns}
         {
         }
 ${propertiesStr}${enumHelper}
+        public override void Accept(AstVisitor visitor) => visitor.Visit${elName}(this);
+        public override AstNode Accept(AstRewriter rewriter) => rewriter.Visit${elName}(this);
     }
 }
 `;
@@ -600,6 +956,21 @@ ${propertiesStr}${enumHelper}
         name: `${elName}Node.cs`,
         content: nodeCode
       });
+    });
+
+    const visibleElements = elements.filter(el => !el.isHiddenElement && !el.isIgnoredElement);
+    const visitorAndRewriterCode = `using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace ${ns}
+{
+${generateAstVisitorAndRewriter(visibleElements).trim()}
+}
+`;
+    files.push({
+      name: "AstVisitor.cs",
+      content: visitorAndRewriterCode
     });
   } else {
     files.push({
@@ -2357,6 +2728,10 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         if (!isSimpleCaseInsensitiveRegex(rule.value)) {
           registerPattern(rule.value, ruleId, 'Rule');
         }
+      } else if (rule.type === 'strictLiteral') {
+        if (!isSimpleCaseInsensitiveRegex(rule.value.pattern)) {
+          registerPattern(rule.value.pattern, ruleId, 'Rule');
+        }
       } else if ((rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && Array.isArray(rule.value)) {
         const patterns = rule.value as any[];
         for (const p of patterns) {
@@ -2416,9 +2791,10 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
     return name || `MatchDFA_${type}_${fallbackRuleId}`;
   }
   // Core & custom nodes elements list mapping to C# NodeType enum
-  const customNodeTypes = Array.from(new Set(elements.map(el => el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name))));
+  const visibleParserElements = elements.filter(el => !el.isHiddenElement && !el.isIgnoredElement);
+  const customNodeTypes = Array.from(new Set(visibleParserElements.map(el => el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name))));
   // Generate switch cases for RedNode mapping
-  const factoryCases = elements.map(el => {
+  const factoryCases = visibleParserElements.map(el => {
     const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
     return `                case NodeType.${elName}: return new ${elName}Node(green, parent, offset);`;
   }).join("\n");
@@ -2482,6 +2858,30 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 {
                     if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected literal \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
                         return failRes; // Handled recovery boundary hit
+                }
+            }`;
+      }
+      if (rule.type === 'strictLiteral') {
+        const dfaMethodName = getOrCreateDfaMethod(rule.value.pattern, 'Rule', ruleId);
+        const targetLiteral = escapeString(rule.value.literal);
+        return `
+            // StrictLiteral Rule: "${targetLiteral}" /${rule.value.pattern.source}/ (id: ${ruleId})
+            if (!panicked)
+            {
+                int startOffset_${ruleId} = currentOffset;
+                string mval_${ruleId};
+                if (${dfaMethodName}(text, currentOffset, out mval_${ruleId}) && mval_${ruleId} == "${targetLiteral}")
+                {
+                    results.Add(GreenNode.Create(NodeType.Literal, mval_${ruleId}, ${ruleId}, mval_${ruleId}.Length));
+                    currentOffset += mval_${ruleId}.Length;
+                    hasCommitted = true;
+                    ${structUpdate}
+                    localMaxOffset = Math.Max(localMaxOffset, currentOffset);
+                }
+                else
+                {
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected strict literal \\"${targetLiteral}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes;
                 }
             }`;
       }
@@ -2559,6 +2959,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
       if (rule.type === 'element') {
         const subName = sanitize(rule.value.name);
         childElements.add(subName);
+        const isInline = rule.value instanceof SyntaxElement && rule.value.isHiddenElement;
         return `
             // Element Rule: ${rule.value.name} (id: ${ruleId})
             if (!panicked)
@@ -2570,7 +2971,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 {
                     if (res.Ast != null && (res.Ast.Width > 0 || res.Ast.Type == NodeType.Eof))
                     {
-                        results.Add(res.Ast);
+                        AddNode(results, res.Ast, ${isInline ? "true" : "false"});
                     }
                     currentOffset = res.NewOffset;
                     hasCommitted = true;
@@ -2594,6 +2995,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
             specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
           }
           const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+          const isAltInline = p instanceof SyntaxElement && p.isHiddenElement;
           choiceChecks.push(`
                 // Speculative alternative check ${sId}
                 if (!choiceMatched_${ruleId})
@@ -2607,7 +3009,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                         {
                             if (${spec.parsedAstName} != null && (${spec.parsedAstName}.Width > 0 || ${spec.parsedAstName}.Type == NodeType.Eof))
                             {
-                                results.Add(${spec.parsedAstName});
+                                AddNode(results, ${spec.parsedAstName}, ${isAltInline ? "true" : "false"});
                             }
                             currentOffset = ${spec.newOffsetName};
                             hasCommitted = true;
@@ -2627,6 +3029,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                     }
                 }`);
         });
+        const isInline = false;
         return `
             // Choice Rule (id: ${ruleId})
             if (!panicked)
@@ -2637,12 +3040,13 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 GreenNode backupAst_${ruleId} = null;
                 int backupOffset_${ruleId} = -1;
                 List<ParseError> backupErrors_${ruleId} = null;
+                ctx.ActiveScopeEnds = ctx.ActiveScopeEnds; // touch access
 ${choiceChecks.join("\n")}
                 if (!choiceMatched_${ruleId} && backupAst_${ruleId} != null)
                 {
                     if (backupAst_${ruleId}.Width > 0 || backupAst_${ruleId}.Type == NodeType.Eof)
                     {
-                        results.Add(backupAst_${ruleId});
+                        AddNode(results, backupAst_${ruleId}, ${isInline ? "true" : "false"});
                     }
                     currentOffset = backupOffset_${ruleId};
                     hasCommitted = true;
@@ -4069,6 +4473,19 @@ namespace ${namespaceName}
             }
             return this;
         }
+        public GreenNode ReplaceChildAt(int index, GreenNode newChild)
+        {
+            if (Value is List<GreenNode> list)
+            {
+                if (index < 0 || index >= list.Count) return this;
+                var newList = new List<GreenNode>(list);
+                var oldChild = newList[index];
+                newList[index] = newChild;
+                int wDiff = (newChild?.Width ?? 0) - (oldChild?.Width ?? 0);
+                return GreenNode.Create(Type, newList, RuleId, Width + wDiff);
+            }
+            return this;
+        }
 
         private static void PruneCache()
         {
@@ -4102,6 +4519,179 @@ namespace ${namespaceName}
         {
             var green = GreenNode.Create(type, text, 0, text.Length);
             return new AstNode(green, null, 0);
+        }
+
+        private void EnsureTerminal()
+        {
+            if (Green.Value is not string)
+            {
+                throw new InvalidOperationException("This operation is only valid on a terminal token.");
+            }
+        }
+
+        public string AsText()
+        {
+            EnsureTerminal();
+            return Value;
+        }
+
+        public string AsLiteral()
+        {
+            EnsureTerminal();
+            return Value;
+        }
+
+        public int AsInteger()
+        {
+            EnsureTerminal();
+            return int.Parse(Value);
+        }
+
+        public float AsFloat()
+        {
+            EnsureTerminal();
+            return float.Parse(Value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        public byte AsByte()
+        {
+            EnsureTerminal();
+            return byte.Parse(Value);
+        }
+
+        public sbyte AsSByte()
+        {
+            EnsureTerminal();
+            return sbyte.Parse(Value);
+        }
+
+        public short AsInt16()
+        {
+            EnsureTerminal();
+            return short.Parse(Value);
+        }
+
+        public ushort AsUInt16()
+        {
+            EnsureTerminal();
+            return ushort.Parse(Value);
+        }
+
+        public int AsInt32()
+        {
+            EnsureTerminal();
+            return int.Parse(Value);
+        }
+
+        public uint AsUInt32()
+        {
+            EnsureTerminal();
+            return uint.Parse(Value);
+        }
+
+        public long AsInt64()
+        {
+            EnsureTerminal();
+            return long.Parse(Value);
+        }
+
+        public ulong AsUInt64()
+        {
+            EnsureTerminal();
+            return ulong.Parse(Value);
+        }
+
+        public float AsSingle()
+        {
+            EnsureTerminal();
+            return float.Parse(Value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        public double AsDouble()
+        {
+            EnsureTerminal();
+            return double.Parse(Value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        public bool AsBoolean()
+        {
+            EnsureTerminal();
+            return bool.Parse(Value);
+        }
+
+        public static AstNode AsLiteral(string text)
+        {
+            return CreateTerminal(text, NodeType.Literal);
+        }
+
+        public static AstNode AsText(string text)
+        {
+            return CreateTerminal(text, NodeType.Token);
+        }
+
+        public static AstNode AsInteger(long value)
+        {
+            return CreateTerminal(value.ToString(), NodeType.Token);
+        }
+
+        public static AstNode AsFloat(double value)
+        {
+            return CreateTerminal(value.ToString(System.Globalization.CultureInfo.InvariantCulture), NodeType.Token);
+        }
+
+        public static AstNode AsByte(byte value)
+        {
+            return CreateTerminal(value.ToString(), NodeType.Token);
+        }
+
+        public static AstNode AsSByte(sbyte value)
+        {
+            return CreateTerminal(value.ToString(), NodeType.Token);
+        }
+
+        public static AstNode AsInt16(short value)
+        {
+            return CreateTerminal(value.ToString(), NodeType.Token);
+        }
+
+        public static AstNode AsUInt16(ushort value)
+        {
+            return CreateTerminal(value.ToString(), NodeType.Token);
+        }
+
+        public static AstNode AsInt32(int value)
+        {
+            return CreateTerminal(value.ToString(), NodeType.Token);
+        }
+
+        public static AstNode AsUInt32(uint value)
+        {
+            return CreateTerminal(value.ToString(), NodeType.Token);
+        }
+
+        public static AstNode AsInt64(long value)
+        {
+            return CreateTerminal(value.ToString(), NodeType.Token);
+        }
+
+        public static AstNode AsUInt64(ulong value)
+        {
+            return CreateTerminal(value.ToString(), NodeType.Token);
+        }
+
+        public static AstNode AsSingle(float value)
+        {
+            return CreateTerminal(value.ToString(System.Globalization.CultureInfo.InvariantCulture), NodeType.Token);
+        }
+
+        public static AstNode AsDouble(double value)
+        {
+            return CreateTerminal(value.ToString(System.Globalization.CultureInfo.InvariantCulture), NodeType.Token);
+        }
+
+        public static AstNode AsBoolean(bool value)
+        {
+            return CreateTerminal(value ? "true" : "false", NodeType.Token);
         }
         public NodeType Type => Green.Type;
         public int RuleId => Green.RuleId;
@@ -4163,13 +4753,98 @@ ${factoryCases}
                 default: return new AstNode(green, parent, offset);
             }
         }
-        public T FindChild<T>() where T : AstNode
+         public T FindChild<T>() where T : AstNode
         {
             return Children.OfType<T>().FirstOrDefault();
         }
         public List<T> FindChildren<T>() where T : AstNode
         {
             return Children.OfType<T>().ToList();
+        }
+        public virtual void Accept(AstVisitor visitor)
+        {
+            visitor.VisitDefault(this);
+        }
+        public virtual AstNode Accept(AstRewriter rewriter)
+        {
+            return rewriter.VisitDefault(this);
+        }
+        public AstNode ReplaceNode(AstNode oldNode, AstNode newNode)
+        {
+            if (oldNode == null) throw new ArgumentNullException(nameof(oldNode));
+            if (this == oldNode) return newNode;
+            var path = new List<AstNode>();
+            var curr = oldNode;
+            while (curr != null && curr != this)
+            {
+                path.Add(curr);
+                curr = curr.Parent;
+            }
+            if (curr != this)
+            {
+                return this;
+            }
+            GreenNode currentNewGreen = newNode?.Green;
+            for (int i = 0; i < path.Count; i++)
+            {
+                var childNode = path[i];
+                var ancestor = childNode.Parent;
+                if (ancestor == null) break;
+                var greenList = ancestor.Green.Value as List<GreenNode>;
+                if (greenList != null)
+                {
+                    int redIndex = ancestor.Children.IndexOf(childNode);
+                    int greenIndex = -1;
+                    int nonNullCount = 0;
+                    for (int g = 0; g < greenList.Count; g++)
+                    {
+                        if (greenList[g] != null)
+                        {
+                            if (nonNullCount == redIndex)
+                            {
+                                greenIndex = g;
+                                break;
+                            }
+                            nonNullCount++;
+                        }
+                    }
+                    if (greenIndex != -1)
+                    {
+                        currentNewGreen = ancestor.Green.ReplaceChildAt(greenIndex, currentNewGreen);
+                    }
+                    else
+                    {
+                        currentNewGreen = ancestor.Green.ReplaceChild(childNode.Green, currentNewGreen);
+                    }
+                }
+                else
+                {
+                    currentNewGreen = ancestor.Green;
+                }
+            }
+            return CreateRedNode(currentNewGreen, null, 0);
+        }
+        public IEnumerable<AstNode> DescendantNodes()
+        {
+            foreach (var child in Children)
+            {
+                if (child != null)
+                {
+                    yield return child;
+                    foreach (var desc in child.DescendantNodes())
+                    {
+                        yield return desc;
+                    }
+                }
+            }
+        }
+        public IEnumerable<AstNode> DescendantNodesAndSelf()
+        {
+            yield return this;
+            foreach (var desc in DescendantNodes())
+            {
+                yield return desc;
+            }
         }
     }
     #region Rule Flattened Parser Engine
@@ -4273,6 +4948,21 @@ ${parserMethods}
                 RuleId = ruleId
             };
             return false;
+        }
+
+        private static readonly HashSet<int> _inlinedRuleIds = new HashSet<int> { ${elements.filter(el => el.isHiddenElement).map(el => el.id).join(", ")} };
+
+        private void AddNode(List<GreenNode> results, GreenNode node, bool isInline)
+        {
+            if (node == null) return;
+            if ((isInline || _inlinedRuleIds.Contains(node.RuleId)) && node.Value is List<GreenNode> list)
+            {
+                results.AddRange(list);
+            }
+            else
+            {
+                results.Add(node);
+            }
         }
     }
     #endregion

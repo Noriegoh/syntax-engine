@@ -21,7 +21,8 @@ export type RuleType =
   | 'oneOrMore' 
   | 'eof' 
   | 'beginScope' 
-  | 'endScope';
+  | 'endScope'
+  | 'strictLiteral';
 
 export interface Rule {
   id: number;
@@ -32,6 +33,7 @@ export interface Rule {
   tokenName?: string;
   hasTokenWarning?: boolean; // Set when Token wraps choice elements inside ExpectsOneOf
   isToken?: boolean; // Set when using ExpectsOneOfToken, ZeroOrMoreToken, OneOrMoreToken
+  primitiveType?: string;
 }
 
 export interface ParseError {
@@ -182,6 +184,172 @@ export class RedNode {
     this._isResolved = true;
     return this._value;
   }
+
+  public get text(): string {
+    const val = this.green.value;
+    if (typeof val === "string") return val;
+    if (Array.isArray(val)) {
+      return this.value.map((c: RedNode) => c ? c.text : "").join("");
+    }
+    return "";
+  }
+
+  private ensureTerminal(): void {
+    if (typeof this.green.value !== "string") {
+      throw new Error("This operation is only valid on a terminal token.");
+    }
+  }
+
+  public asText(): string {
+    this.ensureTerminal();
+    return this.text;
+  }
+
+  public asLiteral(): string {
+    this.ensureTerminal();
+    return this.text;
+  }
+
+  public asInteger(): number {
+    this.ensureTerminal();
+    return parseInt(this.text, 10);
+  }
+
+  public asFloat(): number {
+    this.ensureTerminal();
+    return parseFloat(this.text);
+  }
+
+  public asByte(): number {
+    this.ensureTerminal();
+    return parseInt(this.text, 10);
+  }
+
+  public asSByte(): number {
+    this.ensureTerminal();
+    return parseInt(this.text, 10);
+  }
+
+  public asInt16(): number {
+    this.ensureTerminal();
+    return parseInt(this.text, 10);
+  }
+
+  public asUInt16(): number {
+    this.ensureTerminal();
+    return parseInt(this.text, 10);
+  }
+
+  public asInt32(): number {
+    this.ensureTerminal();
+    return parseInt(this.text, 10);
+  }
+
+  public asUInt32(): number {
+    this.ensureTerminal();
+    return parseInt(this.text, 10);
+  }
+
+  public asInt64(): number {
+    this.ensureTerminal();
+    return parseInt(this.text, 10);
+  }
+
+  public asUInt64(): number {
+    this.ensureTerminal();
+    return parseInt(this.text, 10);
+  }
+
+  public asSingle(): number {
+    this.ensureTerminal();
+    return parseFloat(this.text);
+  }
+
+  public asDouble(): number {
+    this.ensureTerminal();
+    return parseFloat(this.text);
+  }
+
+  public asBoolean(): boolean {
+    this.ensureTerminal();
+    return this.text === "true";
+  }
+
+  public static asLiteral(text: string): RedNode {
+    const green = GreenNode.create("Literal", text, 0, text.length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asText(text: string): RedNode {
+    const green = GreenNode.create("Token", text, 0, text.length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asInteger(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asFloat(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asByte(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asSByte(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asInt16(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asUInt16(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asInt32(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asUInt32(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asInt64(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asUInt64(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asSingle(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asDouble(value: number): RedNode {
+    const green = GreenNode.create("Token", String(value), 0, String(value).length);
+    return new RedNode(green, null, 0);
+  }
+
+  public static asBoolean(value: boolean): RedNode {
+    const str = value ? "true" : "false";
+    const green = GreenNode.create("Token", str, 0, str.length);
+    return new RedNode(green, null, 0);
+  }
 }
 
 // AST Transformer cache helpers
@@ -289,7 +457,97 @@ export class SyntaxElement {
     return this;
   }
 
-  Ignore(): this {
+  AsInteger(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Integer');
+    return this;
+  }
+
+  AsFloat(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Float');
+    return this;
+  }
+
+  AsLiteral(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Literal');
+    return this;
+  }
+
+  AsText(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Text');
+    return this;
+  }
+
+  AsByte(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Byte');
+    return this;
+  }
+
+  AsSByte(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('SByte');
+    return this;
+  }
+
+  AsInt16(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Int16');
+    return this;
+  }
+
+  AsUInt16(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('UInt16');
+    return this;
+  }
+
+  AsInt32(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Int32');
+    return this;
+  }
+
+  AsUInt32(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('UInt32');
+    return this;
+  }
+
+  AsInt64(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Int64');
+    return this;
+  }
+
+  AsUInt64(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('UInt64');
+    return this;
+  }
+
+  AsSingle(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Single');
+    return this;
+  }
+
+  AsDouble(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Double');
+    return this;
+  }
+
+  AsBoolean(fieldName: string): this {
+    this.As(fieldName);
+    this.setLastRulePrimitiveType('Boolean');
+    return this;
+  }
+
+  private setLastRulePrimitiveType(type: string): void {
     if (this.rules.length > 0) {
       let targetRule = this.rules[this.rules.length - 1];
       for (let i = this.rules.length - 1; i >= 0; i--) {
@@ -299,12 +557,11 @@ export class SyntaxElement {
           break;
         }
       }
-      targetRule.ignored = true;
+      targetRule.primitiveType = type;
     }
-    return this;
   }
 
-  Inline(): this {
+  Ignore(): this {
     this.isHiddenElement = true;
     return this;
   }
@@ -412,6 +669,21 @@ export class SyntaxElement {
         this.rules.push({ id, type: 'literal', value: pattern });
       }
     }
+    return this;
+  }
+
+  StrictLiteral(literal?: string, pattern?: RegExp | string): this {
+    const id = nextRuleId();
+    const litVal = literal !== undefined && literal !== null ? String(literal) : "";
+    let regex: RegExp;
+    if (pattern === undefined || pattern === null) {
+      // Default pattern is the literal escaped
+      const esc = litVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      regex = new RegExp(esc);
+    } else {
+      regex = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
+    }
+    this.rules.push({ id, type: 'strictLiteral', value: { literal: litVal, pattern: regex } });
     return this;
   }
 
@@ -845,6 +1117,7 @@ export class SyntaxElement {
     return {
       id: this.id,
       name: this.name,
+      isInlineElement: this.isHiddenElement,
       rules: this.rules.map(r => {
         let val = r.value;
         if ((r.type === 'choice' || r.type === 'zeroOrMore' || r.type === 'oneOrMore') && Array.isArray(r.value)) {
@@ -1016,6 +1289,9 @@ export class SyntaxElement {
     }
     if (rule.type === 'regex' || rule.type === 'caseInsensitiveLiteral') {
       return [rule.value];
+    }
+    if (rule.type === 'strictLiteral') {
+      return [rule.value.pattern];
     }
     if (rule.type === 'choice' && Array.isArray(rule.value)) {
       const pats: any[] = [];
@@ -1391,6 +1667,10 @@ export class SyntaxElement {
           res = this.evaluatePatternRule(rule, text, currentOffset, memo, ctx, results);
           break;
 
+        case 'strictLiteral':
+          res = this.evaluateStrictLiteralRule(rule, text, currentOffset, memo, ctx, results);
+          break;
+
         case 'whitespace':
           res = this.evaluateWhitespaceRule(rule, text, currentOffset, results);
           break;
@@ -1480,6 +1760,27 @@ export class SyntaxElement {
   // ==========================================
   // SECTION 5: MODULAR PRIVATE RULE EVALUATORS
   // ==========================================
+
+  private evaluateStrictLiteralRule(
+    rule: Rule,
+    text: string,
+    currentOffset: number,
+    memo: Map<string, ParseResult>,
+    ctx: any,
+    results: any[]
+  ) {
+    const literal = rule.value?.literal !== undefined && rule.value?.literal !== null ? String(rule.value.literal) : "";
+    const pattern = rule.value?.pattern || new RegExp(literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const match = matchRegex(pattern, text, currentOffset);
+    if (match && match[0] === literal) {
+      const node = GreenNode.create('literal', literal, rule.id, literal.length);
+      results.push(node);
+      return { success: true, newOffset: currentOffset + literal.length, dependencyLimit: currentOffset + literal.length };
+    } else {
+      const errorMsg = `Expected strict literal: "${literal}"`;
+      return { success: false, newOffset: currentOffset, dependencyLimit: currentOffset + 1, error: errorMsg };
+    }
+  }
 
   private evaluatePatternRule(
     rule: Rule,

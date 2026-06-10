@@ -1,3 +1,5 @@
+// PAUSED - I have decided to perfect codegen-cs first.
+
 import { SyntaxElement } from './syntax-element';
 import { ScopeBuilder } from './scope';
 import { 
@@ -62,6 +64,17 @@ function compileSpeculativeMatchTypeScript(
                         localMaxOffset = Math.max(localMaxOffset, maxDep_${varId});
                         const ${precVar} = 0;`;
     }
+  } else if (pattern && typeof pattern === 'object' && 'literal' in pattern && 'pattern' in pattern) {
+    const fnName = dfaMethodName || `matchDFA_Spec_${ruleId}`;
+    const targetLiteral = escapeString(pattern.literal);
+    code = `
+                        const resDFA_${varId} = this.${fnName}(text, currentOffset);
+                        const ${mVar} = resDFA_${varId}.success && resDFA_${varId}.matchedValue === "${targetLiteral}";
+                        const ${astVar} = ${mVar} ? new GreenNode(NodeType.Literal, resDFA_${varId}.matchedValue, ${ruleId}, resDFA_${varId}.matchedValue.length) : null;
+                        const ${offsetVar} = ${mVar} ? currentOffset + resDFA_${varId}.matchedValue.length : currentOffset;
+                        const maxDep_${varId} = ${mVar} ? currentOffset + resDFA_${varId}.matchedValue.length : currentOffset + 1;
+                        localMaxOffset = Math.max(localMaxOffset, maxDep_${varId});
+                        const ${precVar} = 0;`;
   } else if (typeof pattern === 'string') {
     const esc = escapeString(pattern);
     code = `
@@ -256,7 +269,9 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
     }
   }
 
-  const nodesCode = elements.map(el => {
+  const visibleElements = elements.filter(el => !el.isHiddenElement && !el.isIgnoredElement);
+
+  const nodesCode = visibleElements.map(el => {
     const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
     
     let propertiesStr = "";
@@ -315,11 +330,15 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
         if (rule.ignored) continue;
         
         if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
-          childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          if (!rule.value.isHiddenElement && !rule.value.isIgnoredElement) {
+            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          }
         } else if (rule.type === 'choice') {
           for (const child of rule.value) {
             if (child instanceof SyntaxElement) {
-              childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
+              if (!child.isHiddenElement && !child.isIgnoredElement) {
+                childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
+              }
             }
           }
         } else if (
@@ -330,20 +349,28 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
           rule.type === 'oneOrMore'
         ) {
           if (rule.value instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+            if (!rule.value.isHiddenElement && !rule.value.isIgnoredElement) {
+              childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+            }
           } else if (Array.isArray(rule.value)) {
             for (const sub of rule.value) {
               if (sub instanceof SyntaxElement) {
-                childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
+                if (!sub.isHiddenElement && !sub.isIgnoredElement) {
+                  childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
+                }
               }
             }
           }
         } else if (rule.type === 'separatedBy' && rule.value) {
           if (rule.value.item instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
+            if (!rule.value.item.isHiddenElement && !rule.value.item.isIgnoredElement) {
+              childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
+            }
           }
           if (rule.value.separator instanceof SyntaxElement) {
-            childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
+            if (!rule.value.separator.isHiddenElement && !rule.value.separator.isIgnoredElement) {
+              childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
+            }
           }
         }
       }
@@ -385,6 +412,10 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
       if (rule.type === 'regex') {
         if (!isSimpleCaseInsensitiveRegex(rule.value)) {
           registerPattern(rule.value, ruleId, 'Rule');
+        }
+      } else if (rule.type === 'strictLiteral') {
+        if (!isSimpleCaseInsensitiveRegex(rule.value.pattern)) {
+          registerPattern(rule.value.pattern, ruleId, 'Rule');
         }
       } else if ((rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && Array.isArray(rule.value)) {
         const patterns = rule.value as any[];
@@ -531,6 +562,33 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     ${structUpdate}
                 } else {
                     const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive literal \\"${esc}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    if (rec.recovered) {
+                        currentOffset = rec.recoveredOffset;
+                        panicked = true;
+                    } else {
+                        return rec.failResult!;
+                    }
+                }
+            }`;
+      }
+      
+      if (rule.type === 'strictLiteral') {
+        const dfaMethodName = getOrCreateDfaMethod(rule.value.pattern, 'Rule', ruleId);
+        const targetLiteral = escapeString(rule.value.literal);
+        return `
+            // StrictLiteral Rule: "${targetLiteral}" /${rule.value.pattern.source}/ (id: ${ruleId})
+            if (!panicked) {
+                const startOffset_${ruleId} = currentOffset;
+                const dfaRes_${ruleId} = this.${dfaMethodName}(text, currentOffset);
+                if (dfaRes_${ruleId}.success && dfaRes_${ruleId}.matchedValue === "${targetLiteral}") {
+                    const mval = dfaRes_${ruleId}.matchedValue;
+                    this.addNode(results, new GreenNode(NodeType.Literal, mval, ${ruleId}, mval.length), ${isInline});
+                    currentOffset += mval.length;
+                    hasCommitted = true;
+                    ${structUpdate}
+                    localMaxOffset = Math.max(localMaxOffset, currentOffset);
+                } else {
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected strict literal \\"${targetLiteral}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -1791,10 +1849,11 @@ ${ruleBlocks}
   }).join("\n\n");
   
   const combinedRegexes = Array.from(new Set([...regexFields, ...speculativeRegexes]));
-  const customNodeTypes = Array.from(new Set(elements.map(el => el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name))));
+  const visibleElements = elements.filter(el => !el.isHiddenElement && !el.isIgnoredElement);
+  const customNodeTypes = Array.from(new Set(visibleElements.map(el => el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name))));
   
   // Factory cases map NodeType to concrete subclass node
-  const factoryCases = elements.map(el => {
+  const factoryCases = visibleElements.map(el => {
     const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
     return `            case NodeType.${elName}: return new ${elName}Node(green, parent, offset);`;
   }).join("\n");
@@ -1905,6 +1964,164 @@ export class RedNode {
         }
         return this._children;
     }
+
+    private ensureTerminal(): void {
+        if (typeof this.green.value !== "string") {
+            throw new Error("This operation is only valid on a terminal token.");
+        }
+    }
+
+    public asText(): string {
+        this.ensureTerminal();
+        return this.text;
+    }
+
+    public asLiteral(): string {
+        this.ensureTerminal();
+        return this.text;
+    }
+
+    public asInteger(): number {
+        this.ensureTerminal();
+        return parseInt(this.text, 10);
+    }
+
+    public asFloat(): number {
+        this.ensureTerminal();
+        return parseFloat(this.text);
+    }
+
+    public asByte(): number {
+        this.ensureTerminal();
+        return parseInt(this.text, 10);
+    }
+
+    public asSByte(): number {
+        this.ensureTerminal();
+        return parseInt(this.text, 10);
+    }
+
+    public asInt16(): number {
+        this.ensureTerminal();
+        return parseInt(this.text, 10);
+    }
+
+    public asUInt16(): number {
+        this.ensureTerminal();
+        return parseInt(this.text, 10);
+    }
+
+    public asInt32(): number {
+        this.ensureTerminal();
+        return parseInt(this.text, 10);
+    }
+
+    public asUInt32(): number {
+        this.ensureTerminal();
+        return parseInt(this.text, 10);
+    }
+
+    public asInt64(): number {
+        this.ensureTerminal();
+        return parseInt(this.text, 10);
+    }
+
+    public asUInt64(): number {
+        this.ensureTerminal();
+        return parseInt(this.text, 10);
+    }
+
+    public asSingle(): number {
+        this.ensureTerminal();
+        return parseFloat(this.text);
+    }
+
+    public asDouble(): number {
+        this.ensureTerminal();
+        return parseFloat(this.text);
+    }
+
+    public asBoolean(): boolean {
+        this.ensureTerminal();
+        return this.text === "true";
+    }
+
+    public static asLiteral(text: string): RedNode {
+        const green = new GreenNode("Literal", text, 0, text.length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asText(text: string): RedNode {
+        const green = new GreenNode("Token", text, 0, text.length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asInteger(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asFloat(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asByte(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asSByte(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asInt16(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asUInt16(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asInt32(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asUInt32(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asInt64(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asUInt64(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asSingle(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asDouble(value: number): RedNode {
+        const green = new GreenNode("Token", String(value), 0, String(value).length);
+        return new RedNode(green, null, 0);
+    }
+
+    public static asBoolean(value: boolean): RedNode {
+        const str = value ? "true" : "false";
+        const green = new GreenNode("Token", str, 0, str.length);
+        return new RedNode(green, null, 0);
+    }
+
     public static create(green: GreenNode, parent: RedNode | null, offset: number): RedNode {
         switch (green.type) {
 ${factoryCases}

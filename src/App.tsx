@@ -277,20 +277,20 @@ const blendCommand = new SyntaxElement("blend_command")
   .ExpectsOneOf(
     Token(/Off/i),
     new SyntaxElement("blend_args")
-      .Inline()
+      .Ignore()
       .Optional(renderTargetIndex).As("rtIndex")
       .Expects(blendFactor).As("src")
       .Expects(blendFactor).As("dst")
       .Optional(
         new SyntaxElement("blend_alpha")
-          .Inline()
+          .Ignore()
           .Token(",")
           .Expects(blendFactor).As("srcAlpha")
           .Expects(blendFactor).As("dstAlpha")
       )
   );
 
-// 6.2 BlendOp
+// --- 6.2 BlendOp
 const blendOperation = new SyntaxElement("blend_operation")
   .AsNode("BlendOperation")
   .ExpectsOneOf(
@@ -339,7 +339,7 @@ const blendOpCommand = new SyntaxElement("blend_op_command")
   .Expects(blendOperation).As("op")
   .Optional(
     new SyntaxElement("blend_op_alpha")
-      .Inline()
+      .Ignore()
       .Token(",")
       .Expects(blendOperation).As("opAlpha")
   );
@@ -548,7 +548,7 @@ const fogMode = new SyntaxElement("fog_mode")
   );
 
 const fogStateRange = new SyntaxElement("fog_state_range")
-  .Inline()
+  .Ignore()
   .Token(/Range/i)
   .Expects(number).As("min")
   .Token(",")
@@ -557,9 +557,9 @@ const fogStateRange = new SyntaxElement("fog_state_range")
 const fogState = new SyntaxElement("fog_state")
   .AsNode("FogState")
   .ExpectsOneOf(
-    new SyntaxElement("fog_state_mode").Inline().Token(/Mode/i).Expects(fogMode).As("mode"),
-    new SyntaxElement("fog_state_color").Inline().Token(/Color/i).Expects(vectorLiteral).As("color"),
-    new SyntaxElement("fog_state_density").Inline().Token(/Density/i).Expects(number).As("density"),
+    new SyntaxElement("fog_state_mode").Ignore().Token(/Mode/i).Expects(fogMode).As("mode"),
+    new SyntaxElement("fog_state_color").Ignore().Token(/Color/i).Expects(vectorLiteral).As("color"),
+    new SyntaxElement("fog_state_density").Ignore().Token(/Density/i).Expects(number).As("density"),
     fogStateRange
   );
 
@@ -662,7 +662,7 @@ const passState = new SyntaxElement("pass_state")
   );
 
 const passBody = new SyntaxElement("pass_body")
-  .Inline()
+  .Ignore()
   .ZeroOrMore(passState).As("contents");
 
 const pass = new SyntaxElement("pass")
@@ -698,7 +698,7 @@ const subShaderState = new SyntaxElement("subshader_state")
   );
 
 const subShaderBody = new SyntaxElement("subshader_body")
-  .Inline()
+  .Ignore()
   .ZeroOrMore(subShaderState).As("contents");
 
 const subShader = new SyntaxElement("subshader")
@@ -724,7 +724,7 @@ const attributeContent = new SyntaxElement("attribute_content")
   .Expects(id).As("name")
   .Optional(
     new SyntaxElement("attribute_args_block")
-      .Inline()
+      .Ignore()
       .Token("(")
       .Expects(attributeArg).As("firstArg")
       .ZeroOrMore(new SyntaxElement("attribute_arg_comma").Token(",").Expects(attributeArg)).As("moreArgs")
@@ -764,7 +764,7 @@ const propertyType = new SyntaxElement("property_type")
   );
 
 const textureOptions = new SyntaxElement("texture_options")
-  .Inline()
+  .Ignore()
   .ZeroOrMore(id);
 
 const textureDefault = new SyntaxElement("texture_default")
@@ -813,7 +813,7 @@ const categoryState = new SyntaxElement("category_state")
   );
 
 const categoryBody = new SyntaxElement("category_body")
-  .Inline()
+  .Ignore()
   .ZeroOrMore(categoryState).As("contents");
 
 const categoryBlock = new SyntaxElement("category_block")
@@ -844,7 +844,7 @@ const shaderBodyElement = new SyntaxElement("shader_element")
   );
 
 const shaderBody = new SyntaxElement("shader_body")
-  .Inline()
+  .Ignore()
   .ZeroOrMore(shaderBodyElement).As("contents");
 
 const root = new SyntaxElement("_root")
@@ -977,8 +977,7 @@ const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'As', insertText: 'As(', type: 'method', description: 'Assign field property name/label to the matched result' },
   { label: 'AsNode', insertText: 'AsNode(', type: 'method', description: 'Instruct engine to construct visual AST Node representation instead of direct CST structure' },
   { label: 'AsToken', insertText: 'AsToken(', type: 'method', description: 'Assign a custom token name to the matched terminal pattern without injecting trivias' },
-  { label: 'Ignore', insertText: 'Ignore()', type: 'method', description: 'Exclude matched terminal/token value output representation' },
-  { label: 'Inline', insertText: 'Inline()', type: 'method', description: 'Instruct engine to flatten and merge current SyntaxElement rule inside parent nodes' },
+  { label: 'Ignore', insertText: 'Ignore()', type: 'method', description: 'Instruct engine to flatten and merge current SyntaxElement rule inside parent nodes' },
   { label: 'IgnoreSelf', insertText: 'IgnoreSelf()', type: 'method', description: 'Skip this entire subtree node construction while still executing parsing checks' },
   { label: 'RecoverWith', insertText: 'RecoverWith(', type: 'method', description: 'Register explicit manual recovery delimiters for automated parser healing' },
   { label: 'SelfHeals', insertText: 'SelfHeals(', type: 'method', description: 'Designate current rules blocks automated healing boundaries' },
@@ -2663,6 +2662,10 @@ export default function App() {
           label = `"${String(item.value)}"`;
           subtitle = 'LITERAL MATCH';
           break;
+        case 'strictLiteral':
+          label = `"${String(item.value?.literal ?? '')}" strictly matching /${item.value?.pattern?.source ?? ''}/`;
+          subtitle = 'STRICT LITERAL MATCH';
+          break;
         case 'caseInsensitiveLiteral':
           label = `"${String(item.value)}" (i)`;
           subtitle = 'CASE-INSENSITIVE LITERAL';
@@ -2978,6 +2981,7 @@ export default function App() {
         break;
       case 'literal':
       case 'caseInsensitiveLiteral':
+      case 'strictLiteral':
         borderStyle = "bg-sky-500/5 border-sky-500/30 hover:bg-sky-500/10";
         textAccent = "text-sky-300 font-mono";
         iconDotColor = "bg-sky-400 ring-4 ring-sky-500/20 shadow-[0_0_10px_rgba(56,189,248,0.6)]";
@@ -3161,6 +3165,7 @@ export default function App() {
                       "px-2 py-1 rounded text-[10px] font-bold uppercase tracking-tighter",
                       rule.type === 'literal' && "bg-sky-500/20 text-sky-400",
                       rule.type === 'caseInsensitiveLiteral' && "bg-sky-500/15 text-sky-300 border border-sky-500/10",
+                      rule.type === 'strictLiteral' && "bg-sky-500/20 text-sky-400 border border-sky-500/10",
                       rule.type === 'regex' && "bg-emerald-500/20 text-emerald-400",
                       rule.type === 'element' && "bg-indigo-500/20 text-indigo-400",
                       rule.type === 'whitespace' && "bg-amber-500/20 text-amber-400",
@@ -3173,7 +3178,7 @@ export default function App() {
                       rule.type === 'endScope' && "bg-purple-500/20 text-purple-400",
                       rule.type === 'eof' && "bg-zinc-500/20 text-zinc-400"
                     )}>
-                      {rule.type === 'not' ? 'Not' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'Any (Token)' : 'Any') : rule.type === 'oneOrMore' ? (rule.isToken ? 'Some (Token)' : 'Some') : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : rule.type === 'caseInsensitiveLiteral' ? 'CaseInsens' : 'Expects'}
+                      {rule.type === 'not' ? 'Not' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'Any (Token)' : 'Any') : rule.type === 'oneOrMore' ? (rule.isToken ? 'Some (Token)' : 'Some') : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : rule.type === 'caseInsensitiveLiteral' ? 'CaseInsens' : rule.type === 'strictLiteral' ? 'StrictLit' : 'Expects'}
                     </span>
                     
                     <code className={cn(
@@ -3191,6 +3196,7 @@ export default function App() {
                       rule.type === 'eof' ? 'EOF' :
                       rule.type === 'beginScope' || rule.type === 'endScope' ? `${typeof rule.value === 'string' ? `"${rule.value}"` : (rule.value as any)?.name ? (rule.value as any).name : 'Pattern'}` :
                       rule.type === 'caseInsensitiveLiteral' ? `"${rule.value}" (i)` :
+                      rule.type === 'strictLiteral' ? `"${rule.value?.literal}" /${rule.value?.pattern?.source}/` :
                       (rule.value as any)?.name ? `${(rule.value as any).name}` :
                       `"${rule.value}"`}
                     </code>
@@ -3928,7 +3934,7 @@ export default function App() {
                                               </span>
                                               <span className={cn(
                                                 "px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter leading-none shrink-0",
-                                                (rule.type === 'literal' || rule.type === 'caseInsensitiveLiteral') && "bg-sky-500/10 text-sky-400 border border-sky-500/20",
+                                                (rule.type === 'literal' || rule.type === 'caseInsensitiveLiteral' || rule.type === 'strictLiteral') && "bg-sky-500/10 text-sky-400 border border-sky-500/20",
                                                 rule.type === 'regex' && "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
                                                 rule.type === 'element' && "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20",
                                                 rule.type === 'whitespace' && "bg-amber-500/10 text-amber-400 border border-amber-500/20",
@@ -3941,7 +3947,7 @@ export default function App() {
                                                 rule.type === 'endScope' && "bg-purple-500/10 text-purple-400 border border-purple-500/20",
                                                 rule.type === 'eof' && "bg-zinc-500/10 text-zinc-400 border border-zinc-500/20"
                                               )}>
-                                                {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'ZeroOrMoreToken' : 'Any Count') : rule.type === 'oneOrMore' ? (rule.isToken ? 'OneOrMoreToken' : 'Some Count') : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : rule.type === 'caseInsensitiveLiteral' ? 'Case-Insens' : 'Expects Match'}
+                                                {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'ZeroOrMoreToken' : 'Any Count') : rule.type === 'oneOrMore' ? (rule.isToken ? 'OneOrMoreToken' : 'Some Count') : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : rule.type === 'caseInsensitiveLiteral' ? 'Case-Insens' : rule.type === 'strictLiteral' ? 'Strict-Liter' : 'Expects Match'}
                                               </span>
                                               {rule.isToken && (
                                                 <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter leading-none shrink-0 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
@@ -3982,6 +3988,10 @@ export default function App() {
                                             ) : rule.type === 'caseInsensitiveLiteral' ? (
                                               <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
                                                 "{String(rule.value)}" (case-insensitive)
+                                              </code>
+                                            ) : rule.type === 'strictLiteral' ? (
+                                              <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10 animate-fade-in">
+                                                "{String(rule.value?.literal)}" strictly matching /regex/ /{rule.value?.pattern?.source}/
                                               </code>
                                             ) : rule.type === 'element' ? (
                                               <div className="flex items-center gap-2">
@@ -4070,6 +4080,7 @@ export default function App() {
                                           <p className="text-[10px] text-slate-500 font-sans italic">
                                             {rule.type === 'literal' ? "Strict literal: matches the exact character sequence of this token keyword." :
                                              rule.type === 'caseInsensitiveLiteral' ? "Case-insensitive literal: matches the exact character sequence of this token keyword, ignoring capitalization rules." :
+                                             rule.type === 'strictLiteral' ? "Strict literal regex check: matches a pattern regex first, then fails if the matched string is not identical to the given literal." :
                                              rule.type === 'regex' ? "Regexp scan: matches standard compiler token patterns, identifiers, numbers, etc." :
                                              rule.type === 'element' ? "Sub-element: executes another rule segment to build nested CST syntax nodes." :
                                              rule.type === 'whitespace' ? "Noise filter: parses and skips spaces, comments, and formatting characters dynamically." :
