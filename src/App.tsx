@@ -52,7 +52,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, generateFullTypeScript, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, BeginScope, EndScope } from './lib/engine';
+import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, generateFullTypeScript, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, StrictLiteral } from './lib/engine';
 import { cn } from './lib/utils';
 import { runGrammarDiagnostics, Diagnostic } from './lib/diagnostics';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -221,7 +221,8 @@ DefaultLeadingTrivia(leadingTrivia);
 DefaultTrailingTrivia(trailingTrivia);
 
 // --- Section 10: Primitives ---
-const id = Token(/[a-zA-Z_][a-zA-Z0-9_]*/, "id");
+const id_exp = /[a-zA-Z_][a-zA-Z0-9_]*/;
+const id = Token(id_exp, "id");
 const number = Token(/-?(?:[0-9]*\\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+)/, "number");
 const integerLiteral = Token(/-?[0-9]+/, "integerLiteral");
 
@@ -245,9 +246,9 @@ const vectorLiteral = new SyntaxElement("vector_literal")
 // --- Property Reference ---
 const propRef = new SyntaxElement("prop_ref")
   .AsNode("PropertyReference")
-  .Token(BeginScope("["))
+  .BeginScope(Token("["))
   .Expects(id).As("name")
-  .Token(EndScope("]"));
+  .EndScope(Token("]"));
 
 // --- Section 6: Render State Commands ---
 
@@ -273,9 +274,9 @@ const renderTargetIndex = integerLiteral;
 
 const blendCommand = new SyntaxElement("blend_command")
   .AsNode("BlendCommand")
-  .Token(/Blend/i)
-  .ExpectsOneOf(
-    Token(/Off/i),
+  .StrictLiteral(/Blend/i, id_exp)
+  .ExpectsOneOfStrict(
+    StrictLiteral(/Off/i, id_exp),
     new SyntaxElement("blend_args")
       .Ignore()
       .Optional(renderTargetIndex).As("rtIndex")
@@ -334,7 +335,7 @@ const blendOperation = new SyntaxElement("blend_operation")
 
 const blendOpCommand = new SyntaxElement("blend_op_command")
   .AsNode("BlendOpCommand")
-  .Token(/BlendOp/i)
+  .StrictLiteral(/BlendOp/i, id_exp)
   .Optional(renderTargetIndex).As("rtIndex")
   .Expects(blendOperation).As("op")
   .Optional(
@@ -347,21 +348,21 @@ const blendOpCommand = new SyntaxElement("blend_op_command")
 // 6.3 ZWrite
 const onOffValue = new SyntaxElement("on_off_value")
   .AsNode("OnOffValue")
-  .ExpectsOneOf(
+  .ExpectsOneOfStrict(
     propRef,
-    Token(/On/i),
-    Token(/Off/i)
+    StrictLiteral(/On/i, id_exp),
+    StrictLiteral(/Off/i, id_exp)
   );
 
 const zWriteCommand = new SyntaxElement("zwrite_command")
   .AsNode("ZWriteCommand")
-  .Token(/ZWrite/i)
+  .StrictLiteral(/ZWrite/i, id_exp)
   .Expects(onOffValue).As("value");
 
 // 6.4 ZTest
 const compareFunction = new SyntaxElement("compare_function")
   .AsNode("CompareFunction")
-  .ExpectsOneOf(
+  .ExpectsOneOfStrict(
     propRef,
     Token(/LEqual/i),
     Token(/GEqual/i),
@@ -371,33 +372,33 @@ const compareFunction = new SyntaxElement("compare_function")
     Token(/NotEqual/i),
     Token(/Always/i),
     Token(/Never/i),
-    Token(/Off/i)
+    StrictLiteral(/Off/i, id_exp)
   );
 
 const zTestCommand = new SyntaxElement("ztest_command")
   .AsNode("ZTestCommand")
-  .Token(/ZTest/i)
+  .StrictLiteral(/ZTest/i, id_exp)
   .Expects(compareFunction).As("func");
 
 // 6.5 ZClip
 const zClipCommand = new SyntaxElement("zclip_command")
   .AsNode("ZClipCommand")
-  .Token(/ZClip/i)
+  .StrictLiteral(/ZClip/i, id_exp)
   .Expects(onOffValue).As("value");
 
 // 6.6 Cull
 const cullMode = new SyntaxElement("cull_mode")
   .AsNode("CullMode")
-  .ExpectsOneOf(
+  .ExpectsOneOfStrict(
     propRef,
     Token(/Back/i),
     Token(/Front/i),
-    Token(/Off/i)
+    StrictLiteral(/Off/i, id_exp)
   );
 
 const cullCommand = new SyntaxElement("cull_command")
   .AsNode("CullCommand")
-  .Token(/Cull/i)
+  .StrictLiteral(/Cull/i, id_exp)
   .Expects(cullMode).As("mode");
 
 // 6.7 Offset
@@ -410,7 +411,7 @@ const offsetValue = new SyntaxElement("offset_value")
 
 const offsetCommand = new SyntaxElement("offset_command")
   .AsNode("OffsetCommand")
-  .Token(/Offset/i)
+  .StrictLiteral(/Offset/i, id_exp)
   .Expects(offsetValue).As("factor")
   .Token(",")
   .Expects(offsetValue).As("units");
@@ -428,14 +429,14 @@ const colorMaskValue = new SyntaxElement("color_mask_value")
 
 const colorMaskCommand = new SyntaxElement("color_mask_command")
   .AsNode("ColorMaskCommand")
-  .Token(/ColorMask/i)
+  .StrictLiteral(/ColorMask/i, id_exp)
   .Expects(colorMaskValue).As("mask")
   .Optional(renderTargetIndex).As("rtIndex");
 
 // 6.9 AlphaToMask
 const alphaToMaskCommand = new SyntaxElement("alpha_to_mask_command")
   .AsNode("AlphaToMaskCommand")
-  .Token(/AlphaToMask/i)
+  .StrictLiteral(/AlphaToMask/i, id_exp)
   .Expects(onOffValue).As("value");
 
 // 6.10 Stencil Block
@@ -460,24 +461,24 @@ const stencilOpValue = new SyntaxElement("stencil_op_value")
     Token(/DecrWrap/i)
   );
 
-const stencilRef = new SyntaxElement("stencil_ref").AsNode("StencilRef").Token(/Ref/i).Expects(stencilValue).As("val");
-const stencilReadMask = new SyntaxElement("stencil_read_mask").AsNode("StencilReadMask").Token(/ReadMask/i).Expects(stencilValue).As("val");
-const stencilWriteMask = new SyntaxElement("stencil_write_mask").AsNode("StencilWriteMask").Token(/WriteMask/i).Expects(stencilValue).As("val");
+const stencilRef = new SyntaxElement("stencil_ref").AsNode("StencilRef").StrictLiteral(/Ref/i, id_exp).Expects(stencilValue).As("val");
+const stencilReadMask = new SyntaxElement("stencil_read_mask").AsNode("StencilReadMask").StrictLiteral(/ReadMask/i, id_exp).Expects(stencilValue).As("val");
+const stencilWriteMask = new SyntaxElement("stencil_write_mask").AsNode("StencilWriteMask").StrictLiteral(/WriteMask/i, id_exp).Expects(stencilValue).As("val");
 
-const stencilComp = new SyntaxElement("stencil_comp").AsNode("StencilComp").Token(/Comp/i).Expects(compareFunction).As("func");
-const stencilPass = new SyntaxElement("stencil_pass").AsNode("StencilPass").Token(/Pass/i).Expects(stencilOpValue).As("op");
-const stencilFail = new SyntaxElement("stencil_fail").AsNode("StencilFail").Token(/Fail/i).Expects(stencilOpValue).As("op");
-const stencilZFail = new SyntaxElement("stencil_zfail").AsNode("StencilZFail").Token(/ZFail/i).Expects(stencilOpValue).As("op");
+const stencilComp = new SyntaxElement("stencil_comp").AsNode("StencilComp").StrictLiteral(/Comp/i, id_exp).Expects(compareFunction).As("func");
+const stencilPass = new SyntaxElement("stencil_pass").AsNode("StencilPass").StrictLiteral(/Pass/i, id_exp).Expects(stencilOpValue).As("op");
+const stencilFail = new SyntaxElement("stencil_fail").AsNode("StencilFail").StrictLiteral(/Fail/i, id_exp).Expects(stencilOpValue).As("op");
+const stencilZFail = new SyntaxElement("stencil_zfail").AsNode("StencilZFail").StrictLiteral(/ZFail/i, id_exp).Expects(stencilOpValue).As("op");
 
-const stencilCompBack = new SyntaxElement("stencil_comp_back").AsNode("StencilCompBack").Token(/CompBack/i).Expects(compareFunction).As("func");
-const stencilPassBack = new SyntaxElement("stencil_pass_back").AsNode("StencilPassBack").Token(/PassBack/i).Expects(stencilOpValue).As("op");
-const stencilFailBack = new SyntaxElement("stencil_fail_back").AsNode("StencilFailBack").Token(/FailBack/i).Expects(stencilOpValue).As("op");
-const stencilZFailBack = new SyntaxElement("stencil_zfail_back").AsNode("StencilZFailBack").Token(/ZFailBack/i).Expects(stencilOpValue).As("op");
+const stencilCompBack = new SyntaxElement("stencil_comp_back").AsNode("StencilCompBack").StrictLiteral(/CompBack/i, id_exp).Expects(compareFunction).As("func");
+const stencilPassBack = new SyntaxElement("stencil_pass_back").AsNode("StencilPassBack").StrictLiteral(/PassBack/i, id_exp).Expects(stencilOpValue).As("op");
+const stencilFailBack = new SyntaxElement("stencil_fail_back").AsNode("StencilFailBack").StrictLiteral(/FailBack/i, id_exp).Expects(stencilOpValue).As("op");
+const stencilZFailBack = new SyntaxElement("stencil_zfail_back").AsNode("StencilZFailBack").StrictLiteral(/ZFailBack/i, id_exp).Expects(stencilOpValue).As("op");
 
-const stencilCompFront = new SyntaxElement("stencil_comp_front").AsNode("StencilCompFront").Token(/CompFront/i).Expects(compareFunction).As("func");
-const stencilPassFront = new SyntaxElement("stencil_pass_front").AsNode("StencilPassFront").Token(/PassFront/i).Expects(stencilOpValue).As("op");
-const stencilFailFront = new SyntaxElement("stencil_fail_front").AsNode("StencilFailFront").Token(/FailFront/i).Expects(stencilOpValue).As("op");
-const stencilZFailFront = new SyntaxElement("stencil_zfail_front").AsNode("StencilZFailFront").Token(/ZFailFront/i).Expects(stencilOpValue).As("op");
+const stencilCompFront = new SyntaxElement("stencil_comp_front").AsNode("StencilCompFront").StrictLiteral(/CompFront/i, id_exp).Expects(compareFunction).As("func");
+const stencilPassFront = new SyntaxElement("stencil_pass_front").AsNode("StencilPassFront").StrictLiteral(/PassFront/i, id_exp).Expects(stencilOpValue).As("op");
+const stencilFailFront = new SyntaxElement("stencil_fail_front").AsNode("StencilFailFront").StrictLiteral(/FailFront/i, id_exp).Expects(stencilOpValue).As("op");
+const stencilZFailFront = new SyntaxElement("stencil_zfail_front").AsNode("StencilZFailFront").StrictLiteral(/ZFailFront/i, id_exp).Expects(stencilOpValue).As("op");
 
 const stencilState = new SyntaxElement("stencil_state")
   .ExpectsOneOf(
@@ -489,15 +490,15 @@ const stencilState = new SyntaxElement("stencil_state")
 
 const stencilBlock = new SyntaxElement("stencil_block")
   .AsNode("StencilBlock")
-  .Token(/Stencil/i)
-  .Token(BeginScope("{"))
+  .StrictLiteral(/Stencil/i, id_exp)
+  .BeginScope(Token("{"))
   .ZeroOrMore(stencilState).As("states")
-  .Token(EndScope("}"));
+  .EndScope(Token("}"));
 
 // 6.11 ColorMaterial (legacy)
 const colorMaterialCommand = new SyntaxElement("color_material_command")
   .AsNode("ColorMaterialCommand")
-  .Token(/ColorMaterial/i)
+  .StrictLiteral(/ColorMaterial/i, id_exp)
   .ExpectsOneOf(
     Token(/AmbientAndDiffuse/i),
     Token(/Emission/i)
@@ -506,13 +507,13 @@ const colorMaterialCommand = new SyntaxElement("color_material_command")
 // 6.12 Lighting (legacy)
 const lightingCommand = new SyntaxElement("lighting_command")
   .AsNode("LightingCommand")
-  .Token(/Lighting/i)
+  .StrictLiteral(/Lighting/i, id_exp)
   .Expects(onOffValue).As("value");
 
 // 6.13 Conservative Rasterization
 const conservativeCommand = new SyntaxElement("conservative_command")
   .AsNode("ConservativeCommand")
-  .Token(/Conservative/i)
+  .StrictLiteral(/Conservative/i, id_exp)
   .Expects(onOffValue).As("value");
 
 // 6.14 AlphaTest (legacy)
@@ -530,26 +531,26 @@ const alphaTestMode = new SyntaxElement("alpha_test_mode")
 
 const alphaTestCommand = new SyntaxElement("alpha_test_command")
   .AsNode("AlphaTestCommand")
-  .Token(/AlphaTest/i)
-  .ExpectsOneOf(
-    Token(/Off/i),
+  .StrictLiteral(/AlphaTest/i, id_exp)
+  .ExpectsOneOfStrict(
+    StrictLiteral(/Off/i, id_exp),
     alphaTestMode
   ).As("mode");
 
 // 6.15 Fog Block (legacy)
 const fogMode = new SyntaxElement("fog_mode")
   .AsNode("FogMode")
-  .ExpectsOneOf(
-    Token(/Off/i),
-    Token(/Global/i),
-    Token(/Linear/i),
-    Token(/Exp2/i),
-    Token(/Exp/i)
+  .ExpectsOneOfStrict(
+    StrictLiteral(/Off/i, id_exp),
+    StrictLiteral(/Global/i, id_exp),
+    StrictLiteral(/Linear/i, id_exp),
+    StrictLiteral(/Exp2/i, id_exp),
+    StrictLiteral(/Exp/i, id_exp)
   );
 
 const fogStateRange = new SyntaxElement("fog_state_range")
   .Ignore()
-  .Token(/Range/i)
+  .StrictLiteral(/Range/i, id_exp)
   .Expects(number).As("min")
   .Token(",")
   .Expects(number).As("max");
@@ -557,23 +558,23 @@ const fogStateRange = new SyntaxElement("fog_state_range")
 const fogState = new SyntaxElement("fog_state")
   .AsNode("FogState")
   .ExpectsOneOf(
-    new SyntaxElement("fog_state_mode").Ignore().Token(/Mode/i).Expects(fogMode).As("mode"),
-    new SyntaxElement("fog_state_color").Ignore().Token(/Color/i).Expects(vectorLiteral).As("color"),
-    new SyntaxElement("fog_state_density").Ignore().Token(/Density/i).Expects(number).As("density"),
+    new SyntaxElement("fog_state_mode").Ignore().StrictLiteral(/Mode/i, id_exp).Expects(fogMode).As("mode"),
+    new SyntaxElement("fog_state_color").Ignore().StrictLiteral(/Color/i, id_exp).Expects(vectorLiteral).As("color"),
+    new SyntaxElement("fog_state_density").Ignore().StrictLiteral(/Density/i, id_exp).Expects(number).As("density"),
     fogStateRange
   );
 
 const fogBlock = new SyntaxElement("fog_block")
   .AsNode("FogBlock")
   .Token(/Fog/i)
-  .Token(BeginScope("{"))
+  .BeginScope(Token("{"))
   .ZeroOrMore(fogState).As("states")
-  .Token(EndScope("}"));
+  .EndScope(Token("}"));
 
 // 6.16 SeparateSpecular (legacy)
 const separateSpecularCommand = new SyntaxElement("separate_specular_command")
   .AsNode("SeparateSpecularCommand")
-  .Token(/SeparateSpecular/i)
+  .StrictLiteral(/SeparateSpecular/i, id_exp)
   .Expects(onOffValue).As("value");
 
 // Render State Groupings
@@ -613,18 +614,18 @@ const tagEntry = new SyntaxElement("tag_entry")
 const tagsBlock = new SyntaxElement("tags_block")
   .AsNode("TagsBlock")
   .Token(/Tags/i)
-  .Token(BeginScope("{"))
+  .BeginScope(Token("{"))
   .ZeroOrMore(tagEntry).As("entries")
-  .Token(EndScope("}"));
+  .EndScope(Token("}"));
 
 // --- Section 7: Shader Program Blocks (Opaque) ---
-const cgProgram = Token(/CGPROGRAM[\\s\\S]*?ENDCG/, "programBlock");
-const hlslProgram = Token(/HLSLPROGRAM[\\s\\S]*?ENDHLSL/, "programBlock");
-const glslProgram = Token(/GLSLPROGRAM[\\s\\S]*?ENDGLSL/, "programBlock");
+const cgProgram = Token(/CGPROGRAM[\s\S]*?ENDCG/, "programBlock");
+const hlslProgram = Token(/HLSLPROGRAM[\s\S]*?ENDHLSL/, "programBlock");
+const glslProgram = Token(/GLSLPROGRAM[\s\S]*?ENDGLSL/, "programBlock");
 
-const cgInclude = Token(/CGINCLUDE[\\s\\S]*?ENDCG/, "programBlock");
-const hlslInclude = Token(/HLSLINCLUDE[\\s\\S]*?ENDHLSL/, "programBlock");
-const glslInclude = Token(/GLSLINCLUDE[\\s\\S]*?ENDGLSL/, "programBlock");
+const cgInclude = Token(/CGINCLUDE[\s\S]*?ENDCG/, "programBlock");
+const hlslInclude = Token(/HLSLINCLUDE[\s\S]*?ENDHLSL/, "programBlock");
+const glslInclude = Token(/GLSLINCLUDE[\s\S]*?ENDGLSL/, "programBlock");
 
 const programBlock = new SyntaxElement("program_block")
   .AsNode("ProgramBlock")
@@ -668,16 +669,16 @@ const passBody = new SyntaxElement("pass_body")
 const pass = new SyntaxElement("pass")
   .AsNode("Pass")
   .Token(/Pass/i)
-  .Token(BeginScope("{"))
+  .BeginScope(Token("{"))
   .Expects(passBody)
-  .Token(EndScope("}"));
+  .EndScope(Token("}"));
 
 const grabPass = new SyntaxElement("grab_pass")
   .AsNode("GrabPass")
   .Token(/GrabPass/i)
-  .Token(BeginScope("{"))
+  .BeginScope(Token("{"))
   .Optional(string).As("textureName")
-  .Token(EndScope("}"));
+  .EndScope(Token("}"));
 
 const usePass = new SyntaxElement("use_pass")
   .AsNode("UsePass")
@@ -704,9 +705,9 @@ const subShaderBody = new SyntaxElement("subshader_body")
 const subShader = new SyntaxElement("subshader")
   .AsNode("SubShader")
   .Token(/SubShader/i)
-  .Token(BeginScope("{"))
+  .BeginScope(Token("{"))
   .Expects(subShaderBody)
-  .Token(EndScope("}"));
+  .EndScope(Token("}"));
 
 // --- Section 1: Properties Block ---
 const propertyName = id;
@@ -739,7 +740,7 @@ const attribute = new SyntaxElement("attribute")
 
 const rangeType = new SyntaxElement("range_type")
   .AsNode("RangeType")
-  .Token(/Range/i)
+  .StrictLiteral(/Range/i, id_exp)
   .Token("(")
   .Expects(number).As("min")
   .Token(",")
@@ -770,9 +771,9 @@ const textureOptions = new SyntaxElement("texture_options")
 const textureDefault = new SyntaxElement("texture_default")
   .AsNode("TextureDefault")
   .Expects(string).As("texName")
-  .Token(BeginScope("{"))
+  .BeginScope(Token("{"))
   .Expects(textureOptions).As("options")
-  .Token(EndScope("}"));
+  .EndScope(Token("}"));
 
 const propertyDefault = new SyntaxElement("property_default")
   .AsNode("PropertyDefault")
@@ -797,9 +798,9 @@ const property = new SyntaxElement("property")
 const propertiesBlock = new SyntaxElement("properties_block")
   .AsNode("PropertiesBlock")
   .Token(/Properties/i)
-  .Token(BeginScope("{"))
+  .BeginScope(Token("{"))
   .ZeroOrMore(property).As("properties")
-  .Token(EndScope("}"));
+  .EndScope(Token("}"));
 
 // --- Section 9: Category Block (legacy) ---
 const categoryState = new SyntaxElement("category_state")
@@ -819,15 +820,15 @@ const categoryBody = new SyntaxElement("category_body")
 const categoryBlock = new SyntaxElement("category_block")
   .AsNode("CategoryBlock")
   .Token(/Category/i)
-  .Token(BeginScope("{"))
+  .BeginScope(Token("{"))
   .Expects(categoryBody)
-  .Token(EndScope("}"));
+  .EndScope(Token("}"));
 
 // --- Top-Level Structure ---
 const fallbackDecl = new SyntaxElement("fallback_decl")
   .AsNode("FallbackDecl")
   .Token(/Fallback/i)
-  .ExpectsOneOf(string, Token(/Off/i)).As("value");
+  .ExpectsOneOfStrict(string, StrictLiteral(/Off/i, id_exp)).As("value");
 
 const customEditorDecl = new SyntaxElement("custom_editor_decl")
   .AsNode("CustomEditorDecl")
@@ -850,9 +851,9 @@ const shaderBody = new SyntaxElement("shader_body")
 const root = new SyntaxElement("_root")
   .Token(/Shader/i)
   .Expects(string).As("shaderName")
-  .Token(BeginScope("{"))
+  .BeginScope(Token("{"))
   .Expects(shaderBody)
-  .Token(EndScope("}"));`;
+  .EndScope(Token("}"));`;
 
 const DEFAULT_AST_CODE = `// --- Optional AST Transformer ---
 // Map the raw Concrete Syntax Tree (CST) into a clean, custom Abstract Syntax Tree (AST).
@@ -2016,12 +2017,12 @@ export default function App() {
       SyntaxElement.lastId = 0;
       // Execute the grammar code
       // We provide SyntaxElement and the Sort helper to the execution context
-      const executionFunc = new Function('SyntaxElement', 'Sort', 'Token', 'DefaultLeadingTrivia', 'DefaultTrailingTrivia', 'BeginScope', 'EndScope', `
+      const executionFunc = new Function('SyntaxElement', 'Sort', 'Token', 'DefaultLeadingTrivia', 'DefaultTrailingTrivia', `
         ${debouncedGrammarCode}
         return typeof root !== 'undefined' ? root : null;
       `);
       
-      const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, BeginScope, EndScope);
+      const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, StrictLiteral);
       if (root instanceof SyntaxElement) {
         root.autoInjectLoopBoundaries();
         setRootElement(root);
@@ -2666,6 +2667,10 @@ export default function App() {
           label = `"${String(item.value?.literal ?? '')}" strictly matching /${item.value?.pattern?.source ?? ''}/`;
           subtitle = 'STRICT LITERAL MATCH';
           break;
+        case 'caseInsensitiveStrictLiteral':
+          label = `"${String(item.value?.literal ?? '')}" case-insensitively strictly matching /${item.value?.pattern?.source ?? ''}/`;
+          subtitle = 'CASE-INSENSITIVE STRICT LITERAL';
+          break;
         case 'caseInsensitiveLiteral':
           label = `"${String(item.value)}" (i)`;
           subtitle = 'CASE-INSENSITIVE LITERAL';
@@ -2982,6 +2987,7 @@ export default function App() {
       case 'literal':
       case 'caseInsensitiveLiteral':
       case 'strictLiteral':
+      case 'caseInsensitiveStrictLiteral':
         borderStyle = "bg-sky-500/5 border-sky-500/30 hover:bg-sky-500/10";
         textAccent = "text-sky-300 font-mono";
         iconDotColor = "bg-sky-400 ring-4 ring-sky-500/20 shadow-[0_0_10px_rgba(56,189,248,0.6)]";
@@ -3165,7 +3171,7 @@ export default function App() {
                       "px-2 py-1 rounded text-[10px] font-bold uppercase tracking-tighter",
                       rule.type === 'literal' && "bg-sky-500/20 text-sky-400",
                       rule.type === 'caseInsensitiveLiteral' && "bg-sky-500/15 text-sky-300 border border-sky-500/10",
-                      rule.type === 'strictLiteral' && "bg-sky-500/20 text-sky-400 border border-sky-500/10",
+                      (rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') && "bg-sky-500/20 text-sky-400 border border-sky-500/10",
                       rule.type === 'regex' && "bg-emerald-500/20 text-emerald-400",
                       rule.type === 'element' && "bg-indigo-500/20 text-indigo-400",
                       rule.type === 'whitespace' && "bg-amber-500/20 text-amber-400",
@@ -3178,7 +3184,7 @@ export default function App() {
                       rule.type === 'endScope' && "bg-purple-500/20 text-purple-400",
                       rule.type === 'eof' && "bg-zinc-500/20 text-zinc-400"
                     )}>
-                      {rule.type === 'not' ? 'Not' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'Any (Token)' : 'Any') : rule.type === 'oneOrMore' ? (rule.isToken ? 'Some (Token)' : 'Some') : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : rule.type === 'caseInsensitiveLiteral' ? 'CaseInsens' : rule.type === 'strictLiteral' ? 'StrictLit' : 'Expects'}
+                      {rule.type === 'not' ? 'Not' : rule.type === 'element' ? 'Call' : rule.type === 'whitespace' ? 'Space' : rule.type === 'choice' ? 'OneOf' : rule.type === 'optional' ? 'Opt' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'Any (Token)' : 'Any') : rule.type === 'oneOrMore' ? (rule.isToken ? 'Some (Token)' : 'Some') : rule.type === 'beginScope' ? 'BeginScope' : rule.type === 'endScope' ? 'EndScope' : rule.type === 'eof' ? 'End' : rule.type === 'caseInsensitiveLiteral' ? 'CaseInsens' : rule.type === 'strictLiteral' ? 'StrictLit' : rule.type === 'caseInsensitiveStrictLiteral' ? 'CIStrictLit' : 'Expects'}
                     </span>
                     
                     <code className={cn(
@@ -3197,6 +3203,7 @@ export default function App() {
                       rule.type === 'beginScope' || rule.type === 'endScope' ? `${typeof rule.value === 'string' ? `"${rule.value}"` : (rule.value as any)?.name ? (rule.value as any).name : 'Pattern'}` :
                       rule.type === 'caseInsensitiveLiteral' ? `"${rule.value}" (i)` :
                       rule.type === 'strictLiteral' ? `"${rule.value?.literal}" /${rule.value?.pattern?.source}/` :
+                      rule.type === 'caseInsensitiveStrictLiteral' ? `"${rule.value?.literal}" /${rule.value?.pattern?.source}/ (i)` :
                       (rule.value as any)?.name ? `${(rule.value as any).name}` :
                       `"${rule.value}"`}
                     </code>
@@ -3934,7 +3941,7 @@ export default function App() {
                                               </span>
                                               <span className={cn(
                                                 "px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter leading-none shrink-0",
-                                                (rule.type === 'literal' || rule.type === 'caseInsensitiveLiteral' || rule.type === 'strictLiteral') && "bg-sky-500/10 text-sky-400 border border-sky-500/20",
+                                                (rule.type === 'literal' || rule.type === 'caseInsensitiveLiteral' || rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') && "bg-sky-500/10 text-sky-400 border border-sky-500/20",
                                                 rule.type === 'regex' && "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
                                                 rule.type === 'element' && "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20",
                                                 rule.type === 'whitespace' && "bg-amber-500/10 text-amber-400 border border-amber-500/20",
@@ -3947,7 +3954,7 @@ export default function App() {
                                                 rule.type === 'endScope' && "bg-purple-500/10 text-purple-400 border border-purple-500/20",
                                                 rule.type === 'eof' && "bg-zinc-500/10 text-zinc-400 border border-zinc-500/20"
                                               )}>
-                                                {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'ZeroOrMoreToken' : 'Any Count') : rule.type === 'oneOrMore' ? (rule.isToken ? 'OneOrMoreToken' : 'Some Count') : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : rule.type === 'caseInsensitiveLiteral' ? 'Case-Insens' : rule.type === 'strictLiteral' ? 'Strict-Liter' : 'Expects Match'}
+                                                {rule.type === 'not' ? 'Not matched' : rule.type === 'element' ? 'Rule Call' : rule.type === 'whitespace' ? 'Whitespace' : rule.type === 'choice' ? 'OneOf Choice' : rule.type === 'optional' ? 'Optional' : rule.type === 'zeroOrMore' ? (rule.isToken ? 'ZeroOrMoreToken' : 'Any Count') : rule.type === 'oneOrMore' ? (rule.isToken ? 'OneOrMoreToken' : 'Some Count') : rule.type === 'beginScope' ? 'Begin Scope' : rule.type === 'endScope' ? 'End Scope' : rule.type === 'eof' ? 'EOF Boundary' : rule.type === 'caseInsensitiveLiteral' ? 'Case-Insens' : rule.type === 'strictLiteral' ? 'Strict-Liter' : rule.type === 'caseInsensitiveStrictLiteral' ? 'CI-Strict-Liter' : 'Expects Match'}
                                               </span>
                                               {rule.isToken && (
                                                 <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter leading-none shrink-0 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
@@ -3992,6 +3999,10 @@ export default function App() {
                                             ) : rule.type === 'strictLiteral' ? (
                                               <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10 animate-fade-in">
                                                 "{String(rule.value?.literal)}" strictly matching /regex/ /{rule.value?.pattern?.source}/
+                                              </code>
+                                            ) : rule.type === 'caseInsensitiveStrictLiteral' ? (
+                                              <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10 animate-fade-in">
+                                                "{String(rule.value?.literal)}" case-insensitively strictly matching /regex/ /{rule.value?.pattern?.source}/
                                               </code>
                                             ) : rule.type === 'element' ? (
                                               <div className="flex items-center gap-2">
@@ -4081,6 +4092,7 @@ export default function App() {
                                             {rule.type === 'literal' ? "Strict literal: matches the exact character sequence of this token keyword." :
                                              rule.type === 'caseInsensitiveLiteral' ? "Case-insensitive literal: matches the exact character sequence of this token keyword, ignoring capitalization rules." :
                                              rule.type === 'strictLiteral' ? "Strict literal regex check: matches a pattern regex first, then fails if the matched string is not identical to the given literal." :
+                                             rule.type === 'caseInsensitiveStrictLiteral' ? "Case-insensitive strict literal regex check: matches a pattern regex first, then fails if the matched string is not case-insensitively identical to the given literal." :
                                              rule.type === 'regex' ? "Regexp scan: matches standard compiler token patterns, identifiers, numbers, etc." :
                                              rule.type === 'element' ? "Sub-element: executes another rule segment to build nested CST syntax nodes." :
                                              rule.type === 'whitespace' ? "Noise filter: parses and skips spaces, comments, and formatting characters dynamically." :

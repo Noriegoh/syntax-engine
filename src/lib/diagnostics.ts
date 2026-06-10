@@ -391,6 +391,15 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
             suggestion: `Avoid wrapping choice alternatives of ExpectsOneOf inside Token(). Instead, call root.ExpectsOneOfToken(...) to explicitly match any choice branch with default leading and trailing trivas.`
           });
         }
+        // Warning check for StrictLiteral() wrappers when used inside ExpectsOneOf
+        if (rule.hasStrictWarning) {
+          diagnostics.push({
+            type: "warning",
+            nodeName: elName,
+            message: `Mixed StrictLiteral wrapper inside ExpectsOneOf: Calling ExpectsOneOf with StrictLiteral(...) wrapping individual choices runs with trivia rules on the parent block instead. This causes non-strict choices to unexpectedly parse with trivas too.`,
+            suggestion: `Avoid wrapping choice alternatives of ExpectsOneOf inside StrictLiteral(). Instead, call root.ExpectsOneOfStrict(...) to explicitly match any choice branch with default leading and trailing trivas.`
+          });
+        }
 
         const choiceList = rule.value;
         if (Array.isArray(choiceList)) {
@@ -419,6 +428,14 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
             nodeName: elName,
             message: `Mixed Token wrapper inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'}: Calling ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} with Token(...) wrapping individual elements runs with trivia rules on the parent block instead. This causes non-Token elements to unexpectedly parse with trivas too.`,
             suggestion: `Avoid wrapping option elements of ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} inside Token(). Instead, call root.${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}(...) to explicitly match elements with default leading and trailing trivas per match.`
+          });
+        }
+        if (rule.hasStrictWarning) {
+          diagnostics.push({
+            type: "warning",
+            nodeName: elName,
+            message: `Mixed StrictLiteral wrapper inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'}: Calling ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} with StrictLiteral(...) wrapping individual elements runs with trivia rules on the parent block instead. This causes non-strict elements to unexpectedly parse with trivas too.`,
+            suggestion: `Avoid wrapping option elements of ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} inside StrictLiteral(). Instead, call root.${rule.type === 'zeroOrMore' ? 'ZeroOrMoreStrict' : 'OneOrMoreStrict'}(...) to explicitly match elements with default leading and trailing trivas per match.`
           });
         }
       }
@@ -861,6 +878,33 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
             suggestion: `To optimize parsing performance and simplify generated code, consider ignoring/inlining it by appending .Ignore() to its definition.`
           });
         }
+      }
+    }
+
+    // Custom check: Consecutive StrictLiteral rules
+    const structuralRules = el.rules.filter(rule => {
+      return (
+        rule.type !== 'optional' &&
+        rule.type !== 'leadingTrivia' &&
+        rule.type !== 'trailingTrivia' &&
+        rule.type !== 'whitespace'
+      );
+    });
+
+    for (let i = 0; i < structuralRules.length - 1; i++) {
+      const r1 = structuralRules[i];
+      const r2 = structuralRules[i + 1];
+      const isR1Strict = r1.type === 'strictLiteral' || r1.type === 'caseInsensitiveStrictLiteral';
+      const isR2Strict = r2.type === 'strictLiteral' || r2.type === 'caseInsensitiveStrictLiteral';
+      if (isR1Strict && isR2Strict) {
+        const p1 = r1.type === 'strictLiteral' ? r1.value?.literal : r1.value?.pattern;
+        const p2 = r2.type === 'strictLiteral' ? r2.value?.literal : r2.value?.pattern;
+        diagnostics.push({
+          type: "warning",
+          nodeName: elName,
+          message: `Consecutive StrictLiteral warning: A strict literal rule for "${p1}" is placed directly adjacent to another strict literal rule for "${p2}".`,
+          suggestion: "Only the boundary word/keyword adjacent to an identifier usually needs to perform a strict-literal check. Placing consecutive strict literals can be redundant or logically incorrect. Combine them if they form a single token, or use standard Token/literal rules."
+        });
       }
     }
   }

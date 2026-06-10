@@ -342,7 +342,7 @@ function generateSyntaxFactory(visibleElements: SyntaxElement[]): string {
         rule.type === 'oneOrMore' ||
         rule.type === 'separatedBy' ||
         (rule.type === 'regex' && rule.label) ||
-        (rule.type === 'strictLiteral' && rule.label)
+        ((rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') && rule.label)
       );
 
       if (!isParam) continue;
@@ -406,7 +406,7 @@ function generateSyntaxFactory(visibleElements: SyntaxElement[]): string {
       }
 
       // If it's a regex rule or strictLiteral with a label and no primitiveType, make it a string parameter
-      if ((rule.type === 'regex' || rule.type === 'strictLiteral') && !rule.primitiveType) {
+      if ((rule.type === 'regex' || rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') && !rule.primitiveType) {
         csharpType = "string";
       }
 
@@ -441,7 +441,7 @@ function generateSyntaxFactory(visibleElements: SyntaxElement[]): string {
       } else if (rule.type === 'caseInsensitiveLiteral') {
         const esc = escapeString(rule.value.source);
         bodyStatements.push(`            children.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${rule.id}, ${rule.value.source.length}));`);
-      } else if (rule.type === 'strictLiteral') {
+      } else if (rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') {
         const esc = escapeString(rule.value.literal);
         bodyStatements.push(`            children.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${rule.id}, ${rule.value.literal.length}));`);
       } else if (rule.type === 'whitespace') {
@@ -2728,7 +2728,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         if (!isSimpleCaseInsensitiveRegex(rule.value)) {
           registerPattern(rule.value, ruleId, 'Rule');
         }
-      } else if (rule.type === 'strictLiteral') {
+      } else if (rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') {
         if (!isSimpleCaseInsensitiveRegex(rule.value.pattern)) {
           registerPattern(rule.value.pattern, ruleId, 'Rule');
         }
@@ -2881,6 +2881,30 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 else
                 {
                     if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected strict literal \\"${targetLiteral}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes;
+                }
+            }`;
+      }
+      if (rule.type === 'caseInsensitiveStrictLiteral') {
+        const dfaMethodName = getOrCreateDfaMethod(rule.value.pattern, 'Rule', ruleId);
+        const targetLiteral = escapeString(rule.value.literal);
+        return `
+            // CaseInsensitiveStrictLiteral Rule: "${targetLiteral}" /${rule.value.pattern.source}/ (id: ${ruleId})
+            if (!panicked)
+            {
+                int startOffset_${ruleId} = currentOffset;
+                string mval_${ruleId};
+                if (${dfaMethodName}(text, currentOffset, out mval_${ruleId}) && string.Equals(mval_${ruleId}, "${targetLiteral}", StringComparison.OrdinalIgnoreCase))
+                {
+                    results.Add(GreenNode.Create(NodeType.Literal, mval_${ruleId}, ${ruleId}, mval_${ruleId}.Length));
+                    currentOffset += mval_${ruleId}.Length;
+                    hasCommitted = true;
+                    ${structUpdate}
+                    localMaxOffset = Math.Max(localMaxOffset, currentOffset);
+                }
+                else
+                {
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive strict literal \\"${targetLiteral}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
             }`;

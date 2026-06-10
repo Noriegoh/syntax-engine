@@ -413,7 +413,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
         if (!isSimpleCaseInsensitiveRegex(rule.value)) {
           registerPattern(rule.value, ruleId, 'Rule');
         }
-      } else if (rule.type === 'strictLiteral') {
+      } else if (rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') {
         if (!isSimpleCaseInsensitiveRegex(rule.value.pattern)) {
           registerPattern(rule.value.pattern, ruleId, 'Rule');
         }
@@ -589,6 +589,33 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     localMaxOffset = Math.max(localMaxOffset, currentOffset);
                 } else {
                     const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected strict literal \\"${targetLiteral}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    if (rec.recovered) {
+                        currentOffset = rec.recoveredOffset;
+                        panicked = true;
+                    } else {
+                        return rec.failResult!;
+                    }
+                }
+            }`;
+      }
+      
+      if (rule.type === 'caseInsensitiveStrictLiteral') {
+        const dfaMethodName = getOrCreateDfaMethod(rule.value.pattern, 'Rule', ruleId);
+        const targetLiteral = escapeString(rule.value.literal);
+        return `
+            // CaseInsensitiveStrictLiteral Rule: "${targetLiteral}" /${rule.value.pattern.source}/ (id: ${ruleId})
+            if (!panicked) {
+                const startOffset_${ruleId} = currentOffset;
+                const dfaRes_${ruleId} = this.${dfaMethodName}(text, currentOffset);
+                if (dfaRes_${ruleId}.success && dfaRes_${ruleId}.matchedValue.toLowerCase() === "${targetLiteral}".toLowerCase()) {
+                    const mval = dfaRes_${ruleId}.matchedValue;
+                    this.addNode(results, new GreenNode(NodeType.Literal, mval, ${ruleId}, mval.length), ${isInline});
+                    currentOffset += mval.length;
+                    hasCommitted = true;
+                    ${structUpdate}
+                    localMaxOffset = Math.max(localMaxOffset, currentOffset);
+                } else {
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive strict literal \\"${targetLiteral}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
