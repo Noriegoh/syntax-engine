@@ -94,6 +94,34 @@ export function collectElements(root: SyntaxElement): SyntaxElement[] {
   return elements;
 }
 
+export interface ICodeGenerator {
+  generate(): string;
+}
+
+export abstract class BaseCodeGenerator implements ICodeGenerator {
+  protected rootElement: SyntaxElement;
+  protected scopeBuilder?: ScopeBuilder;
+  protected elements: SyntaxElement[];
+
+  constructor(rootElement: SyntaxElement, scopeBuilder?: ScopeBuilder) {
+    this.rootElement = rootElement;
+    this.scopeBuilder = scopeBuilder;
+    this.elements = collectElements(rootElement);
+  }
+
+  public abstract generate(): string;
+
+  protected getSanitizedName(el: SyntaxElement): string {
+    return el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+  }
+
+  protected isTokenElement(el: SyntaxElement): boolean {
+    return el.rules.some(r => r.isToken === true || r.tokenName !== undefined);
+  }
+}
+
+import { ScopeBuilder } from './scope';
+
 class NState {
   id: number;
   transitions: { range: [number, number]; target: NState }[] = [];
@@ -537,4 +565,71 @@ export function compileDFA(regex: RegExp): MinimizedDFA {
   }
 
   return { dfaStates: minDFAStates, intervals };
+}
+
+export interface CompiledDFATransitionConfig {
+  dStateId: number;
+  isAccepting: boolean;
+  targets: {
+    targetId: number;
+    ranges: { start: number; end: number }[];
+    isFallback: boolean;
+  }[];
+}
+
+export function compileDFATransitions(regex: RegExp): {
+  acceptingStateIds: number[];
+  transitions: CompiledDFATransitionConfig[];
+} {
+  const { dfaStates, intervals } = compileDFA(regex);
+  const acceptingStateIds = dfaStates.filter(s => s.isAccepting).map(s => s.id);
+
+  const transitions: CompiledDFATransitionConfig[] = [];
+  for (const dState of dfaStates) {
+    const targetGroups = new Map<number, {start: number; end: number}[]>();
+    for (const [intervalIdx, targetDFA] of dState.transitions.entries()) {
+      const interval = intervals[intervalIdx];
+      if (!targetGroups.has(targetDFA.id)) {
+        targetGroups.set(targetDFA.id, []);
+      }
+      targetGroups.get(targetDFA.id)!.push({start: interval[0], end: interval[1]});
+    }
+    
+    for (const [targetId, ranges] of targetGroups.entries()) {
+      const sorted = [...ranges].sort((a, b) => a.start - b.start);
+      const merged: {start: number; end: number}[] = [];
+      for (const r of sorted) {
+        if (merged.length === 0) {
+          merged.push({start: r.start, end: r.end});
+        } else {
+          const last = merged[merged.length - 1];
+          if (r.start <= last.end + 1) {
+            last.end = Math.max(last.end, r.end);
+          } else {
+            merged.push({start: r.start, end: r.end});
+          }
+        }
+      }
+      targetGroups.set(targetId, merged);
+    }
+    
+    const sortedTargets = Array.from(targetGroups.entries()).sort((a, b) => {
+      const aWidth = a[1].reduce((sum, r) => sum + (r.end - r.start + 1), 0);
+      const bWidth = b[1].reduce((sum, r) => sum + (r.end - r.start + 1), 0);
+      return aWidth - bWidth;
+    });
+
+    const targets = sortedTargets.map(([targetId, ranges], j) => {
+      const isFallback = (j === sortedTargets.length - 1 && ranges.reduce((sum, r) => sum + (r.end - r.start + 1), 0) > 30000);
+      return { targetId, ranges, isFallback };
+    });
+
+    transitions.push({
+      dStateId: dState.id,
+      isAccepting: dState.isAccepting,
+      targets
+    });
+  }
+
+  return { acceptingStateIds, transitions };
 }

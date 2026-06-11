@@ -1,5 +1,50 @@
 import { matchRegex, WS_REGEX, nextRuleId, isSimpleCaseInsensitiveRegex } from './utils';
 
+export interface SuggestionItem {
+  label: string; 
+  insertText: string; 
+  type: 'method' | 'class' | 'variable' | 'keyword';
+  description: string;
+}
+
+export const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
+  { label: 'Expects', insertText: 'Expects(', type: 'method', description: 'Schedule standard terminal literal / sub-element rule' },
+  { label: 'ExpectsOneOf', insertText: 'ExpectsOneOf(', type: 'method', description: 'Schedule a speculative choice selection (any matched pattern)' },
+  { label: 'ExpectsOneOfToken', insertText: 'ExpectsOneOfToken(', type: 'method', description: 'Schedule choice selection and surround each branch with default leading and trailing trivias (no warnings)' },
+  { label: 'ExpectsOneOfStrict', insertText: 'ExpectsOneOfStrict(', type: 'method', description: 'Schedule choice selection and surround each branch with default leading and trailing trivias strictly' },
+  { label: 'Token', insertText: 'Token(', type: 'method', description: 'Inject clean terminal lexical Token marker (wraps literals/regexes)' },
+  { label: 'StrictLiteral', insertText: 'StrictLiteral(', type: 'method', description: 'Match strict terminal word/keyword/literal (checks for word boundary)' },
+  { label: 'Optional', insertText: 'Optional(', type: 'method', description: 'Mark element rule as fully optional' },
+  { label: 'ZeroOrMore', insertText: 'ZeroOrMore(', type: 'method', description: 'Repetition: loop consecutive matches. Overloaded to support choices if passed array/multiple parameters' },
+  { label: 'ZeroOrMoreToken', insertText: 'ZeroOrMoreToken(', type: 'method', description: 'Repetition loops through matches, automatically skipping default leading/trailing trivia around each loop item' },
+  { label: 'ZeroOrMoreStrict', insertText: 'ZeroOrMoreStrict(', type: 'method', description: 'Repetition loops through strict matches, automatically skipping default leading/trailing trivia around each loop item' },
+  { label: 'OneOrMore', insertText: 'OneOrMore(', type: 'method', description: 'Repetition: loop consecutive matches requires at least 1 match. Overloaded to support choices if passed array/multiple parameters' },
+  { label: 'OneOrMoreToken', insertText: 'OneOrMoreToken(', type: 'method', description: 'Repetition loops through matches (at least 1 required), automatically skipping default leading/trailing trivia around each loop item' },
+  { label: 'OneOrMoreStrict', insertText: 'OneOrMoreStrict(', type: 'method', description: 'Repetition loops through strict matches (at least 1 required), automatically skipping default leading/trailing trivia around each loop item' },
+  { label: 'LeadingTrivia', insertText: 'LeadingTrivia(', type: 'method', description: 'Define expected default preceding layout whitespaces or comments' },
+  { label: 'TrailingTrivia', insertText: 'TrailingTrivia(', type: 'method', description: 'Define expected default trailing layout whitespaces or comments' },
+  { label: 'Whitespace', insertText: 'Whitespace()', type: 'method', description: 'Consume contiguous space layouts' },
+  { label: 'EnumTarget', insertText: 'EnumTarget()', type: 'method', description: 'Flag elements for C# enum compilation structures' },
+  { label: 'BeginScope', insertText: 'BeginScope(', type: 'method', description: 'Signal local lexical namespace creation (e.g., matching brace "{" )' },
+  { label: 'EndScope', insertText: 'EndScope(', type: 'method', description: 'Signal local lexical namespace termination (e.g., matching brace "}" )' },
+  { label: 'ExpectsEOF', insertText: 'ExpectsEOF()', type: 'method', description: 'Enforce complete final end-of-file condition' },
+  { label: 'AsASTNode', insertText: 'AsASTNode(', type: 'method', description: 'Re-bind generated visual abstract type identifier' },
+  { label: 'As', insertText: 'As(', type: 'method', description: 'Assign field property name/label to the matched result' },
+  { label: 'AsNode', insertText: 'AsNode(', type: 'method', description: 'Instruct engine to construct visual AST Node representation instead of direct CST structure' },
+  { label: 'AsToken', insertText: 'AsToken(', type: 'method', description: 'Assign a custom token name to the matched terminal pattern without injecting trivias' },
+  { label: 'Ignore', insertText: 'Ignore()', type: 'method', description: 'Instruct engine to flatten and merge current SyntaxElement rule inside parent nodes' },
+  { label: 'IgnoreSelf', insertText: 'IgnoreSelf()', type: 'method', description: 'Skip this entire subtree node construction while still executing parsing checks' },
+  { label: 'RecoverWith', insertText: 'RecoverWith(', type: 'method', description: 'Register explicit manual recovery delimiters for automated parser healing' },
+  { label: 'SelfHeals', insertText: 'SelfHeals(', type: 'method', description: 'Designate current rules blocks automated healing boundaries' },
+  { label: 'MapToEnum', insertText: 'MapToEnum(', type: 'method', description: 'Map matched string tokens to target C# compilation enumerations' },
+  { label: 'SeparatedBy', insertText: 'SeparatedBy(', type: 'method', description: 'Sequence matcher for elements separated by distinct separator literal/token' },
+  { label: 'Assert', insertText: 'Assert(', type: 'method', description: 'Lookahead assertion checker: verify ahead without consuming incoming layout streams' },
+  { label: 'SyntaxElement', insertText: 'SyntaxElement', type: 'class', description: 'Compiler blueprint construct initializer' },
+  { label: 'Sort', insertText: 'Sort(', type: 'keyword', description: 'Sort array inputs descending by pattern length' },
+  { label: 'DefaultLeadingTrivia', insertText: 'DefaultLeadingTrivia', type: 'variable', description: 'Pre-registered standard spacer elements container' },
+  { label: 'DefaultTrailingTrivia', insertText: 'DefaultTrailingTrivia', type: 'variable', description: 'Pre-registered standard spacer elements container' },
+];
+
 // ==========================================
 // SECTION 1: GLOBAL TYPE & INTERFACE DEFINITIONS
 // ==========================================
@@ -36,6 +81,59 @@ export interface Rule {
   hasStrictWarning?: boolean; // Set when StrictLiteral wraps choice elements inside ExpectsOneOf
   isToken?: boolean; // Set when using ExpectsOneOfToken, ZeroOrMoreToken, OneOrMoreToken
   primitiveType?: string;
+}
+
+export class RuleHelper {
+  public static isList(rule: Rule): boolean {
+    return rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'separatedBy';
+  }
+
+  public static isTrivia(rule: Rule): boolean {
+    return rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace';
+  }
+
+  public static isOptional(rule: Rule): boolean {
+    return rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace';
+  }
+
+  public static isStructural(rule: Rule): boolean {
+    if (rule.type === 'whitespace' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') return false;
+    if (rule.type === 'optional' || rule.type === 'zeroOrMore') return false;
+    if (rule.type === 'not' || rule.type === 'assert') return false;
+    return true;
+  }
+
+  public static isLoop(rule: Rule): boolean {
+    return rule.type === 'zeroOrMore' || rule.type === 'oneOrMore';
+  }
+
+  public static isScope(rule: Rule): boolean {
+    return rule.type === 'beginScope' || rule.type === 'endScope';
+  }
+
+  public static hasArrayValue(rule: Rule): boolean {
+    return (rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && Array.isArray(rule.value);
+  }
+
+  public static hasSubPatterns(rule: Rule): boolean {
+    return rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore';
+  }
+
+  public static isTerminalTextValue(rule: Rule): boolean {
+    return (rule.type === 'literal' || rule.type === 'endScope' || rule.type === 'beginScope') && typeof rule.value === 'string';
+  }
+
+  public static hasOptionalOrTriviaOrLoop(rule: Rule): boolean {
+    return rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'zeroOrMore';
+  }
+
+  public static isOptionOrTriviaOrLoopOrNot(rule: Rule): boolean {
+    return rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not';
+  }
+
+  public static isRepetitionOrOptional(rule: Rule): boolean {
+    return rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore';
+  }
 }
 
 export interface ParseError {
@@ -148,7 +246,7 @@ export class RedNode {
         const rule = SyntaxElement.ruleRegistry?.get(parentRuleId);
         if (rule && rule.label) {
           const label = rule.label;
-          const isList = rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'separatedBy';
+          const isList = RuleHelper.isList(rule);
           
           // Store in our safe _fields mapping first to avoid colliding with built-in properties
           if (isList) {
@@ -386,6 +484,16 @@ export function wrapASTTransformerWithIncrementalCache(userAstCode: string): str
 // ==========================================
 
 export class SyntaxElement {
+
+  public static Reset()
+  {
+    SyntaxElement.registry.clear();
+    SyntaxElement.ruleRegistry.clear();
+    SyntaxElement.defaultLeadingTrivia = undefined;
+    SyntaxElement.defaultTrailingTrivia = undefined;
+    SyntaxElement.lastId = 0;
+  }
+
   public static defaultLeadingTrivia?: string | RegExp | SyntaxElement;
   public static defaultTrailingTrivia?: string | RegExp | SyntaxElement;
 
@@ -415,6 +523,167 @@ export class SyntaxElement {
     this.id = ++SyntaxElement.lastId;
     this.name = name;
     SyntaxElement.registry.set(name, this);
+  }
+
+  public get structuralRules(): Rule[] {
+    return this.rules.filter(rule => {
+      return (
+        rule.type !== 'optional' &&
+        rule.type !== 'leadingTrivia' &&
+        rule.type !== 'trailingTrivia' &&
+        rule.type !== 'whitespace'
+      );
+    });
+  }
+
+  public static unwrapPattern(p: any): any {
+    if (p && typeof p === 'object' && 'pattern' in p) {
+      return p.pattern;
+    }
+    return p;
+  }
+
+  public static arePatternsEquivalent(a: any, b: any): boolean {
+    if (a === b) return true;
+    if (!a || !b) return false;
+
+    const ua = SyntaxElement.unwrapPattern(a);
+    const ub = SyntaxElement.unwrapPattern(b);
+
+    if (ua === ub) return true;
+    if (!ua || !ub) return false;
+
+    if (ua instanceof RegExp && ub instanceof RegExp) {
+      return ua.source === ub.source && ua.flags === ub.flags;
+    }
+
+    if (ua instanceof SyntaxElement && ub instanceof SyntaxElement) {
+      return ua.name === ub.name;
+    }
+
+    if (Array.isArray(ua) && Array.isArray(ub)) {
+      if (ua.length !== ub.length) return false;
+      for (let i = 0; i < ua.length; i++) {
+        if (!SyntaxElement.arePatternsEquivalent(ua[i], ub[i])) return false;
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  public static isPatternNullable(pattern: any, nullable: Map<SyntaxElement, boolean>): boolean {
+    if (!pattern) return true;
+    if (pattern instanceof SyntaxElement) {
+      return nullable.get(pattern) === true;
+    }
+    if (typeof pattern === 'string') {
+      return pattern === ""; // Only empty string is nullable
+    }
+    if (pattern instanceof RegExp) {
+      try {
+        const anchored = new RegExp('^(?:' + pattern.source + ')');
+        return anchored.test("");
+      } catch (_) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  public static isRuleNullable(rule: Rule, nullable: Map<SyntaxElement, boolean>): boolean {
+    switch (rule.type) {
+      case 'literal':
+      case 'regex':
+      case 'element':
+      case 'beginScope':
+      case 'endScope':
+        return SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(rule.value), nullable);
+      case 'not':
+      case 'assert':
+      case 'eof':
+      case 'leadingTrivia':
+      case 'trailingTrivia':
+        return true; // zero-width
+      case 'whitespace':
+        return false; // Requires at least one whitespace character (\s+) in syntax matching
+      case 'optional':
+      case 'zeroOrMore':
+        return true;
+      case 'separatedBy':
+        return SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(rule.value.item), nullable);
+      case 'oneOrMore':
+        if (Array.isArray(rule.value)) {
+          return rule.value.some((alt: any) => SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(alt), nullable));
+        }
+        return SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(rule.value), nullable);
+      case 'choice':
+        if (Array.isArray(rule.value)) {
+          return rule.value.some((alt: any) => SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(alt), nullable));
+        }
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  public getFirstReachableElements(nullable: Map<SyntaxElement, boolean>): Set<SyntaxElement> {
+    const referenced = new Set<SyntaxElement>();
+    if (!this.rules) return referenced;
+    
+    for (const rule of this.rules) {
+      if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
+        referenced.add(rule.value);
+      } else if (
+        rule.type === 'choice' || 
+        rule.type === 'zeroOrMore' || 
+        rule.type === 'oneOrMore'
+      ) {
+        if (Array.isArray(rule.value)) {
+          for (const alt of rule.value) {
+            const unwrapped = SyntaxElement.unwrapPattern(alt);
+            if (unwrapped instanceof SyntaxElement) {
+              referenced.add(unwrapped);
+            }
+          }
+        } else {
+          const unwrapped = SyntaxElement.unwrapPattern(rule.value);
+          if (unwrapped instanceof SyntaxElement) {
+            referenced.add(unwrapped);
+          }
+        }
+      } else if (
+        rule.type === 'optional' ||
+        rule.type === 'leadingTrivia' ||
+        rule.type === 'trailingTrivia' ||
+        rule.type === 'not' ||
+        rule.type === 'beginScope' ||
+        rule.type === 'endScope' ||
+        rule.type === 'assert'
+      ) {
+        const unwrapped = SyntaxElement.unwrapPattern(rule.value);
+        if (unwrapped instanceof SyntaxElement) {
+          referenced.add(unwrapped);
+        }
+      } else if (rule.type === 'separatedBy' && rule.value) {
+        const unwrappedItem = SyntaxElement.unwrapPattern(rule.value.item);
+        if (unwrappedItem instanceof SyntaxElement) {
+          referenced.add(unwrappedItem);
+        }
+        if (SyntaxElement.isPatternNullable(unwrappedItem, nullable)) {
+          const unwrappedSep = SyntaxElement.unwrapPattern(rule.value.separator);
+          if (unwrappedSep instanceof SyntaxElement) {
+            referenced.add(unwrappedSep);
+          }
+        }
+      }
+      
+      if (!SyntaxElement.isRuleNullable(rule, nullable)) {
+        break;
+      }
+    }
+    
+    return referenced;
   }
 
   // Builder Methods
@@ -1349,13 +1618,13 @@ export class SyntaxElement {
     for (const rule of this.rules) {
       if (rule.value instanceof SyntaxElement) {
         rule.value.autoInjectLoopBoundaries(visited);
-      } else if (rule.type === 'choice' && Array.isArray(rule.value)) {
+      } else if (RuleHelper.hasArrayValue(rule)) {
         for (const choice of rule.value) {
           if (choice instanceof SyntaxElement) {
             choice.autoInjectLoopBoundaries(visited);
           }
         }
-      } else if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+      } else if (RuleHelper.isLoop(rule)) {
         if (rule.value instanceof SyntaxElement) {
           rule.value.autoInjectLoopBoundaries(visited);
         } else if (Array.isArray(rule.value)) {
@@ -1383,7 +1652,7 @@ export class SyntaxElement {
     // 2. Scan for loops to inject boundaries
     for (let i = 0; i < this.rules.length; i++) {
       const rule = this.rules[i];
-      if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+      if (RuleHelper.isLoop(rule)) {
         if (rule.value instanceof SyntaxElement) {
           const loopChild = rule.value;
           const followPatterns = this.gatherFollowPatterns(this.rules, i + 1, new Set());
@@ -1464,7 +1733,7 @@ export class SyntaxElement {
     if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
       return this.collectElementStartPatterns(rule.value, visitedElements);
     }
-    if ((rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && rule.value) {
+    if (RuleHelper.isRepetitionOrOptional(rule) && rule.value) {
       if (Array.isArray(rule.value)) {
         const pats: any[] = [];
         for (const choice of rule.value) {
@@ -1500,11 +1769,7 @@ export class SyntaxElement {
   }
 
   private isOptionalRule(rule: Rule): boolean {
-    if (!rule) return true;
-    if (rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace') {
-      return true;
-    }
-    return false;
+    return RuleHelper.isOptional(rule);
   }
 
   // ==========================================
@@ -1610,7 +1875,7 @@ export class SyntaxElement {
         }
         if (nextCharIndex < text.length) {
           const char = text[nextCharIndex];
-          let isScopeEnd = (char === '}' || char === ')');
+          let isScopeEnd = false;
           if (ctx.activeScopeEnds && ctx.activeScopeEnds.length > 0) {
             for (const scopeEnd of ctx.activeScopeEnds) {
               if (typeof scopeEnd.value === 'string') {
@@ -1805,10 +2070,7 @@ export class SyntaxElement {
   }
 
   private isRuleStructural(rule: Rule): boolean {
-    if (rule.type === 'whitespace' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') return false;
-    if (rule.type === 'optional' || rule.type === 'zeroOrMore') return false;
-    if (rule.type === 'not') return false;
-    return true;
+    return RuleHelper.isStructural(rule);
   }
 
   private parseInternal(
@@ -2575,7 +2837,7 @@ export class SyntaxElement {
           }
         }
         break;
-      } else if (r.type === 'optional' || r.type === 'leadingTrivia' || r.type === 'trailingTrivia' || r.type === 'zeroOrMore') {
+      } else if (RuleHelper.hasOptionalOrTriviaOrLoop(r)) {
         continue;
       } else {
         break;
@@ -2611,7 +2873,7 @@ export class SyntaxElement {
     visited.add(this.id);
     const literals: string[] = [];
     for (const rule of this.rules) {
-      if ((rule.type === 'literal' || rule.type === 'endScope' || rule.type === 'beginScope') && typeof rule.value === 'string') {
+      if (RuleHelper.isTerminalTextValue(rule)) {
         if (!literals.includes(rule.value)) {
           literals.push(rule.value);
         }
@@ -2621,7 +2883,7 @@ export class SyntaxElement {
             literals.push(lit);
           }
         }
-      } else if ((rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && Array.isArray(rule.value)) {
+      } else if (RuleHelper.hasArrayValue(rule)) {
         for (const option of rule.value) {
           if (option instanceof SyntaxElement) {
             for (const lit of option.getTerminalLiterals(visited)) {
@@ -2635,7 +2897,7 @@ export class SyntaxElement {
             }
           }
         }
-      } else if ((rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'not') && rule.value) {
+      } else if (RuleHelper.isOptionOrTriviaOrLoopOrNot(rule) && rule.value) {
         if (rule.value instanceof SyntaxElement) {
           for (const lit of rule.value.getTerminalLiterals(visited)) {
             if (!literals.includes(lit)) {

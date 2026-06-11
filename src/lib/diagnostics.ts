@@ -7,154 +7,9 @@ export interface Diagnostic {
   suggestion: string;
 }
 
+// Local helper functions moved to SyntaxElement in syntax-element.ts for decoupling
 function unwrapPattern(p: any): any {
-  if (p && typeof p === 'object' && 'pattern' in p) {
-    return p.pattern;
-  }
-  return p;
-}
-
-function arePatternsEquivalent(a: any, b: any): boolean {
-  if (a === b) return true;
-  if (!a || !b) return false;
-
-  const ua = unwrapPattern(a);
-  const ub = unwrapPattern(b);
-
-  if (ua === ub) return true;
-  if (!ua || !ub) return false;
-
-  if (ua instanceof RegExp && ub instanceof RegExp) {
-    return ua.source === ub.source && ua.flags === ub.flags;
-  }
-
-  if (ua instanceof SyntaxElement && ub instanceof SyntaxElement) {
-    return ua.name === ub.name;
-  }
-
-  if (Array.isArray(ua) && Array.isArray(ub)) {
-    if (ua.length !== ub.length) return false;
-    for (let i = 0; i < ua.length; i++) {
-      if (!arePatternsEquivalent(ua[i], ub[i])) return false;
-    }
-    return true;
-  }
-
-  return false;
-}
-
-function isPatternNullable(pattern: any, nullable: Map<SyntaxElement, boolean>): boolean {
-  if (!pattern) return true;
-  if (pattern instanceof SyntaxElement) {
-    return nullable.get(pattern) === true;
-  }
-  if (typeof pattern === 'string') {
-    return pattern === ""; // Only empty string is nullable
-  }
-  if (pattern instanceof RegExp) {
-    try {
-      const anchored = new RegExp('^(?:' + pattern.source + ')');
-      return anchored.test("");
-    } catch (_) {
-      return false;
-    }
-  }
-  return false;
-}
-
-function isRuleNullable(rule: any, nullable: Map<SyntaxElement, boolean>): boolean {
-  switch (rule.type) {
-    case 'literal':
-    case 'regex':
-    case 'element':
-    case 'beginScope':
-    case 'endScope':
-      return isPatternNullable(unwrapPattern(rule.value), nullable);
-    case 'not':
-    case 'assert':
-    case 'eof':
-    case 'leadingTrivia':
-    case 'trailingTrivia':
-      return true; // zero-width
-    case 'whitespace':
-      return false; // Requires at least one whitespace character (\s+) in syntax engine matching
-    case 'optional':
-    case 'zeroOrMore':
-      return true;
-    case 'separatedBy':
-      return isPatternNullable(unwrapPattern(rule.value.item), nullable);
-    case 'oneOrMore':
-      if (Array.isArray(rule.value)) {
-        return rule.value.some((alt: any) => isPatternNullable(unwrapPattern(alt), nullable));
-      }
-      return isPatternNullable(unwrapPattern(rule.value), nullable);
-    case 'choice':
-      if (Array.isArray(rule.value)) {
-        return rule.value.some((alt: any) => isPatternNullable(unwrapPattern(alt), nullable));
-      }
-      return false;
-    default:
-      return false;
-  }
-}
-
-function getFirstReachableElements(el: SyntaxElement, nullable: Map<SyntaxElement, boolean>): Set<SyntaxElement> {
-  const referenced = new Set<SyntaxElement>();
-  if (!el.rules) return referenced;
-  
-  for (const rule of el.rules) {
-    if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
-      referenced.add(rule.value);
-    } else if (
-      rule.type === 'choice' || 
-      rule.type === 'zeroOrMore' || 
-      rule.type === 'oneOrMore'
-    ) {
-      if (Array.isArray(rule.value)) {
-        for (const alt of rule.value) {
-          const unwrapped = unwrapPattern(alt);
-          if (unwrapped instanceof SyntaxElement) {
-            referenced.add(unwrapped);
-          }
-        }
-      } else {
-        const unwrapped = unwrapPattern(rule.value);
-        if (unwrapped instanceof SyntaxElement) {
-          referenced.add(unwrapped);
-        }
-      }
-    } else if (
-      rule.type === 'optional' ||
-      rule.type === 'leadingTrivia' ||
-      rule.type === 'trailingTrivia' ||
-      rule.type === 'not' ||
-      rule.type === 'beginScope' ||
-      rule.type === 'endScope' ||
-      rule.type === 'assert'
-    ) {
-      const unwrapped = unwrapPattern(rule.value);
-      if (unwrapped instanceof SyntaxElement) {
-        referenced.add(unwrapped);
-      }
-    } else if (rule.type === 'separatedBy' && rule.value) {
-      const unwrappedItem = unwrapPattern(rule.value.item);
-      if (unwrappedItem instanceof SyntaxElement) {
-        referenced.add(unwrappedItem);
-      }
-      if (isPatternNullable(unwrappedItem, nullable)) {
-        const unwrappedSep = unwrapPattern(rule.value.separator);
-        if (unwrappedSep instanceof SyntaxElement) {
-          referenced.add(unwrappedSep);
-        }
-      }
-    }
-    
-    if (!isRuleNullable(rule, nullable)) {
-      break;
-    }
-  }
-  
-  return referenced;
+  return SyntaxElement.unwrapPattern(p);
 }
 
 export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagnostic[] {
@@ -299,7 +154,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
       let elNullable = true;
       if (el.rules && el.rules.length > 0) {
         for (const rule of el.rules) {
-          if (!isRuleNullable(rule, nullable)) {
+          if (!SyntaxElement.isRuleNullable(rule, nullable)) {
             elNullable = false;
             break;
           }
@@ -341,7 +196,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
       localVisited.add(current);
       stack.push(current);
 
-      const nextElements = getFirstReachableElements(current, nullable);
+      const nextElements = current.getFirstReachableElements(nullable);
       for (const nextEl of nextElements) {
         dfs(nextEl);
         if (cycleFound) return;
@@ -621,7 +476,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
         (currentRule.type === 'not' || currentRule.type === 'assert') &&
         (nextRule.type === 'not' || nextRule.type === 'assert')
       ) {
-        const eq = arePatternsEquivalent(currentRule.value, nextRule.value);
+        const eq = SyntaxElement.arePatternsEquivalent(currentRule.value, nextRule.value);
         if (eq) {
           if (currentRule.type === nextRule.type) {
             diagnostics.push({
@@ -645,13 +500,13 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     // New Custom Checking: Infinite loops inside loops (ZeroOrMore, OneOrMore)
     for (const rule of el.rules) {
       if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
-        const unwrapped = unwrapPattern(rule.value);
+        const unwrapped = SyntaxElement.unwrapPattern(rule.value);
         let isNullable = false;
         
         if (Array.isArray(unwrapped)) {
-          isNullable = unwrapped.every(p => isPatternNullable(p, nullable));
+          isNullable = unwrapped.every(p => SyntaxElement.isPatternNullable(p, nullable));
         } else {
-          isNullable = isPatternNullable(unwrapped, nullable);
+          isNullable = SyntaxElement.isPatternNullable(unwrapped, nullable);
         }
 
         if (isNullable) {
@@ -882,14 +737,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     }
 
     // Custom check: Consecutive StrictLiteral rules
-    const structuralRules = el.rules.filter(rule => {
-      return (
-        rule.type !== 'optional' &&
-        rule.type !== 'leadingTrivia' &&
-        rule.type !== 'trailingTrivia' &&
-        rule.type !== 'whitespace'
-      );
-    });
+    const structuralRules = el.structuralRules;
 
     for (let i = 0; i < structuralRules.length - 1; i++) {
       const r1 = structuralRules[i];

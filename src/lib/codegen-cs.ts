@@ -5,7 +5,9 @@ import {
   compileDFA, 
   formatChar, 
   escapeString, 
-  collectElements 
+  collectElements,
+  BaseCodeGenerator,
+  compileDFATransitions
 } from './codegen-core';
 import { isSimpleCaseInsensitiveRegex } from './utils';
 
@@ -71,70 +73,30 @@ export function generateDFACSharpMethod(methodName: string, regex: RegExp, ruleI
   const patternStr = regex.source;
   
   try {
-    const { dfaStates, intervals } = compileDFA(regex);
+    const { acceptingStateIds, transitions } = compileDFATransitions(regex);
     
-    const acceptingCases: string[] = [];
-    for (const dState of dfaStates) {
-      if (dState.isAccepting) {
-        acceptingCases.push(`                case ${dState.id}: finalMatchLength = i; break;`);
-      }
-    }
-    const acceptingStatesCases = acceptingCases.join('\n');
+    const acceptingCases = acceptingStateIds
+      .map(id => `                case ${id}: finalMatchLength = i; break;`)
+      .join('\n');
+    const acceptingStatesCases = acceptingCases;
     
     const transitionCasesList: string[] = [];
-    for (const dState of dfaStates) {
-      const targetGroups = new Map<number, {start: number; end: number}[]>();
-      for (const [intervalIdx, targetDFA] of dState.transitions.entries()) {
-        const interval = intervals[intervalIdx];
-        if (!targetGroups.has(targetDFA.id)) {
-          targetGroups.set(targetDFA.id, []);
-        }
-        targetGroups.get(targetDFA.id)!.push({start: interval[0], end: interval[1]});
-      }
-      
-      for (const [targetId, ranges] of targetGroups.entries()) {
-        const sorted = [...ranges].sort((a, b) => a.start - b.start);
-        const merged: {start: number; end: number}[] = [];
-        for (const r of sorted) {
-          if (merged.length === 0) {
-            merged.push({start: r.start, end: r.end});
-          } else {
-            const last = merged[merged.length - 1];
-            if (r.start <= last.end + 1) {
-              last.end = Math.max(last.end, r.end);
-            } else {
-              merged.push({start: r.start, end: r.end});
-            }
-          }
-        }
-        targetGroups.set(targetId, merged);
-      }
-      
-      const sortedTargets = Array.from(targetGroups.entries()).sort((a, b) => {
-        const aWidth = a[1].reduce((sum, r) => sum + (r.end - r.start + 1), 0);
-        const bWidth = b[1].reduce((sum, r) => sum + (r.end - r.start + 1), 0);
-        return aWidth - bWidth;
-      });
-      
+    for (const trans of transitions) {
       const conditions: string[] = [];
-      for (let j = 0; j < sortedTargets.length; j++) {
-        const [targetId, ranges] = sortedTargets[j];
-        const rangeExprs = ranges.map(r => {
-          if (r.start === r.end) {
-            return `c == ${formatChar(r.start)}`;
-          } else {
-            return `(c >= ${formatChar(r.start)} && c <= ${formatChar(r.end)})`;
-          }
-        });
-        const condStr = rangeExprs.join(' || ');
-        
-        const isFallback = (j === sortedTargets.length - 1 && ranges.reduce((sum, r) => sum + (r.end - r.start + 1), 0) > 30000);
-        
-        if (isFallback) {
-          conditions.push(`                    state = ${targetId}; break; // Fallback transition`);
+      for (const t of trans.targets) {
+        if (t.isFallback) {
+          conditions.push(`                    state = ${t.targetId}; break; // Fallback transition`);
         } else {
+          const rangeExprs = t.ranges.map(r => {
+            if (r.start === r.end) {
+              return `c == ${formatChar(r.start)}`;
+            } else {
+              return `(c >= ${formatChar(r.start)} && c <= ${formatChar(r.end)})`;
+            }
+          });
+          const condStr = rangeExprs.join(' || ');
           const ifKeyword = conditions.length === 0 ? 'if' : 'else if';
-          conditions.push(`                    ${ifKeyword} (${condStr}) { state = ${targetId}; break; }`);
+          conditions.push(`                    ${ifKeyword} (${condStr}) { state = ${t.targetId}; break; }`);
         }
       }
       
@@ -147,7 +109,7 @@ export function generateDFACSharpMethod(methodName: string, regex: RegExp, ruleI
         conditions.push(`                    goto end_match;`);
       }
       
-      transitionCasesList.push(`            case ${dState.id}:
+      transitionCasesList.push(`            case ${trans.dStateId}:
 ${conditions.join('\n')}
 `);
     }
@@ -771,41 +733,54 @@ ${generateAstVisitorAndRewriter(visibleElements)}
 }
 `;
 }
-/**
- * Generates the complete, self-contained C# code string in Allman style.
- */
-export function generateFullCSharp(rootElement: SyntaxElement, namespaceName: string = "SyntaxEngine", scopeBuilder?: ScopeBuilder): string {
-  const elements = collectElements(rootElement);
-  const ruleTokenNames: { ruleId: number; tokenName: string }[] = [];
-  for (const el of elements) {
-    for (const rule of el.rules) {
-      if ((rule as any).tokenName) {
-        ruleTokenNames.push({ ruleId: rule.id, tokenName: (rule as any).tokenName });
+export class CSharpCodeGenerator extends BaseCodeGenerator {
+  private namespaceName: string;
+
+  constructor(rootElement: SyntaxElement, namespaceName: string = "SyntaxEngine", scopeBuilder?: ScopeBuilder) {
+    super(rootElement, scopeBuilder);
+    this.namespaceName = namespaceName;
+  }
+
+  public generate(): string {
+    const ruleTokenNames: { ruleId: number; tokenName: string }[] = [];
+    for (const el of this.elements) {
+      for (const rule of el.rules) {
+        if ((rule as any).tokenName) {
+          ruleTokenNames.push({ ruleId: rule.id, tokenName: (rule as any).tokenName });
+        }
       }
     }
-  }
-  const coreCode = generateCoreCSharpCode(namespaceName, scopeBuilder, ruleTokenNames);
-  const parserCode = generateParserAndAstCSharpCode(rootElement, namespaceName);
-  const astCode = generateStronglyTypedAstClasses(rootElement, namespaceName);
-  // Strip identical usings/namespace wraps to create a beautiful single cohesive file
-  const cleanParser = parserCode
-    .replace(/using [a-zA-Z.]+;\s*/g, '')
-    .replace(`namespace ${namespaceName}\n{`, '')
-    .replace(/}\s*$/, ''); // remove namespace ending bracket
-  const cleanAst = astCode
-    .replace(/using [a-zA-Z.]+;\s*/g, '')
-    .replace(`namespace ${namespaceName}\n{`, '')
-    .replace(/}\s*$/, ''); // remove namespace ending bracket
-  // Splice everything into the core file beautifully right before its last namespace enclosing bracket '}'
-  const lastBracketIndex = coreCode.lastIndexOf('}');
-  const prefix = coreCode.substring(0, lastBracketIndex);
-  const suffix = coreCode.substring(lastBracketIndex);
-  return `${prefix}
+    const coreCode = generateCoreCSharpCode(this.namespaceName, this.scopeBuilder, ruleTokenNames);
+    const parserCode = generateParserAndAstCSharpCode(this.rootElement, this.namespaceName);
+    const astCode = generateStronglyTypedAstClasses(this.rootElement, this.namespaceName);
+    // Strip identical usings/namespace wraps to create a beautiful single cohesive file
+    const cleanParser = parserCode
+      .replace(/using [a-zA-Z.]+;\s*/g, '')
+      .replace(`namespace ${this.namespaceName}\n{`, '')
+      .replace(/}\s*$/, ''); // remove namespace ending bracket
+    const cleanAst = astCode
+      .replace(/using [a-zA-Z.]+;\s*/g, '')
+      .replace(`namespace ${this.namespaceName}\n{`, '')
+      .replace(/}\s*$/, ''); // remove namespace ending bracket
+    // Splice everything into the core file beautifully right before its last namespace enclosing bracket '}'
+    const lastBracketIndex = coreCode.lastIndexOf('}');
+    const prefix = coreCode.substring(0, lastBracketIndex);
+    const suffix = coreCode.substring(lastBracketIndex);
+    return `${prefix}
     #region Specific Grammar Parser and Red Nodes
 ${cleanParser.trim()}
 ${cleanAst.trim()}
     #endregion
 ${suffix}`;
+  }
+}
+
+/**
+ * Generates the complete, self-contained C# code string in Allman style.
+ */
+export function generateFullCSharp(rootElement: SyntaxElement, namespaceName: string = "SyntaxEngine", scopeBuilder?: ScopeBuilder): string {
+  const generator = new CSharpCodeGenerator(rootElement, namespaceName, scopeBuilder);
+  return generator.generate();
 }
 /**
  * Custom file export interface representing independent C# compiler files.
