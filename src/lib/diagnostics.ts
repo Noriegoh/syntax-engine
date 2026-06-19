@@ -1,4 +1,4 @@
-import { SyntaxElement } from "./syntax-element";
+import { SyntaxElement, RuleHelper } from "./syntax-element";
 
 export interface Diagnostic {
   type: "error" | "warning" | "info";
@@ -237,22 +237,31 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     // Rule C: Shadowing & Sorting Hazard in Choices (Warning)
     for (const rule of el.rules) {
       if (rule.type === 'choice') {
-        // Warning check for Token() wrappers when used inside ExpectsOneOf
+        // Warning check for Token() wrappers when used inside OneOff
         if (rule.hasTokenWarning) {
-          diagnostics.push({
-            type: "warning",
-            nodeName: elName,
-            message: `Mixed Token wrapper inside ExpectsOneOf: Calling ExpectsOneOf with Token(...) wrapping individual choices runs with trivia rules on the parent block instead. This causes non-Token choices to unexpectedly parse with trivas too.`,
-            suggestion: `Avoid wrapping choice alternatives of ExpectsOneOf inside Token(). Instead, call root.ExpectsOneOfToken(...) to explicitly match any choice branch with default leading and trailing trivas.`
-          });
+          if (rule.isToken) {
+            diagnostics.push({
+              type: "warning",
+              nodeName: elName,
+              message: `Prohibited use of Token() inside OneOffToken(). Please pass raw patterns directly as OneOffToken() automatically handles skipped trivias.`,
+              suggestion: `Remove Token() wrapper from OneOffToken() arguments.`
+            });
+          } else {
+            diagnostics.push({
+              type: "warning",
+              nodeName: elName,
+              message: `Mixed Token wrapper inside OneOff: Calling OneOff with Token(...) wrapping individual choices runs with trivia rules on the parent block instead. This causes non-Token choices to unexpectedly parse with trivas too.`,
+              suggestion: `Avoid wrapping choice alternatives of OneOff inside Token(). Instead, call root.OneOffToken(...) to explicitly match any choice branch with default leading and trailing trivas.`
+            });
+          }
         }
-        // Warning check for StrictLiteral() wrappers when used inside ExpectsOneOf
-        if (rule.hasStrictWarning) {
+        // Warning check for LiteralMatch() wrappers when used inside OneOff
+        if (rule.hasLiteralMatchWarning) {
           diagnostics.push({
             type: "warning",
             nodeName: elName,
-            message: `Mixed StrictLiteral wrapper inside ExpectsOneOf: Calling ExpectsOneOf with StrictLiteral(...) wrapping individual choices runs with trivia rules on the parent block instead. This causes non-strict choices to unexpectedly parse with trivas too.`,
-            suggestion: `Avoid wrapping choice alternatives of ExpectsOneOf inside StrictLiteral(). Instead, call root.ExpectsOneOfStrict(...) to explicitly match any choice branch with default leading and trailing trivas.`
+            message: `Mixed LiteralMatch wrapper inside OneOff: Calling OneOff with LiteralMatch(...) wrapping individual choices runs with trivia rules on the parent block instead. This causes non-strict choices to unexpectedly parse with trivas too.`,
+            suggestion: `Avoid wrapping choice alternatives of OneOff inside LiteralMatch(). Instead, call root.OneOffToken(...) to explicitly match any choice branch with default leading and trailing trivas.`
           });
         }
 
@@ -278,20 +287,59 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
         }
       } else if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
         if (rule.hasTokenWarning) {
+          if (rule.isToken) {
+            diagnostics.push({
+              type: "warning",
+              nodeName: elName,
+              message: `Prohibited use of Token() inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}(). Please pass raw patterns directly as ${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}() automatically handles skipped trivias.`,
+              suggestion: `Do not use Token() inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}().`
+            });
+          } else {
+            diagnostics.push({
+              type: "warning",
+              nodeName: elName,
+              message: `Mixed Token wrapper inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'}: Calling ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} with Token(...) wrapping individual elements runs with trivia rules on the parent block instead. This causes non-Token elements to unexpectedly parse with trivas too.`,
+              suggestion: `Avoid wrapping option elements of ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} inside Token(). Instead, call root.${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}(...) to explicitly match elements with default leading and trailing trivas per match.`
+            });
+          }
+        }
+        if (rule.hasLiteralMatchWarning) {
           diagnostics.push({
             type: "warning",
             nodeName: elName,
-            message: `Mixed Token wrapper inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'}: Calling ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} with Token(...) wrapping individual elements runs with trivia rules on the parent block instead. This causes non-Token elements to unexpectedly parse with trivas too.`,
-            suggestion: `Avoid wrapping option elements of ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} inside Token(). Instead, call root.${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}(...) to explicitly match elements with default leading and trailing trivas per match.`
+            message: `Mixed LiteralMatch wrapper inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'}: Calling ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} with LiteralMatch(...) wrapping individual elements runs with trivia rules on the parent block instead. This causes non-strict elements to unexpectedly parse with trivas too.`,
+            suggestion: `Avoid wrapping option elements of ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} inside LiteralMatch(). Instead, call root.${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}(...) to explicitly match elements with default leading and trailing trivas per match.`
           });
         }
-        if (rule.hasStrictWarning) {
-          diagnostics.push({
-            type: "warning",
-            nodeName: elName,
-            message: `Mixed StrictLiteral wrapper inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'}: Calling ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} with StrictLiteral(...) wrapping individual elements runs with trivia rules on the parent block instead. This causes non-strict elements to unexpectedly parse with trivas too.`,
-            suggestion: `Avoid wrapping option elements of ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} inside StrictLiteral(). Instead, call root.${rule.type === 'zeroOrMore' ? 'ZeroOrMoreStrict' : 'OneOrMoreStrict'}(...) to explicitly match elements with default leading and trailing trivas per match.`
-          });
+        if (rule.value instanceof SyntaxElement) {
+          const innerEl = rule.value;
+          const structuralRules = innerEl.rules.filter(r => !['leadingTrivia', 'trailingTrivia', 'nodeName', 'fieldName'].includes(r.type as string));
+          if (structuralRules.length === 1 && structuralRules[0].type === 'choice') {
+            diagnostics.push({
+              type: "info",
+              nodeName: elName,
+              message: `Redundant OneOff wrapper inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'}.`,
+              suggestion: `Use ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} directly, as it supports arrays and multiple arguments natively. E.g. ${rule.type === 'zeroOrMore' ? '.ZeroOrMore(rule1, rule2)' : '.OneOrMore(rule1, rule2)'} rather than ${rule.type === 'zeroOrMore' ? '.ZeroOrMore(new SyntaxElement(...).OneOff(rule1, rule2))' : '.OneOrMore(new SyntaxElement(...).OneOff(rule1, rule2))'}.`
+            });
+          }
+        }
+      } else if (rule.type === 'separatedBy') {
+        if (rule.hasTokenWarning) {
+          if (rule.isToken) {
+            diagnostics.push({
+              type: "warning",
+              nodeName: elName,
+              message: `Prohibited use of Token() inside SeparatedByToken(). Please pass raw patterns directly as SeparatedByToken() automatically handles skipped trivias.`,
+              suggestion: `Do not use Token() inside SeparatedByToken().`
+            });
+          } else {
+            diagnostics.push({
+              type: "warning",
+              nodeName: elName,
+              message: `Mixed Token wrapper inside SeparatedBy: Calling SeparatedBy with Token(...) wrapping item or separator runs with trivia rules on the parent block instead. This causes non-Token elements to unexpectedly parse with trivas too.`,
+              suggestion: `Avoid wrapping item or separator of SeparatedBy inside Token(). Instead, call root.SeparatedByToken(...) to explicitly match elements with default leading and trailing trivas.`
+            });
+          }
         }
       }
     }
@@ -556,16 +604,31 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
               repr = `regex:${unwrapped.source}`;
             } else if (unwrapped instanceof SyntaxElement) {
               repr = `element:${unwrapped.name}`;
-            } else if (unwrapped && typeof unwrapped === 'object' && 'pattern' in unwrapped) {
-              repr = `token:${JSON.stringify(unwrapped)}`;
+            } else if (unwrapped && typeof unwrapped === 'object') {
+              let innerRepr = "";
+              if ('pattern' in unwrapped) {
+                const subP = (unwrapped as any).pattern;
+                innerRepr += `pattern:${subP instanceof RegExp ? subP.source : typeof subP === 'string' ? "str:"+subP : "obj"}`;
+              }
+              if ('literal' in unwrapped) {
+                const subL = (unwrapped as any).literal;
+                innerRepr += `literal:${subL instanceof RegExp ? subL.source : typeof subL === 'string' ? "str:"+subL : "obj"}`;
+              }
+              repr = `token:${innerRepr}`;
             }
 
             if (repr) {
               if (seen.has(repr)) {
+                let disp = repr;
+                if (repr.startsWith("literal:")) disp = repr.slice(8);
+                else if (repr.startsWith("regex:")) disp = repr.slice(6);
+                else if (repr.startsWith("element:")) disp = repr.slice(8);
+                else if (repr.startsWith("token:")) disp = repr.slice(6);
+
                 diagnostics.push({
                   type: "warning",
                   nodeName: elName,
-                  message: `Duplicate alternative: The choice list contains a duplicate entry for "${repr.split(':')[1]}".`,
+                  message: `Duplicate alternative: The choice list contains a duplicate entry for "${disp}".`,
                   suggestion: "Remove the duplicate choice from the alternative list since it is redundant and can never be reached."
                 });
               } else {
@@ -620,7 +683,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
                   type: "warning",
                   nodeName: elName,
                   message: `Greedy match masking: The choice alternative '${shorter.value}' (index ${shorter.index}) is a prefix of '${longer.value}' (index ${longer.index}). The parser will always match the shorter prefix and fail to recognize the longer option.`,
-                  suggestion: `Move the longer option '${longer.value}' before the shorter prefix '${shorter.value}' in the ExpectsOneOf list.`
+                  suggestion: `Move the longer option '${longer.value}' before the shorter prefix '${shorter.value}' in the OneOff list.`
                 });
                 hasMaskingWarning = true;
               }
@@ -634,8 +697,8 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
             diagnostics.push({
               type: "info",
               nodeName: elName,
-              message: "Trivial choice alternative: ExpectsOneOf is used with only 1 choice option.",
-              suggestion: "Simplify your rule definition by replacing ExpectsOneOf with a direct Expects() call."
+              message: "Trivial choice alternative: OneOff is used with only 1 choice option.",
+              suggestion: "Simplify your rule definition by replacing OneOff with a direct Expects() call."
             });
           }
         }
@@ -742,11 +805,11 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     for (let i = 0; i < structuralRules.length - 1; i++) {
       const r1 = structuralRules[i];
       const r2 = structuralRules[i + 1];
-      const isR1Strict = r1.type === 'strictLiteral' || r1.type === 'caseInsensitiveStrictLiteral';
-      const isR2Strict = r2.type === 'strictLiteral' || r2.type === 'caseInsensitiveStrictLiteral';
+      const isR1Strict = r1.type === 'literalMatch' || r1.type === 'caseInsensitiveLiteralMatch';
+      const isR2Strict = r2.type === 'literalMatch' || r2.type === 'caseInsensitiveLiteralMatch';
       if (isR1Strict && isR2Strict) {
-        const p1 = r1.type === 'strictLiteral' ? r1.value?.literal : r1.value?.pattern;
-        const p2 = r2.type === 'strictLiteral' ? r2.value?.literal : r2.value?.pattern;
+        const p1 = r1.type === 'literalMatch' ? r1.value?.literal : r1.value?.pattern;
+        const p2 = r2.type === 'literalMatch' ? r2.value?.literal : r2.value?.pattern;
         diagnostics.push({
           type: "warning",
           nodeName: elName,
@@ -755,7 +818,142 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
         });
       }
     }
+
+    // New Custom Checking: LiteralMatch usage and boundary/character set overlapping triggers
+    for (let i = 0; i < el.rules.length; i++) {
+      const rule = el.rules[i];
+      if (rule.type === 'literalMatch' || rule.type === 'caseInsensitiveLiteralMatch') {
+        const literal = rule.value?.literal;
+        const pattern = rule.value?.pattern;
+
+        if (literal && pattern instanceof RegExp) {
+          const prevRule = el.rules[i - 1];
+          const nextRule = el.rules[i + 1];
+          const isTokenized = prevRule?.type === 'leadingTrivia' && nextRule?.type === 'trailingTrivia';
+
+          if (!isTokenized) {
+            diagnostics.push({
+              type: "warning",
+              nodeName: elName,
+              message: `LiteralMatch without Token wrapper: LiteralMatch for "${literal}" is used directly on the SyntaxElement chain without parsing/skipping layout trivia. Whitespaces and comments preceding or succeeding "${literal}" won't be parsed correctly.`,
+              suggestion: `Wrap key phrases/boundary matchers in a Token: use .Token(LiteralMatch(/${literal}/i, id_exp)) or .LiteralMatch(Token(/${literal}/i, id_exp)) to handle trivias.`
+            });
+          }
+
+          // Compute starting idx of subsequent rules in the sequence
+          const nextIdx = isTokenized ? i + 2 : i + 1;
+
+          // Collect all subsequent rules in the current element sequence
+          // ignoring standard trivia rules for cleaner matching
+          const subsequentRules = el.rules.slice(nextIdx).filter(r => r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia');
+
+          if (subsequentRules.length > 0) {
+            // Find the first structural rule
+            const firstSubsequent = subsequentRules[0];
+            const nextTriggers = getStartingPatterns(firstSubsequent);
+            const overlaps = nextRuleOverlapsBoundary(nextTriggers, pattern);
+
+            if (!overlaps) {
+              diagnostics.push({
+                type: "info",
+                nodeName: elName,
+                message: `Avoid unnecessary boundary checks: The next rule starts with triggers [${nextTriggers.strings.slice(0, 3).map(s => `"${s}"`).join(", ")}${nextTriggers.strings.length > 3 ? ", ..." : ""}] which do NOT match the identifier boundary /^[a-zA-Z_]/. Since they cannot blend, a full LiteralMatch is redundant here.`,
+                suggestion: `Simplify the parser and speed up matching by replacing this rule with a direct token call, like .Token(/${literal}/i) or .Token("${literal}").`
+              });
+            }
+          }
+        }
+      }
+    }
   }
 
   return diagnostics;
+}
+
+function getStartingPatterns(ruleValue: any, visited = new Set<any>()): { strings: string[], regexes: RegExp[] } {
+  const result: { strings: string[], regexes: RegExp[] } = { strings: [], regexes: [] };
+  if (!ruleValue) return result;
+  if (visited.has(ruleValue)) return result;
+  visited.add(ruleValue);
+
+  const unwrapped = SyntaxElement.unwrapPattern(ruleValue);
+  if (unwrapped instanceof SyntaxElement) {
+    for (const r of unwrapped.rules) {
+      if ((r.type as string) === 'leadingTrivia' || (r.type as string) === 'trailingTrivia') continue;
+      const sub = getStartingPatterns(r, visited);
+      result.strings.push(...sub.strings);
+      result.regexes.push(...sub.regexes);
+      if (r.type !== 'optional' && r.type !== 'zeroOrMore' && (r.type as string) !== 'leadingTrivia' && (r.type as string) !== 'trailingTrivia') {
+        break;
+      }
+    }
+  } else if (Array.isArray(unwrapped)) {
+    for (const item of unwrapped) {
+      const sub = getStartingPatterns(item, visited);
+      result.strings.push(...sub.strings);
+      result.regexes.push(...sub.regexes);
+    }
+  } else if (typeof unwrapped === 'string') {
+    result.strings.push(unwrapped);
+  } else if (unwrapped instanceof RegExp) {
+    result.regexes.push(unwrapped);
+  } else if (typeof unwrapped === 'object' && unwrapped !== null) {
+    if ('type' in unwrapped) {
+      const type = unwrapped.type;
+      const value = unwrapped.value;
+      if (type === 'literal' || type === 'beginScope' || type === 'endScope') {
+        if (typeof value === 'string') result.strings.push(value);
+      } else if (type === 'literalMatch' || type === 'caseInsensitiveLiteralMatch') {
+        if (value && typeof value === 'object') {
+          if (value.literal) result.strings.push(value.literal);
+        }
+      } else if (type === 'regex' || type === 'caseInsensitiveLiteral') {
+        if (value instanceof RegExp) result.regexes.push(value);
+      } else if (type === 'choice' || type === 'zeroOrMore' || type === 'oneOrMore') {
+        const sub = getStartingPatterns(value, visited);
+        result.strings.push(...sub.strings);
+        result.regexes.push(...sub.regexes);
+      } else if (type === 'optional' || type === 'not' || type === 'assert') {
+        const sub = getStartingPatterns(value, visited);
+        result.strings.push(...sub.strings);
+        result.regexes.push(...sub.regexes);
+      } else if (type === 'element') {
+        const sub = getStartingPatterns(value, visited);
+        result.strings.push(...sub.strings);
+        result.regexes.push(...sub.regexes);
+      } else if (type === 'separatedBy' && value) {
+        const sub = getStartingPatterns(value.item, visited);
+        result.strings.push(...sub.strings);
+        result.regexes.push(...sub.regexes);
+      }
+    } else if ('literal' in unwrapped && 'pattern' in unwrapped) {
+      if (typeof unwrapped.literal === 'string') result.strings.push(unwrapped.literal);
+      else if (unwrapped.literal instanceof RegExp) result.regexes.push(unwrapped.literal);
+    } else if ('__isTokenMarker' in unwrapped && unwrapped.pattern) {
+      const sub = getStartingPatterns(unwrapped.pattern, visited);
+      result.strings.push(...sub.strings);
+      result.regexes.push(...sub.regexes);
+    }
+  }
+
+  return result;
+}
+
+function nextRuleOverlapsBoundary(nextTriggers: { strings: string[], regexes: RegExp[] }, boundaryRegex: RegExp): boolean {
+  for (const s of nextTriggers.strings) {
+    if (s.length > 0) {
+      if (boundaryRegex.test(s.charAt(0))) {
+        return true;
+      }
+    }
+  }
+  const sampleChars = ["a", "z", "A", "Z", "0", "9", "_"];
+  for (const r of nextTriggers.regexes) {
+    for (const char of sampleChars) {
+      if (boundaryRegex.test(char) && r.test(char)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }

@@ -11,6 +11,9 @@ import {
 } from './codegen-core';
 import { isSimpleCaseInsensitiveRegex } from './utils';
 
+let specIdCounter = 0;
+const nextSpecId = () => ++specIdCounter;
+
 function getCSharpPrimitiveType(primitiveType: string): string {
   switch (primitiveType) {
     case 'Integer': return 'int';
@@ -199,13 +202,76 @@ function compileSpeculativeMatch(
   ruleId: number,
   varId: number,
   childElements: Set<string>,
-  dfaMethodName?: string
+  dfaMethodName?: string,
+  getOrCreateDfaMethod?: (p: RegExp, type: 'Rule' | 'Spec', fallbackRuleId: number) => string
 ): { code: string; matchedName: string; parsedAstName: string; newOffsetName: string; precName: string; maxDepName: string } {
   const mVar = `matched_${varId}`;
   const astVar = `parsedAst_${varId}`;
   const offsetVar = `newOffset_${varId}`;
   const precVar = `prec_${varId}`;
   let code = "";
+  if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
+    const innerPattern = pattern.pattern;
+    const tokenName = pattern.name;
+    const innerSpecId = nextSpecId();
+    const innerSpec = compileSpeculativeMatch(innerPattern, ruleId, innerSpecId, childElements, dfaMethodName, getOrCreateDfaMethod);
+
+    let leadCode = "";
+    if (SyntaxElement.defaultLeadingTrivia) {
+      const leadId = nextSpecId();
+      let leadDfaName;
+      if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
+         leadDfaName = getOrCreateDfaMethod ? getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId) : undefined;
+      }
+      const leadSpec = compileSpeculativeMatch(SyntaxElement.defaultLeadingTrivia, ruleId, leadId, childElements, leadDfaName, getOrCreateDfaMethod);
+      leadCode = `
+        ${leadSpec.code.trim()}
+        if (${leadSpec.matchedName}) {
+           currentOffset = ${leadSpec.newOffsetName};
+        }
+      `;
+    }
+
+    let trailCode = "";
+    if (SyntaxElement.defaultTrailingTrivia) {
+      const trailId = nextSpecId();
+      let trailDfaName;
+      if (SyntaxElement.defaultTrailingTrivia instanceof RegExp) {
+         trailDfaName = getOrCreateDfaMethod ? getOrCreateDfaMethod(SyntaxElement.defaultTrailingTrivia, 'Spec', ruleId) : undefined;
+      }
+      const trailSpec = compileSpeculativeMatch(SyntaxElement.defaultTrailingTrivia, ruleId, trailId, childElements, trailDfaName, getOrCreateDfaMethod);
+      trailCode = `
+        ${trailSpec.code.trim()}
+        if (${trailSpec.matchedName}) {
+           currentOffset = ${trailSpec.newOffsetName};
+        }
+      `;
+    }
+
+    let astCode = `GreenNode ${astVar} = ${innerSpec.parsedAstName};`;
+    code = `
+      int startOffset_${varId} = currentOffset;
+      ${leadCode}
+      int savedOffsetBefInner_${varId} = currentOffset;
+      ${innerSpec.code.trim()}
+      bool ${mVar} = ${innerSpec.matchedName};
+      int ${offsetVar} = ${innerSpec.newOffsetName};
+      ${astCode}
+      if (${mVar}) {
+          currentOffset = ${offsetVar};
+          ${trailCode}
+          ${offsetVar} = currentOffset;
+          currentOffset = startOffset_${varId};
+      } else {
+          currentOffset = startOffset_${varId};
+      }
+      int ${precVar} = 0; // fallback
+      ${innerSpec.precName ? `${precVar} = ${innerSpec.precName};` : ''}
+      int maxDep_${varId} = ${innerSpec.maxDepName};
+    `;
+    return { code, matchedName: mVar, parsedAstName: astVar, newOffsetName: offsetVar, precName: precVar, maxDepName: `maxDep_${varId}` };
+  }
+
   if (pattern instanceof RegExp) {
     if (isSimpleCaseInsensitiveRegex(pattern)) {
       const esc = escapeString(pattern.source);
@@ -242,7 +308,18 @@ function compileSpeculativeMatch(
                         int ${precVar} = 0;`;
   } else if (typeof pattern === 'string') {
     const esc = escapeString(pattern);
-    code = `
+    if (pattern.length === 1) {
+      const charLit = esc === "\\\\" ? "\\\\" : esc.replace(/'/g, "\\'");
+      code = `
+                        const char lit_${varId} = '${charLit}';
+                        bool ${mVar} = ctx.MatchCharacter(text, currentOffset, lit_${varId});
+                        GreenNode ${astVar} = ${mVar} ? GreenNode.Create(NodeType.Literal, "${esc}", ${ruleId}, 1) : null;
+                        int ${offsetVar} = ${mVar} ? currentOffset + 1 : currentOffset;
+                        int maxDep_${varId} = ${mVar} ? currentOffset + 1 : currentOffset + 1;
+                        localMaxOffset = Math.Max(localMaxOffset, maxDep_${varId});
+                        int ${precVar} = 0;`;
+    } else {
+      code = `
                         const string lit_${varId} = "${esc}";
                         const int litLen_${varId} = ${pattern.length};
                         bool ${mVar} = ctx.MatchLiteral(text, currentOffset, lit_${varId}, litLen_${varId});
@@ -251,6 +328,7 @@ function compileSpeculativeMatch(
                         int maxDep_${varId} = ${mVar} ? currentOffset + litLen_${varId} : currentOffset + 1;
                         localMaxOffset = Math.Max(localMaxOffset, maxDep_${varId});
                         int ${precVar} = 0;`;
+    }
   } else {
     // SyntaxElement
     const cname = sanitize(pattern.name);
@@ -304,7 +382,7 @@ function generateSyntaxFactory(visibleElements: SyntaxElement[]): string {
         rule.type === 'oneOrMore' ||
         rule.type === 'separatedBy' ||
         (rule.type === 'regex' && rule.label) ||
-        ((rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') && rule.label)
+        ((rule.type === 'literalMatch' || rule.type === 'caseInsensitiveLiteralMatch') && rule.label)
       );
 
       if (!isParam) continue;
@@ -367,8 +445,8 @@ function generateSyntaxFactory(visibleElements: SyntaxElement[]): string {
         }
       }
 
-      // If it's a regex rule or strictLiteral with a label and no primitiveType, make it a string parameter
-      if ((rule.type === 'regex' || rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') && !rule.primitiveType) {
+      // If it's a regex rule or literalMatch with a label and no primitiveType, make it a string parameter
+      if ((rule.type === 'regex' || rule.type === 'literalMatch' || rule.type === 'caseInsensitiveLiteralMatch') && !rule.primitiveType) {
         csharpType = "string";
       }
 
@@ -391,7 +469,8 @@ function generateSyntaxFactory(visibleElements: SyntaxElement[]): string {
     const sigStr = paramsList.map(p => p.decl).join(", ");
     
     let bodyStatements: string[] = [];
-    bodyStatements.push("            var children = new List<GreenNode>();");
+    let capacityEst = el.rules.length;
+    bodyStatements.push(`            var children = new List<GreenNode>(${capacityEst});`);
 
     // We step through ALL rules in order to construct the Green children array correctly
     for (const rule of el.rules) {
@@ -403,21 +482,9 @@ function generateSyntaxFactory(visibleElements: SyntaxElement[]): string {
       } else if (rule.type === 'caseInsensitiveLiteral') {
         const esc = escapeString(rule.value.source);
         bodyStatements.push(`            children.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${rule.id}, ${rule.value.source.length}));`);
-      } else if (rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') {
+      } else if (rule.type === 'literalMatch' || rule.type === 'caseInsensitiveLiteralMatch') {
         const esc = escapeString(rule.value.literal);
         bodyStatements.push(`            children.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${rule.id}, ${rule.value.literal.length}));`);
-      } else if (rule.type === 'whitespace') {
-        let defaultValue = " ";
-        if (rule.value && typeof rule.value === 'string') {
-          if (rule.value.includes("\n") || rule.value.includes("\r")) {
-            defaultValue = "\\n";
-          }
-        } else if (rule.value && rule.value instanceof RegExp) {
-          if (rule.value.source.includes("\\n") || rule.value.source.includes("\\r")) {
-            defaultValue = "\\n";
-          }
-        }
-        bodyStatements.push(`            children.Add(GreenNode.Create(NodeType.Token, "${defaultValue}", ${rule.id}, 1));`);
       } else {
         // This rule is a parameter. Look up parameter from paramsList
         const param = paramsList.find(p => p.rule === rule);
@@ -1333,6 +1400,18 @@ namespace ${namespaceName}
             return segment.Span.SequenceEqual(literal.AsSpan());
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool MatchCharacter(ITextDocument text, int offset, char literal)
+        {
+            if (offset >= text.Length) return false;
+            if (_cachedLineTextOffset != -1 && offset >= _cachedLineTextOffset && offset < _cachedLineTextOffset + _cachedLineTextLength)
+            {
+                int relOffset = offset - _cachedLineTextOffset;
+                return _cachedLineText.Span[relOffset] == literal;
+            }
+            ReadOnlyMemory<char> segment = text.GetText(offset, 1);
+            return segment.Span[0] == literal;
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool MatchLiteralIgnoreCase(ITextDocument text, int offset, string literal, int literalLength)
         {
             if (offset + literalLength > text.Length) return false;
@@ -1343,6 +1422,18 @@ namespace ${namespaceName}
             }
             ReadOnlyMemory<char> segment = text.GetText(offset, literalLength);
             return segment.Span.Equals(literal.AsSpan(), StringComparison.OrdinalIgnoreCase);
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool MatchCharacterIgnoreCase(ITextDocument text, int offset, char literal)
+        {
+            if (offset >= text.Length) return false;
+            if (_cachedLineTextOffset != -1 && offset >= _cachedLineTextOffset && offset < _cachedLineTextOffset + _cachedLineTextLength)
+            {
+                int relOffset = offset - _cachedLineTextOffset;
+                return char.ToLowerInvariant(_cachedLineText.Span[relOffset]) == char.ToLowerInvariant(literal);
+            }
+            ReadOnlyMemory<char> segment = text.GetText(offset, 1);
+            return char.ToLowerInvariant(segment.Span[0]) == char.ToLowerInvariant(literal);
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool MatchRegex(ITextDocument text, int offset, System.Text.RegularExpressions.Regex regex, out string matchedValue)
@@ -2703,7 +2794,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         if (!isSimpleCaseInsensitiveRegex(rule.value)) {
           registerPattern(rule.value, ruleId, 'Rule');
         }
-      } else if (rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') {
+      } else if (rule.type === 'literalMatch' || rule.type === 'caseInsensitiveLiteralMatch') {
         if (!isSimpleCaseInsensitiveRegex(rule.value.pattern)) {
           registerPattern(rule.value.pattern, ruleId, 'Rule');
         }
@@ -2774,8 +2865,6 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
     return `                case NodeType.${elName}: return new ${elName}Node(green, parent, offset);`;
   }).join("\n");
   // Generate rule-flattened parser methods for each element
-  let specIdCounter = 0;
-  const nextSpecId = () => ++specIdCounter;
   const parserMethods = elements.map(el => {
     const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
     const childElements = new Set<string>();
@@ -2800,7 +2889,6 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
       const ruleId = rule.id;
       let ruleIsStructural = true;
       if (
-        rule.type === 'whitespace' ||
         rule.type === 'leadingTrivia' ||
         rule.type === 'trailingTrivia' ||
         rule.type === 'optional' ||
@@ -2814,7 +2902,30 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
       const startOffsetForFailure = `currentOffset`;
       if (rule.type === 'literal') {
         const esc = escapeString(rule.value);
-        return `
+        if (rule.value.length === 1) {
+          const charLit = esc === "\\\\" ? "\\\\" : esc.replace(/'/g, "\\'");
+          return `
+            // Literal Rule: "${esc}" (id: ${ruleId})
+            if (!panicked)
+            {
+                int startOffset_${ruleId} = currentOffset;
+                const char lit = '${charLit}';
+                localMaxOffset = Math.Max(localMaxOffset, currentOffset + 1);
+                if (ctx.MatchCharacter(text, currentOffset, lit))
+                {
+                    results.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${ruleId}, 1));
+                    currentOffset += 1;
+                    hasCommitted = true;
+                    ${structUpdate}
+                }
+                else
+                {
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected literal \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes; // Handled recovery boundary hit
+                }
+            }`;
+        } else {
+          return `
             // Literal Rule: "${esc}" (id: ${ruleId})
             if (!panicked)
             {
@@ -2835,12 +2946,13 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                         return failRes; // Handled recovery boundary hit
                 }
             }`;
+        }
       }
-      if (rule.type === 'strictLiteral') {
+      if (rule.type === 'literalMatch') {
         const dfaMethodName = getOrCreateDfaMethod(rule.value.pattern, 'Rule', ruleId);
         const targetLiteral = escapeString(rule.value.literal);
         return `
-            // StrictLiteral Rule: "${targetLiteral}" /${rule.value.pattern.source}/ (id: ${ruleId})
+            // LiteralMatch Rule: "${targetLiteral}" /${rule.value.pattern.source}/ (id: ${ruleId})
             if (!panicked)
             {
                 int startOffset_${ruleId} = currentOffset;
@@ -2860,11 +2972,11 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 }
             }`;
       }
-      if (rule.type === 'caseInsensitiveStrictLiteral') {
+      if (rule.type === 'caseInsensitiveLiteralMatch') {
         const dfaMethodName = getOrCreateDfaMethod(rule.value.pattern, 'Rule', ruleId);
         const targetLiteral = escapeString(rule.value.literal);
         return `
-            // CaseInsensitiveStrictLiteral Rule: "${targetLiteral}" /${rule.value.pattern.source}/ (id: ${ruleId})
+            // CaseInsensitiveLiteralMatch Rule: "${targetLiteral}" /${rule.value.pattern.source}/ (id: ${ruleId})
             if (!panicked)
             {
                 int startOffset_${ruleId} = currentOffset;
@@ -2886,7 +2998,31 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
       }
       if (rule.type === 'caseInsensitiveLiteral') {
         const esc = escapeString(rule.value.source);
-        return `
+        if (rule.value.source.length === 1) {
+          const charLit = esc === "\\\\" ? "\\\\" : esc.replace(/'/g, "\\'");
+          return `
+            // Case-Insensitive Literal Rule: "${esc}" (id: ${ruleId})
+            if (!panicked)
+            {
+                int startOffset_${ruleId} = currentOffset;
+                const char lit = '${charLit}';
+                localMaxOffset = Math.Max(localMaxOffset, currentOffset + 1);
+                if (ctx.MatchCharacterIgnoreCase(text, currentOffset, lit))
+                {
+                    string matchedText = text.GetText(currentOffset, 1).ToString();
+                    results.Add(GreenNode.Create(NodeType.Literal, matchedText, ${ruleId}, 1));
+                    currentOffset += 1;
+                    hasCommitted = true;
+                    ${structUpdate}
+                }
+                else
+                {
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive literal \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes; // Handled recovery boundary hit
+                }
+            }`;
+        } else {
+          return `
             // Case-Insensitive Literal Rule: "${esc}" (id: ${ruleId})
             if (!panicked)
             {
@@ -2908,6 +3044,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                         return failRes; // Handled recovery boundary hit
                 }
             }`;
+        }
       }
       if (rule.type === 'regex') {
         const dfaMethodName = getOrCreateDfaMethod(rule.value, 'Rule', ruleId);
@@ -2928,29 +3065,6 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 else
                 {
                     if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected match for pattern", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }
-            }`;
-      }
-      if (rule.type === 'whitespace') {
-        return `
-            // Whitespace Rule (id: ${ruleId})
-            if (!panicked)
-            {
-                int startOffset_${ruleId} = currentOffset;
-                int wsStart = currentOffset;
-                while (currentOffset < text.Length && char.IsWhiteSpace(text[currentOffset]))
-                {
-                    currentOffset++;
-                }
-                localMaxOffset = Math.Max(localMaxOffset, currentOffset);
-                if (currentOffset > wsStart)
-                {
-                    results.Add(GreenNode.Create(NodeType.Whitespace, text.GetText(wsStart, currentOffset - wsStart).ToString(), ${ruleId}, currentOffset - wsStart));
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected whitespace", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
             }`;
@@ -3062,14 +3176,16 @@ ${choiceChecks.join("\n")}
             }`;
       }
       if (rule.type === 'optional' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') {
-        const sId = nextSpecId();
-        const escErrorsVar = `optErrors_${ruleId}`;
-        let specificDfaName: string | undefined;
-        if (rule.value instanceof RegExp) {
-          specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
-        }
-        const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
-        return `
+        const isArray = Array.isArray(rule.value);
+        if (!isArray) {
+          const sId = nextSpecId();
+          const escErrorsVar = `optErrors_${ruleId}`;
+          let specificDfaName: string | undefined;
+          if (rule.value instanceof RegExp) {
+            specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
+          }
+          const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
+          return `
             // Optional Rule (id: ${ruleId})
             if (!panicked)
             {
@@ -3090,224 +3206,63 @@ ${choiceChecks.join("\n")}
                     ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
                 }
             }`;
+        } else {
+          const patterns = rule.value as any[];
+          const escErrorsVar = `optListErrors_${ruleId}`;
+          const branchChecks: string[] = [];
+          
+          patterns.forEach((p, idx) => {
+            const sId = nextSpecId();
+            let specificDfaName: string | undefined;
+            if (p instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
+            branchChecks.push(`
+                    if (!matchedItems_${ruleId}[${idx}])
+                    {
+                        int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
+                        int savedOffset_${sId} = currentOffset;
+                        ${spec.code.trim()}
+                        if (${spec.matchedName} && ${spec.newOffsetName} > savedOffset_${sId})
+                        {
+                            matchedValidationVar_${ruleId} = true;
+                            matchedItems_${ruleId}[${idx}] = true;
+                            if (${spec.parsedAstName} != null && (${spec.parsedAstName}.Width > 0 || ${spec.parsedAstName}.Type == NodeType.Eof))
+                            {
+                                results.Add(${spec.parsedAstName});
+                            }
+                            currentOffset = ${spec.newOffsetName};
+                            ${structUpdate}
+                            continue;
+                        }
+                        else
+                        {
+                            ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
+                            currentOffset = savedOffset_${sId};
+                        }
+                    }
+            `);
+          });
+
+          return `
+            // Optional List Rule (id: ${ruleId})
+            if (!panicked)
+            {
+                int startOffset_${ruleId} = currentOffset;
+                bool[] matchedItems_${ruleId} = new bool[${patterns.length}];
+                bool matchedValidationVar_${ruleId} = true;
+                
+                while (matchedValidationVar_${ruleId} && currentOffset < text.Length)
+                {
+                    matchedValidationVar_${ruleId} = false;
+                    ${branchChecks.join('\n')}
+                }
+            }`;
+        }
       }
       if (rule.type === 'zeroOrMore') {
         const isArray = Array.isArray(rule.value);
-        const isToken = !!rule.isToken;
-        if (isToken) {
-          // compile leading trivia if present
-          let leadCode = "";
-          let leadMatchedName = "true";
-          let leadAstName = "null";
-          let leadNewOffsetName = "currentOffset";
-          const leadId = nextSpecId();
-          if (SyntaxElement.defaultLeadingTrivia) {
-            let dfaName: string | undefined;
-            if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
-              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
-            }
-            const specLead = compileSpeculativeMatch(SyntaxElement.defaultLeadingTrivia, ruleId, leadId, childElements, dfaName);
-            leadCode = specLead.code;
-            leadMatchedName = specLead.matchedName;
-            leadAstName = specLead.parsedAstName;
-            leadNewOffsetName = specLead.newOffsetName;
-          }
-
-          // compile trailing trivia if present
-          let trailCode = "";
-          let trailMatchedName = "true";
-          let trailAstName = "null";
-          let trailNewOffsetName = "branchNewOffset";
-          const trailId = nextSpecId();
-          if (SyntaxElement.defaultTrailingTrivia) {
-            let dfaName: string | undefined;
-            if (SyntaxElement.defaultTrailingTrivia instanceof RegExp) {
-              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultTrailingTrivia, 'Spec', ruleId);
-            }
-            const specTrail = compileSpeculativeMatch(SyntaxElement.defaultTrailingTrivia, ruleId, trailId, childElements, dfaName);
-            trailCode = specTrail.code;
-            trailMatchedName = specTrail.matchedName;
-            trailAstName = specTrail.parsedAstName;
-            trailNewOffsetName = specTrail.newOffsetName;
-          }
-
-          if (isArray) {
-            const patterns = rule.value as any[];
-            const escErrorsVar = `loopErrors_${ruleId}`;
-            const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
-            const branchChecks: string[] = [];
-            
-            patterns.forEach((p, idx) => {
-              const sId = nextSpecId();
-              let specificDfaName: string | undefined;
-              if (p instanceof RegExp) {
-                specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
-              }
-              const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
-              branchChecks.push(`
-                      {
-                          int beforeBranchOffset = afterLeadOffset;
-                          int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
-                          int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
-                          int savedOffset = currentOffset;
-                          currentOffset = afterLeadOffset;
-                          ${spec.code.trim()}
-                          currentOffset = savedOffset;
-                          if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
-                          {
-                              matchedBranch = true;
-                              matchedAst = ${spec.parsedAstName};
-                              branchNewOffset = ${spec.newOffsetName};
-                          }
-                          else
-                          {
-                              ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
-                              if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
-                              {
-                                  ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
-                              }
-                          }
-                      }
-                      if (matchedBranch) goto matched_branch_${ruleId};
-              `);
-            });
-
-            return `
-              // Zero Or More Token Rule (id: ${ruleId})
-              if (!panicked)
-              {
-                  int startOffset_${ruleId} = currentOffset;
-                  int startLoopOffset = currentOffset;
-                  var loopResults = new List<GreenNode>();
-                  while (currentOffset < text.Length)
-                  {
-                      int beforeLeadOffset = currentOffset;
-                      int ${escErrorsVar}_lead = ctx.RecoveredErrors.Count;
-                      
-                      // Match leading trivia
-                      ${leadCode}
-                      int afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
-                      
-                      bool matchedBranch = false;
-                      GreenNode matchedAst = null;
-                      int branchNewOffset = afterLeadOffset;
-                      
-                      ${branchChecks.join("\n").trim()}
-                      
-                      matched_branch_${ruleId}:
-                      if (matchedBranch)
-                      {
-                          // Commit leading trivia
-                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset)
-                          {
-                              loopResults.Add(${leadAstName});
-                          }
-                          
-                          loopResults.Add(matchedAst);
-                          
-                          // Match trailing trivia
-                          int beforeTrailOffset = branchNewOffset;
-                          int savedOffsetTrail = currentOffset;
-                          currentOffset = branchNewOffset;
-                          ${trailCode}
-                          currentOffset = savedOffsetTrail;
-                          
-                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset)
-                          {
-                              loopResults.Add(${trailAstName});
-                              currentOffset = ${trailNewOffsetName};
-                          }
-                          else
-                          {
-                              currentOffset = branchNewOffset;
-                          }
-                      }
-                      else
-                      {
-                          // Revert leading trivia errors
-                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_lead, ctx.RecoveredErrors.Count - ${escErrorsVar}_lead);
-                          break;
-                      }
-                  }
-                  if (loopResults.Count > 0)
-                  {
-                      results.Add(GreenNode.Create(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
-                      ${structUpdate}
-                  }
-              }`;
-          } else {
-            const sId = nextSpecId();
-            const escErrorsVar = `loopErrors_${ruleId}`;
-            let specificDfaName: string | undefined;
-            if (rule.value instanceof RegExp) {
-              specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
-            }
-            const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
-            return `
-              // Zero Or More Token Rule (id: ${ruleId})
-              if (!panicked)
-              {
-                  int startOffset_${ruleId} = currentOffset;
-                  int startLoopOffset = currentOffset;
-                  var loopResults = new List<GreenNode>();
-                  while (currentOffset < text.Length)
-                  {
-                      int beforeLeadOffset = currentOffset;
-                      int ${escErrorsVar}_lead = ctx.RecoveredErrors.Count;
-                      
-                      // Match leading trivia
-                      ${leadCode}
-                      int afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
-                      
-                      // Speculative match starting from afterLeadOffset
-                      int savedOffset = currentOffset;
-                      currentOffset = afterLeadOffset;
-                      ${spec.code.trim()}
-                      currentOffset = savedOffset;
-                      
-                      if (${spec.matchedName} && ${spec.newOffsetName} > afterLeadOffset)
-                      {
-                          // Commit leading trivia
-                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset)
-                          {
-                              loopResults.Add(${leadAstName});
-                          }
-                          
-                          loopResults.Add(${spec.parsedAstName});
-                          
-                          // Match trailing trivia
-                          int beforeTrailOffset = ${spec.newOffsetName};
-                          int savedOffsetTrail = currentOffset;
-                          currentOffset = ${spec.newOffsetName};
-                          ${trailCode}
-                          currentOffset = savedOffsetTrail;
-                          
-                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset)
-                          {
-                              loopResults.Add(${trailAstName});
-                              currentOffset = ${trailNewOffsetName};
-                          }
-                          else
-                          {
-                              currentOffset = ${spec.newOffsetName};
-                          }
-                      }
-                      else
-                      {
-                          // Revert leading trivia errors
-                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_lead, ctx.RecoveredErrors.Count - ${escErrorsVar}_lead);
-                          break;
-                      }
-                  }
-                  if (loopResults.Count > 0)
-                  {
-                      results.Add(GreenNode.Create(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
-                      ${structUpdate}
-                  }
-              }`;
-          }
-        }
-
         if (isArray) {
           const patterns = rule.value as any[];
           const escErrorsVar = `loopErrors_${ruleId}`;
@@ -3419,233 +3374,6 @@ ${choiceChecks.join("\n")}
       }
       if (rule.type === 'oneOrMore') {
         const isArray = Array.isArray(rule.value);
-        const isToken = !!rule.isToken;
-        if (isToken) {
-          // compile leading trivia if present
-          let leadCode = "";
-          let leadMatchedName = "true";
-          let leadAstName = "null";
-          let leadNewOffsetName = "currentOffset";
-          const leadId = nextSpecId();
-          if (SyntaxElement.defaultLeadingTrivia) {
-            let dfaName: string | undefined;
-            if (SyntaxElement.defaultLeadingTrivia instanceof RegExp) {
-              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultLeadingTrivia, 'Spec', ruleId);
-            }
-            const specLead = compileSpeculativeMatch(SyntaxElement.defaultLeadingTrivia, ruleId, leadId, childElements, dfaName);
-            leadCode = specLead.code;
-            leadMatchedName = specLead.matchedName;
-            leadAstName = specLead.parsedAstName;
-            leadNewOffsetName = specLead.newOffsetName;
-          }
-
-          // compile trailing trivia if present
-          let trailCode = "";
-          let trailMatchedName = "true";
-          let trailAstName = "null";
-          let trailNewOffsetName = "branchNewOffset";
-          const trailId = nextSpecId();
-          if (SyntaxElement.defaultTrailingTrivia) {
-            let dfaName: string | undefined;
-            if (SyntaxElement.defaultTrailingTrivia instanceof RegExp) {
-              dfaName = getOrCreateDfaMethod(SyntaxElement.defaultTrailingTrivia, 'Spec', ruleId);
-            }
-            const specTrail = compileSpeculativeMatch(SyntaxElement.defaultTrailingTrivia, ruleId, trailId, childElements, dfaName);
-            trailCode = specTrail.code;
-            trailMatchedName = specTrail.matchedName;
-            trailAstName = specTrail.parsedAstName;
-            trailNewOffsetName = specTrail.newOffsetName;
-          }
-
-          if (isArray) {
-            const patterns = rule.value as any[];
-            const escErrorsVar = `loopErrors_${ruleId}`;
-            const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
-            const branchChecks: string[] = [];
-            
-            patterns.forEach((p, idx) => {
-              const sId = nextSpecId();
-              let specificDfaName: string | undefined;
-              if (p instanceof RegExp) {
-                specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
-              }
-              const spec = compileSpeculativeMatch(p, ruleId, sId, childElements, specificDfaName);
-              branchChecks.push(`
-                      {
-                          int beforeBranchOffset = afterLeadOffset;
-                          int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
-                          int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
-                          int savedOffset = currentOffset;
-                          currentOffset = afterLeadOffset;
-                          ${spec.code.trim()}
-                          currentOffset = savedOffset;
-                          if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
-                          {
-                              matchedBranch = true;
-                              matchedAst = ${spec.parsedAstName};
-                              branchNewOffset = ${spec.newOffsetName};
-                          }
-                          else
-                          {
-                              ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
-                              if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
-                              {
-                                  ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
-                              }
-                          }
-                      }
-                      if (matchedBranch) goto matched_branch_${ruleId};
-              `);
-            });
-
-            return `
-              // One Or More Token Rule (id: ${ruleId})
-              if (!panicked)
-              {
-                  int startOffset_${ruleId} = currentOffset;
-                  int startLoopOffset = currentOffset;
-                  var loopResults = new List<GreenNode>();
-                  while (currentOffset < text.Length)
-                  {
-                      int beforeLeadOffset = currentOffset;
-                      int ${escErrorsVar}_lead = ctx.RecoveredErrors.Count;
-                      
-                      // Match leading trivia
-                      ${leadCode}
-                      int afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
-                      
-                      bool matchedBranch = false;
-                      GreenNode matchedAst = null;
-                      int branchNewOffset = afterLeadOffset;
-                      
-                      ${branchChecks.join("\n").trim()}
-                      
-                      matched_branch_${ruleId}:
-                      if (matchedBranch)
-                      {
-                          // Commit leading trivia
-                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset)
-                          {
-                              loopResults.Add(${leadAstName});
-                          }
-                          
-                          loopResults.Add(matchedAst);
-                          
-                          // Match trailing trivia
-                          int beforeTrailOffset = branchNewOffset;
-                          int savedOffsetTrail = currentOffset;
-                          currentOffset = branchNewOffset;
-                          ${trailCode}
-                          currentOffset = savedOffsetTrail;
-                          
-                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset)
-                          {
-                              loopResults.Add(${trailAstName});
-                              currentOffset = ${trailNewOffsetName};
-                          }
-                          else
-                          {
-                              currentOffset = branchNewOffset;
-                          }
-                      }
-                      else
-                      {
-                          // Revert leading trivia errors
-                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_lead, ctx.RecoveredErrors.Count - ${escErrorsVar}_lead);
-                          break;
-                      }
-                  }
-                  if (loopResults.Count > 0)
-                  {
-                      results.Add(GreenNode.Create(NodeType.OneOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
-                      hasCommitted = true;
-                      ${structUpdate}
-                  }
-                  else
-                  {
-                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                          return failRes;
-                  }
-              }`;
-          } else {
-            const sId = nextSpecId();
-            const escErrorsVar = `loopErrors_${ruleId}`;
-            let specificDfaName: string | undefined;
-            if (rule.value instanceof RegExp) {
-              specificDfaName = getOrCreateDfaMethod(rule.value, 'Spec', ruleId);
-            }
-            const spec = compileSpeculativeMatch(rule.value, ruleId, sId, childElements, specificDfaName);
-            return `
-              // One Or More Token Rule (id: ${ruleId})
-              if (!panicked)
-              {
-                  int startOffset_${ruleId} = currentOffset;
-                  int startLoopOffset = currentOffset;
-                  var loopResults = new List<GreenNode>();
-                  while (currentOffset < text.Length)
-                  {
-                      int beforeLeadOffset = currentOffset;
-                      int ${escErrorsVar}_lead = ctx.RecoveredErrors.Count;
-                      
-                      // Match leading trivia
-                      ${leadCode}
-                      int afterLeadOffset = ${leadMatchedName} ? ${leadNewOffsetName} : currentOffset;
-                      
-                      // Speculative match starting from afterLeadOffset
-                      int savedOffset = currentOffset;
-                      currentOffset = afterLeadOffset;
-                      ${spec.code.trim()}
-                      currentOffset = savedOffset;
-                      
-                      if (${spec.matchedName} && ${spec.newOffsetName} > afterLeadOffset)
-                      {
-                          // Commit leading trivia
-                          if (${leadMatchedName} && ${leadNewOffsetName} > beforeLeadOffset)
-                          {
-                              loopResults.Add(${leadAstName});
-                          }
-                          
-                          loopResults.Add(${spec.parsedAstName});
-                          
-                          // Match trailing trivia
-                          int beforeTrailOffset = ${spec.newOffsetName};
-                          int savedOffsetTrail = currentOffset;
-                          currentOffset = ${spec.newOffsetName};
-                          ${trailCode}
-                          currentOffset = savedOffsetTrail;
-                          
-                          if (${trailMatchedName} && ${trailNewOffsetName} > beforeTrailOffset)
-                          {
-                              loopResults.Add(${trailAstName});
-                              currentOffset = ${trailNewOffsetName};
-                          }
-                          else
-                          {
-                              currentOffset = ${spec.newOffsetName};
-                          }
-                      }
-                      else
-                      {
-                          // Revert leading trivia errors
-                          ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_lead, ctx.RecoveredErrors.Count - ${escErrorsVar}_lead);
-                          break;
-                      }
-                  }
-                  if (loopResults.Count > 0)
-                  {
-                      results.Add(GreenNode.Create(NodeType.OneOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset));
-                      hasCommitted = true;
-                      ${structUpdate}
-                  }
-                  else
-                  {
-                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                          return failRes;
-                  }
-              }`;
-          }
-        }
-
         if (isArray) {
           const patterns = rule.value as any[];
           const escErrorsVar = `loopErrors_${ruleId}`;
@@ -4107,7 +3835,25 @@ ${choiceChecks.join("\n")}
         let patternCode = "";
         if (typeof rule.value === 'string') {
           const esc = escapeString(rule.value);
-          patternCode = `
+          if (rule.value.length === 1) {
+            const charLit = esc === "\\\\" ? "\\\\" : esc.replace(/'/g, "\\'");
+            patternCode = `
+                const char lit = '${charLit}';
+                localMaxOffset = Math.Max(localMaxOffset, currentOffset + 1);
+                if (ctx.MatchCharacter(text, currentOffset, lit))
+                {
+                    results.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${ruleId}, 1));
+                    currentOffset += 1;
+                    hasCommitted = true;
+                    ${structUpdate}
+                }
+                else
+                {
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope start '${charLit}'", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes;
+                }`;
+          } else {
+            patternCode = `
                 const string lit = "${esc}";
                 const int litLen = ${rule.value.length};
                 localMaxOffset = Math.Max(localMaxOffset, currentOffset + litLen);
@@ -4123,6 +3869,7 @@ ${choiceChecks.join("\n")}
                     if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope start \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }`;
+          }
         } else if (rule.value instanceof RegExp) {
           const dfaMethodName = getOrCreateDfaMethod(rule.value, 'Rule', ruleId);
           patternCode = `
@@ -4192,7 +3939,25 @@ ${choiceChecks.join("\n")}
         let patternCode = "";
         if (typeof rule.value === 'string') {
           const esc = escapeString(rule.value);
-          patternCode = `
+          if (rule.value.length === 1) {
+            const charLit = esc === "\\\\" ? "\\\\" : esc.replace(/'/g, "\\'");
+            patternCode = `
+                const char lit = '${charLit}';
+                localMaxOffset = Math.Max(localMaxOffset, currentOffset + 1);
+                if (ctx.MatchCharacter(text, currentOffset, lit))
+                {
+                    results.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${ruleId}, 1));
+                    currentOffset += 1;
+                    hasCommitted = true;
+                    ${structUpdate}
+                }
+                else
+                {
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope end '${charLit}'", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                        return failRes;
+                }`;
+          } else {
+            patternCode = `
                 const string lit = "${esc}";
                 const int litLen = ${rule.value.length};
                 localMaxOffset = Math.Max(localMaxOffset, currentOffset + litLen);
@@ -4208,6 +3973,7 @@ ${choiceChecks.join("\n")}
                     if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope end \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }`;
+          }
         } else if (rule.value instanceof RegExp) {
           const dfaMethodName = getOrCreateDfaMethod(rule.value, 'Rule', ruleId);
           patternCode = `
@@ -4285,7 +4051,7 @@ ${choiceChecks.join("\n")}
             }
             int currentOffset = offset;
             int localMaxOffset = offset;
-            var results = new List<GreenNode>();
+            var results = new List<GreenNode>(${el.rules.length});
             bool panicked = false;
             bool hasCommitted = false;
             int initialErrorsLength = ctx.RecoveredErrors.Count;

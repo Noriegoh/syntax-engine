@@ -9,18 +9,16 @@ export interface SuggestionItem {
 
 export const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'Expects', insertText: 'Expects(', type: 'method', description: 'Schedule standard terminal literal / sub-element rule' },
-  { label: 'ExpectsOneOf', insertText: 'ExpectsOneOf(', type: 'method', description: 'Schedule a speculative choice selection (any matched pattern)' },
-  { label: 'ExpectsOneOfToken', insertText: 'ExpectsOneOfToken(', type: 'method', description: 'Schedule choice selection and surround each branch with default leading and trailing trivias (no warnings)' },
-  { label: 'ExpectsOneOfStrict', insertText: 'ExpectsOneOfStrict(', type: 'method', description: 'Schedule choice selection and surround each branch with default leading and trailing trivias strictly' },
+  { label: 'OneOff', insertText: 'OneOff(', type: 'method', description: 'Schedule a speculative choice selection (any matched pattern)' },
+  { label: 'OneOffToken', insertText: 'OneOffToken(', type: 'method', description: 'Schedule speculative choice branch match while automatically handling skipped trivias' },
+  { label: 'Element', insertText: 'Element(', type: 'method', description: 'Helper to return a new named SyntaxElement' },
+  { label: 'LiteralMatch', insertText: 'LiteralMatch(', type: 'method', description: 'Match strict terminal word/keyword/literal' },
   { label: 'Token', insertText: 'Token(', type: 'method', description: 'Inject clean terminal lexical Token marker (wraps literals/regexes)' },
-  { label: 'StrictLiteral', insertText: 'StrictLiteral(', type: 'method', description: 'Match strict terminal word/keyword/literal (checks for word boundary)' },
   { label: 'Optional', insertText: 'Optional(', type: 'method', description: 'Mark element rule as fully optional' },
   { label: 'ZeroOrMore', insertText: 'ZeroOrMore(', type: 'method', description: 'Repetition: loop consecutive matches. Overloaded to support choices if passed array/multiple parameters' },
   { label: 'ZeroOrMoreToken', insertText: 'ZeroOrMoreToken(', type: 'method', description: 'Repetition loops through matches, automatically skipping default leading/trailing trivia around each loop item' },
-  { label: 'ZeroOrMoreStrict', insertText: 'ZeroOrMoreStrict(', type: 'method', description: 'Repetition loops through strict matches, automatically skipping default leading/trailing trivia around each loop item' },
   { label: 'OneOrMore', insertText: 'OneOrMore(', type: 'method', description: 'Repetition: loop consecutive matches requires at least 1 match. Overloaded to support choices if passed array/multiple parameters' },
   { label: 'OneOrMoreToken', insertText: 'OneOrMoreToken(', type: 'method', description: 'Repetition loops through matches (at least 1 required), automatically skipping default leading/trailing trivia around each loop item' },
-  { label: 'OneOrMoreStrict', insertText: 'OneOrMoreStrict(', type: 'method', description: 'Repetition loops through strict matches (at least 1 required), automatically skipping default leading/trailing trivia around each loop item' },
   { label: 'LeadingTrivia', insertText: 'LeadingTrivia(', type: 'method', description: 'Define expected default preceding layout whitespaces or comments' },
   { label: 'TrailingTrivia', insertText: 'TrailingTrivia(', type: 'method', description: 'Define expected default trailing layout whitespaces or comments' },
   { label: 'Whitespace', insertText: 'Whitespace()', type: 'method', description: 'Consume contiguous space layouts' },
@@ -38,6 +36,7 @@ export const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'SelfHeals', insertText: 'SelfHeals(', type: 'method', description: 'Designate current rules blocks automated healing boundaries' },
   { label: 'MapToEnum', insertText: 'MapToEnum(', type: 'method', description: 'Map matched string tokens to target C# compilation enumerations' },
   { label: 'SeparatedBy', insertText: 'SeparatedBy(', type: 'method', description: 'Sequence matcher for elements separated by distinct separator literal/token' },
+  { label: 'SeparatedByToken', insertText: 'SeparatedByToken(', type: 'method', description: 'Sequence matcher for elements separated by separator while skipping trivia' },
   { label: 'Assert', insertText: 'Assert(', type: 'method', description: 'Lookahead assertion checker: verify ahead without consuming incoming layout streams' },
   { label: 'SyntaxElement', insertText: 'SyntaxElement', type: 'class', description: 'Compiler blueprint construct initializer' },
   { label: 'Sort', insertText: 'Sort(', type: 'keyword', description: 'Sort array inputs descending by pattern length' },
@@ -57,7 +56,6 @@ export type RuleType =
   | 'not' 
   | 'assert'
   | 'separatedBy'
-  | 'whitespace' 
   | 'choice' 
   | 'optional' 
   | 'leadingTrivia' 
@@ -67,8 +65,8 @@ export type RuleType =
   | 'eof' 
   | 'beginScope' 
   | 'endScope'
-  | 'strictLiteral'
-  | 'caseInsensitiveStrictLiteral';
+  | 'literalMatch'
+  | 'caseInsensitiveLiteralMatch';
 
 export interface Rule {
   id: number;
@@ -77,9 +75,9 @@ export interface Rule {
   label?: string;
   ignored?: boolean;
   tokenName?: string;
-  hasTokenWarning?: boolean; // Set when Token wraps choice elements inside ExpectsOneOf
-  hasStrictWarning?: boolean; // Set when StrictLiteral wraps choice elements inside ExpectsOneOf
-  isToken?: boolean; // Set when using ExpectsOneOfToken, ZeroOrMoreToken, OneOrMoreToken
+  isToken?: boolean;
+  hasTokenWarning?: boolean; // Set when Token wraps choice elements inside OneOff
+  hasLiteralMatchWarning?: boolean; // Set when LiteralMatch wraps choice elements inside OneOff
   primitiveType?: string;
 }
 
@@ -89,15 +87,15 @@ export class RuleHelper {
   }
 
   public static isTrivia(rule: Rule): boolean {
-    return rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace';
+    return rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia';
   }
 
   public static isOptional(rule: Rule): boolean {
-    return rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia' || rule.type === 'whitespace';
+    return rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia';
   }
 
   public static isStructural(rule: Rule): boolean {
-    if (rule.type === 'whitespace' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') return false;
+    if (rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') return false;
     if (rule.type === 'optional' || rule.type === 'zeroOrMore') return false;
     if (rule.type === 'not' || rule.type === 'assert') return false;
     return true;
@@ -530,8 +528,7 @@ export class SyntaxElement {
       return (
         rule.type !== 'optional' &&
         rule.type !== 'leadingTrivia' &&
-        rule.type !== 'trailingTrivia' &&
-        rule.type !== 'whitespace'
+        rule.type !== 'trailingTrivia'
       );
     });
   }
@@ -605,8 +602,6 @@ export class SyntaxElement {
       case 'leadingTrivia':
       case 'trailingTrivia':
         return true; // zero-width
-      case 'whitespace':
-        return false; // Requires at least one whitespace character (\s+) in syntax matching
       case 'optional':
       case 'zeroOrMore':
         return true;
@@ -698,7 +693,7 @@ export class SyntaxElement {
       let targetRule = this.rules[this.rules.length - 1];
       for (let i = this.rules.length - 1; i >= 0; i--) {
         const r = this.rules[i];
-        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia' && r.type !== 'whitespace') {
+        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia') {
           targetRule = r;
           break;
         }
@@ -718,7 +713,7 @@ export class SyntaxElement {
       let targetRule = this.rules[this.rules.length - 1];
       for (let i = this.rules.length - 1; i >= 0; i--) {
         const r = this.rules[i];
-        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia' && r.type !== 'whitespace') {
+        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia') {
           targetRule = r;
           break;
         }
@@ -823,7 +818,7 @@ export class SyntaxElement {
       let targetRule = this.rules[this.rules.length - 1];
       for (let i = this.rules.length - 1; i >= 0; i--) {
         const r = this.rules[i];
-        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia' && r.type !== 'whitespace') {
+        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia') {
           targetRule = r;
           break;
         }
@@ -891,7 +886,7 @@ export class SyntaxElement {
     return this;
   }
 
-  Expects(pattern: string | RegExp | SyntaxElement | TokenMarker | (string | RegExp | SyntaxElement | TokenMarker)[]): this {
+  Expects(pattern: any): this {
     if (pattern === undefined || pattern === null) {
       pattern = "";
     }
@@ -901,99 +896,95 @@ export class SyntaxElement {
       }
       return this;
     }
-    if (pattern && typeof pattern === 'object' && '__isStrictLiteralMarker' in pattern) {
-      const lit = (pattern as any).literal;
-      const pat = (pattern as any).pattern;
-      const lead = SyntaxElement.defaultLeadingTrivia;
-      const trail = SyntaxElement.defaultTrailingTrivia;
-      if (lead) this.LeadingTrivia(lead);
-      
-      const id = nextRuleId();
-      let litVal = "";
-      let ruleType: RuleType = 'strictLiteral';
-
-      if (lit instanceof RegExp) {
-        if (!isSimpleCaseInsensitiveRegex(lit)) {
-          throw new Error("Grammatical error: Regex pattern for StrictLiteral must be a simple case-insensitive regex pattern (have 'i' flag and no regex special chars).");
-        }
-        litVal = lit.source;
-        ruleType = 'caseInsensitiveStrictLiteral';
+    if (pattern && typeof pattern === 'object' && '__isOneOffMarker' in pattern) {
+      if ((pattern as any).isToken) {
+        return this.OneOffToken(...(pattern as any).patterns);
       } else {
-        litVal = String(lit);
+        return this.OneOff(...(pattern as any).patterns);
       }
+    }
+    if (pattern && typeof pattern === 'object' && ('__isTokenMarker' in pattern || '__isLiteralExp' in pattern)) {
+      return this.Token(pattern);
+    }
+    if (pattern instanceof SyntaxElement) {
+      return this.Rule(pattern);
+    }
+    if (pattern instanceof RegExp) {
+      return this.Match(pattern);
+    }
+    return this.Literal(String(pattern));
+  }
 
-      const regex = typeof pat === 'string' ? new RegExp(pat) : pat;
-      this.rules.push({ id, type: ruleType, value: { literal: litVal, pattern: regex } });
-      
-      if (trail) this.TrailingTrivia(trail);
-    } else if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
-      const inner = pattern.pattern;
-      const lead = SyntaxElement.defaultLeadingTrivia;
-      const trail = SyntaxElement.defaultTrailingTrivia;
-      if (lead) this.LeadingTrivia(lead);
-      
-      const id = nextRuleId();
-      let rule: Rule;
-      if (inner instanceof SyntaxElement) {
-        rule = { id, type: 'element', value: inner };
-      } else if (inner instanceof RegExp) {
-        if (isSimpleCaseInsensitiveRegex(inner)) {
-          rule = { id, type: 'caseInsensitiveLiteral', value: inner };
-        } else {
-          rule = { id, type: 'regex', value: inner };
-        }
-      } else {
-        rule = { id, type: 'literal', value: inner };
-      }
-      if ((pattern as any).name) {
-        rule.tokenName = (pattern as any).name;
-      }
-      this.rules.push(rule);
-      
-      if (trail) this.TrailingTrivia(trail);
+  Rule(element: any): this {
+    if (element && typeof element === 'object' && ('__isTokenMarker' in element || '__isLiteralExp' in element)) {
+      return this.Token(element);
+    }
+    if (!(element instanceof SyntaxElement)) {
+      throw new Error("Rule parameter must be a SyntaxElement instance.");
+    }
+    const id = nextRuleId();
+    this.rules.push({ id, type: 'element', value: element });
+    return this;
+  }
+
+  Match(regex: any): this {
+    if (regex && typeof regex === 'object' && ('__isTokenMarker' in regex || '__isLiteralExp' in regex)) {
+      return this.Token(regex);
+    }
+    if (!(regex instanceof RegExp)) {
+      throw new Error("Match parameter must be a RegExp instance.");
+    }
+    const id = nextRuleId();
+    if (isSimpleCaseInsensitiveRegex(regex)) {
+      this.rules.push({ id, type: 'caseInsensitiveLiteral', value: regex });
     } else {
-      const id = nextRuleId();
-      if (pattern instanceof SyntaxElement) {
-        this.rules.push({ id, type: 'element', value: pattern });
-      } else if (pattern instanceof RegExp) {
-        if (isSimpleCaseInsensitiveRegex(pattern)) {
-          this.rules.push({ id, type: 'caseInsensitiveLiteral', value: pattern });
-        } else {
-          this.rules.push({ id, type: 'regex', value: pattern });
-        }
-      } else {
-        this.rules.push({ id, type: 'literal', value: pattern });
-      }
+      this.rules.push({ id, type: 'regex', value: regex });
     }
     return this;
   }
 
-  StrictLiteral(literal: string | RegExp, pattern: RegExp | string): this {
-    if (pattern === undefined || pattern === null) {
-      throw new Error("Grammatical error: Regex pattern for StrictLiteral must be specified.");
+  Literal(value: any): this {
+    if (value && typeof value === 'object' && ('__isTokenMarker' in value || '__isLiteralExp' in value)) {
+      return this.Token(value);
     }
+    const id = nextRuleId();
+    this.rules.push({ id, type: 'literal', value: String(value) });
+    return this;
+  }
+
+  LiteralMatch(literal: any, pattern?: RegExp | string): this {
+    if (literal && typeof literal === 'object' && '__isTokenMarker' in literal) {
+      return this.Token(literal);
+    }
+    let lit: string | RegExp;
+    let pat: string | RegExp;
+    if (literal instanceof LiteralExp) {
+      lit = literal.literal;
+      pat = literal.pattern;
+    } else {
+      if (pattern === undefined || pattern === null) {
+        throw new Error("Regex pattern for LiteralMatch must be specified.");
+      }
+      lit = literal;
+      pat = pattern;
+    }
+
     const id = nextRuleId();
     let litVal = "";
-    let ruleType: RuleType = 'strictLiteral';
+    let ruleType: RuleType = 'literalMatch';
 
-    if (literal instanceof RegExp) {
-      if (!isSimpleCaseInsensitiveRegex(literal)) {
-        throw new Error("Grammatical error: Regex pattern for StrictLiteral must be a simple case-insensitive regex pattern (have 'i' flag and no regex special chars).");
+    if (lit instanceof RegExp) {
+      if (!isSimpleCaseInsensitiveRegex(lit)) {
+        throw new Error("Regex pattern for LiteralMatch must be a simple case-insensitive regex pattern (have 'i' flag and no regex special chars).");
       }
-      litVal = literal.source;
-      ruleType = 'caseInsensitiveStrictLiteral';
+      litVal = lit.source;
+      ruleType = 'caseInsensitiveLiteralMatch';
     } else {
-      litVal = String(literal);
+      litVal = String(lit);
     }
 
-    const regex = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
+    const regex = typeof pat === 'string' ? new RegExp(pat) : pat;
     this.rules.push({ id, type: ruleType, value: { literal: litVal, pattern: regex } });
-    return this;
-  }
-
-  ExpectsWhitespace(): this {
-    const id = nextRuleId();
-    this.rules.push({ id, type: 'whitespace' });
     return this;
   }
 
@@ -1033,11 +1024,7 @@ export class SyntaxElement {
     return this;
   }
 
-  Unexpects(pattern: any, ...additional: any[]): this {
-    return this.Not(pattern, ...additional);
-  }
-
-  ExpectsOneOf(...patterns: any[]): this {
+  OneOff(...patterns: any[]): this {
     if (patterns.length === 0) {
       patterns = [""];
     }
@@ -1056,28 +1043,27 @@ export class SyntaxElement {
     const flatPatterns = flatten(patterns);
       
     let hasToken = false;
-    let hasStrict = false;
-    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
+    let hasLiteralMatch = false;
+    const unwrapped: any[] = [];
     for (const p of flatPatterns) {
       if (p && typeof p === 'object' && '__isTokenMarker' in p) {
         hasToken = true;
         unwrapped.push(unwrapToken(p));
-      } else if (p && typeof p === 'object' && '__isStrictLiteralMarker' in p) {
-        hasStrict = true;
+      } else if (p && typeof p === 'object' && '__isLiteralExp' in p) {
+        hasLiteralMatch = true;
         unwrapped.push(p as any);
       } else {
         unwrapped.push(p as any);
       }
     }
     
-    if (hasToken || hasStrict) {
+    if (hasToken || hasLiteralMatch) {
       const lead = SyntaxElement.defaultLeadingTrivia;
       const trail = SyntaxElement.defaultTrailingTrivia;
       if (lead) this.LeadingTrivia(lead);
       
       const id = nextRuleId();
-      // Tag the choice rule with hasTokenWarning so diagnostics can highlight the mixed usage
-      this.rules.push({ id, type: 'choice', value: unwrapped, hasTokenWarning: hasToken, hasStrictWarning: hasStrict });
+      this.rules.push({ id, type: 'choice', value: unwrapped, hasTokenWarning: hasToken, hasLiteralMatchWarning: hasLiteralMatch });
       
       if (trail) this.TrailingTrivia(trail);
     } else {
@@ -1087,99 +1073,53 @@ export class SyntaxElement {
     return this;
   }
 
-  ExpectsOneOfStrict(...patterns: any[]): this {
-    if (patterns.length === 0) {
-      patterns = [""];
-    }
-    const flatten = (arr: any[]): any[] => {
-      const res: any[] = [];
-      for (const item of arr) {
-        if (Array.isArray(item)) {
-          res.push(...flatten(item));
-        } else {
-          res.push(item);
-        }
-      }
-      return res;
-    };
-    
-    const flatPatterns = flatten(patterns);
-    const unwrapped: any[] = [];
-    for (const p of flatPatterns) {
-      if (p && typeof p === 'object' && '__isStrictLiteralMarker' in p) {
-        unwrapped.push(p);
-      } else {
-        unwrapped.push(unwrapToken(p));
-      }
-    }
-    
-    const lead = SyntaxElement.defaultLeadingTrivia;
-    const trail = SyntaxElement.defaultTrailingTrivia;
-    if (lead) this.LeadingTrivia(lead);
-    
-    const id = nextRuleId();
-    // This is the clean way to match choice branches with default leading/trailing trivias but validating strict literals
-    this.rules.push({ id, type: 'choice', value: unwrapped });
-    
-    if (trail) this.TrailingTrivia(trail);
-    return this;
+  OneOffToken(...patterns: any[]): this {
+    return this.OneOff(...patterns.map(p => Token(p)));
   }
 
-  ExpectsOneOfToken(...patterns: any[]): this {
-    if (patterns.length === 0) {
-      patterns = [""];
-    }
-    const flatten = (arr: any[]): any[] => {
-      const res: any[] = [];
-      for (const item of arr) {
-        if (Array.isArray(item)) {
-          res.push(...flatten(item));
-        } else {
-          res.push(item);
-        }
-      }
-      return res;
-    };
-    
-    const flatPatterns = flatten(patterns);
-    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
-    for (const p of flatPatterns) {
-      unwrapped.push(unwrapToken(p));
-    }
-    
-    const lead = SyntaxElement.defaultLeadingTrivia;
-    const trail = SyntaxElement.defaultTrailingTrivia;
-    if (lead) this.LeadingTrivia(lead);
-    
-    const id = nextRuleId();
-    // This is the clean, warning-free way to match choice branches with default leading/trailing trivias
-    this.rules.push({ id, type: 'choice', value: unwrapped });
-    
-    if (trail) this.TrailingTrivia(trail);
-    return this;
-  }
-
-  Optional(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
+  Optional(pattern: any, ...additional: any[]): this {
     if (pattern === undefined || pattern === null) {
       pattern = "";
     }
-    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
-      const inner = pattern.pattern;
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const item of arr) {
+        if (Array.isArray(item)) {
+          res.push(...flatten(item));
+        } else {
+          res.push(item);
+        }
+      }
+      return res;
+    };
+
+    const hasAdditional = additional.length > 0;
+    const isArrayInput = Array.isArray(pattern);
+    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
+
+    let hasLiteralMatch = false;
+    const unwrapped: any[] = [];
+    for (const p of allPatterns) {
+      if (p && typeof p === 'object' && '__isLiteralExp' in p) {
+        hasLiteralMatch = true;
+        unwrapped.push(p);
+      } else {
+        unwrapped.push(p as any);
+      }
+    }
+
+    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
+
+    if (hasLiteralMatch) {
       const lead = SyntaxElement.defaultLeadingTrivia;
       const trail = SyntaxElement.defaultTrailingTrivia;
       if (lead) this.LeadingTrivia(lead);
-      
       const id = nextRuleId();
-      const rule: Rule = { id, type: 'optional', value: inner };
-      if ((pattern as any).name) {
-        rule.tokenName = (pattern as any).name;
-      }
-      this.rules.push(rule);
-      
+      this.rules.push({ id, type: 'optional', value: valueToWrite });
       if (trail) this.TrailingTrivia(trail);
     } else {
       const id = nextRuleId();
-      this.rules.push({ id, type: 'optional', value: pattern });
+      this.rules.push({ id, type: 'optional', value: valueToWrite });
     }
     return this;
   }
@@ -1204,15 +1144,11 @@ export class SyntaxElement {
     const isArrayInput = Array.isArray(pattern);
     const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
 
-    let hasToken = false;
-    let hasStrict = false;
+    let hasLiteralMatch = false;
     const unwrapped: any[] = [];
     for (const p of allPatterns) {
-      if (p && typeof p === 'object' && '__isTokenMarker' in p) {
-        hasToken = true;
-        unwrapped.push(unwrapToken(p));
-      } else if (p && typeof p === 'object' && '__isStrictLiteralMarker' in p) {
-        hasStrict = true;
+      if (p && typeof p === 'object' && '__isLiteralExp' in p) {
+        hasLiteralMatch = true;
         unwrapped.push(p);
       } else {
         unwrapped.push(p as any);
@@ -1221,13 +1157,13 @@ export class SyntaxElement {
 
     const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
 
-    if (hasToken || hasStrict) {
+    if (hasLiteralMatch) {
       const lead = SyntaxElement.defaultLeadingTrivia;
       const trail = SyntaxElement.defaultTrailingTrivia;
       if (lead) this.LeadingTrivia(lead);
       
       const id = nextRuleId();
-      this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite, hasTokenWarning: hasToken, hasStrictWarning: hasStrict });
+      this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite, hasLiteralMatchWarning: hasLiteralMatch });
       
       if (trail) this.TrailingTrivia(trail);
     } else {
@@ -1237,72 +1173,8 @@ export class SyntaxElement {
     return this;
   }
 
-  ZeroOrMoreStrict(pattern: any, ...additional: any[]): this {
-    if (pattern === undefined || pattern === null) {
-      pattern = "";
-    }
-    const flatten = (arr: any[]): any[] => {
-      const res: any[] = [];
-      for (const item of arr) {
-        if (Array.isArray(item)) {
-          res.push(...flatten(item));
-        } else {
-          res.push(item);
-        }
-      }
-      return res;
-    };
-
-    const hasAdditional = additional.length > 0;
-    const isArrayInput = Array.isArray(pattern);
-    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
-
-    const unwrapped: any[] = [];
-    for (const p of allPatterns) {
-      if (p && typeof p === 'object' && '__isStrictLiteralMarker' in p) {
-        unwrapped.push(p);
-      } else {
-        unwrapped.push(unwrapToken(p));
-      }
-    }
-
-    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
-
-    const id = nextRuleId();
-    this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite, isToken: true });
-    return this;
-  }
-
   ZeroOrMoreToken(pattern: any, ...additional: any[]): this {
-    if (pattern === undefined || pattern === null) {
-      pattern = "";
-    }
-    const flatten = (arr: any[]): any[] => {
-      const res: any[] = [];
-      for (const item of arr) {
-        if (Array.isArray(item)) {
-          res.push(...flatten(item));
-        } else {
-          res.push(item);
-        }
-      }
-      return res;
-    };
-
-    const hasAdditional = additional.length > 0;
-    const isArrayInput = Array.isArray(pattern);
-    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
-
-    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
-    for (const p of allPatterns) {
-      unwrapped.push(unwrapToken(p));
-    }
-
-    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
-
-    const id = nextRuleId();
-    this.rules.push({ id, type: 'zeroOrMore', value: valueToWrite, isToken: true });
-    return this;
+    return this.ZeroOrMore(Token(pattern), ...additional.map(p => Token(p)));
   }
 
   OneOrMore(pattern: any, ...additional: any[]): this {
@@ -1325,15 +1197,11 @@ export class SyntaxElement {
     const isArrayInput = Array.isArray(pattern);
     const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
 
-    let hasToken = false;
-    let hasStrict = false;
+    let hasLiteralMatch = false;
     const unwrapped: any[] = [];
     for (const p of allPatterns) {
-      if (p && typeof p === 'object' && '__isTokenMarker' in p) {
-        hasToken = true;
-        unwrapped.push(unwrapToken(p));
-      } else if (p && typeof p === 'object' && '__isStrictLiteralMarker' in p) {
-        hasStrict = true;
+      if (p && typeof p === 'object' && '__isLiteralExp' in p) {
+        hasLiteralMatch = true;
         unwrapped.push(p);
       } else {
         unwrapped.push(p as any);
@@ -1342,13 +1210,13 @@ export class SyntaxElement {
 
     const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
 
-    if (hasToken || hasStrict) {
+    if (hasLiteralMatch) {
       const lead = SyntaxElement.defaultLeadingTrivia;
       const trail = SyntaxElement.defaultTrailingTrivia;
       if (lead) this.LeadingTrivia(lead);
       
       const id = nextRuleId();
-      this.rules.push({ id, type: 'oneOrMore', value: valueToWrite, hasTokenWarning: hasToken, hasStrictWarning: hasStrict });
+      this.rules.push({ id, type: 'oneOrMore', value: valueToWrite, hasLiteralMatchWarning: hasLiteralMatch });
       
       if (trail) this.TrailingTrivia(trail);
     } else {
@@ -1358,78 +1226,18 @@ export class SyntaxElement {
     return this;
   }
 
-  OneOrMoreStrict(pattern: any, ...additional: any[]): this {
-    if (pattern === undefined || pattern === null) {
-      pattern = "";
-    }
-    const flatten = (arr: any[]): any[] => {
-      const res: any[] = [];
-      for (const item of arr) {
-        if (Array.isArray(item)) {
-          res.push(...flatten(item));
-        } else {
-          res.push(item);
-        }
-      }
-      return res;
-    };
-
-    const hasAdditional = additional.length > 0;
-    const isArrayInput = Array.isArray(pattern);
-    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
-
-    const unwrapped: any[] = [];
-    for (const p of allPatterns) {
-      if (p && typeof p === 'object' && '__isStrictLiteralMarker' in p) {
-        unwrapped.push(p);
-      } else {
-        unwrapped.push(unwrapToken(p));
-      }
-    }
-
-    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
-
-    const id = nextRuleId();
-    this.rules.push({ id, type: 'oneOrMore', value: valueToWrite, isToken: true });
-    return this;
+  OneOrMoreToken(pattern: any, ...additional: any[]): this {
+    return this.OneOrMore(Token(pattern), ...additional.map(p => Token(p)));
   }
 
-  OneOrMoreToken(pattern: any, ...additional: any[]): this {
-    if (pattern === undefined || pattern === null) {
-      pattern = "";
-    }
-    const flatten = (arr: any[]): any[] => {
-      const res: any[] = [];
-      for (const item of arr) {
-        if (Array.isArray(item)) {
-          res.push(...flatten(item));
-        } else {
-          res.push(item);
-        }
-      }
-      return res;
-    };
-
-    const hasAdditional = additional.length > 0;
-    const isArrayInput = Array.isArray(pattern);
-    const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
-
-    const unwrapped: (string | RegExp | SyntaxElement)[] = [];
-    for (const p of allPatterns) {
-      unwrapped.push(unwrapToken(p));
-    }
-
-    const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
-
+  ExpectEOF(): this {
     const id = nextRuleId();
-    this.rules.push({ id, type: 'oneOrMore', value: valueToWrite, isToken: true });
+    this.rules.push({ id, type: 'eof' });
     return this;
   }
 
   ExpectsEOF(): this {
-    const id = nextRuleId();
-    this.rules.push({ id, type: 'eof' });
-    return this;
+    return this.ExpectEOF();
   }
 
   LeadingTrivia(pattern?: string | RegExp | SyntaxElement): this {
@@ -1453,17 +1261,14 @@ export class SyntaxElement {
     if (separator === undefined || separator === null) {
       separator = "";
     }
+    
     const id = nextRuleId();
-    let unwrappedItem = item;
-    let unwrappedSep = separator;
-    if (item && typeof item === 'object' && '__isTokenMarker' in item) {
-      unwrappedItem = unwrapToken(item);
-    }
-    if (separator && typeof separator === 'object' && '__isTokenMarker' in separator) {
-      unwrappedSep = unwrapToken(separator);
-    }
-    this.rules.push({ id, type: 'separatedBy', value: { item: unwrappedItem, separator: unwrappedSep } });
+    this.rules.push({ id, type: 'separatedBy', value: { item, separator } });
     return this;
+  }
+
+  SeparatedByToken(item: any, separator: any): this {
+    return this.SeparatedBy(Token(item), Token(separator));
   }
 
   Assert(pattern: any, ...additional: any[]): this {
@@ -1502,7 +1307,7 @@ export class SyntaxElement {
     return this;
   }
 
-  Token(pattern: string | RegExp | SyntaxElement | TokenMarker, leading?: string | RegExp | SyntaxElement, trailing?: string | RegExp | SyntaxElement): this {
+  Token(pattern: string | RegExp | SyntaxElement | LiteralExp | TokenMarker, leading?: string | RegExp | SyntaxElement, trailing?: string | RegExp | SyntaxElement): this {
     const lead = leading !== undefined ? leading : SyntaxElement.defaultLeadingTrivia;
     const trail = trailing !== undefined ? trailing : SyntaxElement.defaultTrailingTrivia;
     if (lead) this.LeadingTrivia(lead);
@@ -1522,6 +1327,20 @@ export class SyntaxElement {
         } else {
           rule = { id, type: 'regex', value: realPattern };
         }
+      } else if (realPattern instanceof LiteralExp) {
+        let litVal = "";
+        let ruleType: RuleType = 'literalMatch';
+        if (realPattern.literal instanceof RegExp) {
+          if (!isSimpleCaseInsensitiveRegex(realPattern.literal)) {
+            throw new Error("Regex pattern for LiteralMatch must be a simple case-insensitive regex pattern (have 'i' flag and no regex special chars).");
+          }
+          litVal = realPattern.literal.source;
+          ruleType = 'caseInsensitiveLiteralMatch';
+        } else {
+          litVal = String(realPattern.literal);
+        }
+        const regexVal = typeof realPattern.pattern === 'string' ? new RegExp(realPattern.pattern) : realPattern.pattern;
+        rule = { id, type: ruleType, value: { literal: litVal, pattern: regexVal } };
       } else {
         rule = { id, type: 'literal', value: realPattern };
       }
@@ -1716,7 +1535,7 @@ export class SyntaxElement {
     if (rule.type === 'regex' || rule.type === 'caseInsensitiveLiteral') {
       return [rule.value];
     }
-    if (rule.type === 'strictLiteral' || rule.type === 'caseInsensitiveStrictLiteral') {
+    if (rule.type === 'literalMatch' || rule.type === 'caseInsensitiveLiteralMatch') {
       return [rule.value.pattern];
     }
     if (rule.type === 'choice' && Array.isArray(rule.value)) {
@@ -1784,6 +1603,52 @@ export class SyntaxElement {
     ruleId: number, 
     context?: any
   ) {
+    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
+      const innerPattern = pattern.pattern;
+      const tokenName = pattern.name;
+
+      let scanOffset = currentOffset;
+      let maxLimit = currentOffset;
+
+      if (SyntaxElement.defaultLeadingTrivia) {
+        const leadRes = this.parsePattern(SyntaxElement.defaultLeadingTrivia, text, scanOffset, memo, ruleId, context);
+        if (leadRes.success) {
+           scanOffset = leadRes.newOffset;
+        }
+      }
+
+      const innerStartOffset = scanOffset;
+      const innerRes = this.parsePattern(innerPattern, text, scanOffset, memo, ruleId, context);
+      maxLimit = Math.max(maxLimit, innerRes.dependencyLimit);
+
+      if (!innerRes.success) {
+         return { success: false, newOffset: currentOffset, dependencyLimit: maxLimit };
+      }
+
+      scanOffset = innerRes.newOffset;
+      let ast = innerRes.value;
+
+      if (SyntaxElement.defaultTrailingTrivia) {
+         const trailRes = this.parsePattern(SyntaxElement.defaultTrailingTrivia, text, scanOffset, memo, ruleId, context);
+         if (trailRes.success) {
+            scanOffset = trailRes.newOffset;
+         }
+      }
+
+      if (tokenName && ast) {
+          const wrapped = {
+             type: 'struct',
+             start: innerStartOffset,
+             end: innerRes.newOffset,
+             _fields: { [tokenName]: ast },
+             value: ast
+          };
+          ast = wrapped;
+      }
+
+      return { success: true, newOffset: scanOffset, value: ast, dependencyLimit: maxLimit };
+    }
+
     if (pattern instanceof SyntaxElement) {
       const subResult = pattern.parse(text, currentOffset, memo, context);
       if (subResult && !subResult.error) {
@@ -1794,8 +1659,8 @@ export class SyntaxElement {
       } else {
         return { success: false, error: subResult?.error || `Failed sub-element: ${pattern.name}`, newOffset: subResult ? subResult.newOffset : currentOffset, dependencyLimit: subResult ? (subResult.dependencyLimit !== undefined ? subResult.dependencyLimit : subResult.newOffset) : currentOffset };
       }
-    } else if (pattern && typeof pattern === 'object' && '__isStrictLiteralMarker' in pattern) {
-      const marker = pattern as StrictLiteralMarker;
+    } else if (pattern && typeof pattern === 'object' && '__isLiteralExp' in pattern) {
+      const marker = pattern as any;
       const lit = marker.literal;
       const pat = marker.pattern;
       
@@ -2113,16 +1978,12 @@ export class SyntaxElement {
           res = this.evaluatePatternRule(rule, text, currentOffset, memo, ctx, results);
           break;
 
-        case 'strictLiteral':
-          res = this.evaluateStrictLiteralRule(rule, text, currentOffset, memo, ctx, results);
+        case 'literalMatch':
+          res = this.evaluateLiteralMatchRule(rule, text, currentOffset, memo, ctx, results);
           break;
 
-        case 'caseInsensitiveStrictLiteral':
-          res = this.evaluateCaseInsensitiveStrictLiteralRule(rule, text, currentOffset, memo, ctx, results);
-          break;
-
-        case 'whitespace':
-          res = this.evaluateWhitespaceRule(rule, text, currentOffset, results);
+        case 'caseInsensitiveLiteralMatch':
+          res = this.evaluateCaseInsensitiveLiteralMatchRule(rule, text, currentOffset, memo, ctx, results);
           break;
 
         case 'choice':
@@ -2211,7 +2072,7 @@ export class SyntaxElement {
   // SECTION 5: MODULAR PRIVATE RULE EVALUATORS
   // ==========================================
 
-  private evaluateStrictLiteralRule(
+  private evaluateLiteralMatchRule(
     rule: Rule,
     text: string,
     currentOffset: number,
@@ -2232,7 +2093,7 @@ export class SyntaxElement {
     }
   }
 
-  private evaluateCaseInsensitiveStrictLiteralRule(
+  private evaluateCaseInsensitiveLiteralMatchRule(
     rule: Rule,
     text: string,
     currentOffset: number,
@@ -2300,25 +2161,6 @@ export class SyntaxElement {
         }
       }
       return { success: false, newOffset: offsetToUse, dependencyLimit: res.dependencyLimit, error: res.error };
-    }
-  }
-
-  private evaluateWhitespaceRule(
-    rule: Rule,
-    text: string,
-    currentOffset: number,
-    results: any[]
-  ) {
-    const match = matchRegex(WS_REGEX, text, currentOffset);
-    if (match) {
-      const wsNode = GreenNode.create('whitespace', match[0], rule.id, match[0].length);
-      if (wsNode.width > 0) {
-        results.push(wsNode);
-      }
-      const newOffset = currentOffset + match[0].length;
-      return { success: true, newOffset, dependencyLimit: newOffset };
-    } else {
-      return { success: false, newOffset: currentOffset, dependencyLimit: currentOffset + 1, error: "Expected whitespace" };
     }
   }
 
@@ -2420,16 +2262,52 @@ export class SyntaxElement {
     ctx: any,
     results: any[]
   ) {
-    const beforeOptErrorsLength = ctx.recoveredErrors.length;
-    const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
-    if (res.success) {
-      if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
-        results.push(res.value);
+    const isArray = Array.isArray(rule.value);
+    
+    if (!isArray) {
+      const beforeOptErrorsLength = ctx.recoveredErrors.length;
+      const res = this.parsePattern(rule.value, text, currentOffset, memo, rule.id, ctx);
+      if (res.success) {
+        if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
+          results.push(res.value);
+        }
+        return { success: true, newOffset: res.newOffset, dependencyLimit: res.dependencyLimit };
+      } else {
+        ctx.recoveredErrors.length = beforeOptErrorsLength;
+        return { success: true, newOffset: currentOffset, dependencyLimit: res.dependencyLimit };
       }
-      return { success: true, newOffset: res.newOffset, dependencyLimit: res.dependencyLimit };
     } else {
-      ctx.recoveredErrors.length = beforeOptErrorsLength;
-      return { success: true, newOffset: currentOffset, dependencyLimit: res.dependencyLimit };
+      let scanOffset = currentOffset;
+      let globalMaxDependencyLimit = currentOffset;
+      const patterns = rule.value as any[];
+      const matchedIndices = new Set<number>();
+      
+      let matchedSomething = true;
+      while (matchedSomething && scanOffset < text.length && matchedIndices.size < patterns.length) {
+        matchedSomething = false;
+        
+        for (let i = 0; i < patterns.length; i++) {
+          if (matchedIndices.has(i)) continue;
+          
+          const beforeErrorsLength = ctx.recoveredErrors.length;
+          const res = this.parsePattern(patterns[i], text, scanOffset, memo, rule.id, ctx);
+          globalMaxDependencyLimit = Math.max(globalMaxDependencyLimit, res.dependencyLimit);
+          
+          if (res.success && res.newOffset > scanOffset) {
+            matchedSomething = true;
+            matchedIndices.add(i);
+            if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
+              results.push(res.value);
+            }
+            scanOffset = res.newOffset;
+            break; // restart check for remaining items to maintain any order
+          } else {
+            ctx.recoveredErrors.length = beforeErrorsLength;
+          }
+        }
+      }
+      
+      return { success: true, newOffset: scanOffset, dependencyLimit: globalMaxDependencyLimit };
     }
   }
 
@@ -2941,15 +2819,13 @@ export function DefaultTrailingTrivia(pattern: string | RegExp | SyntaxElement):
 
 export interface TokenMarker {
   __isTokenMarker: true;
-  pattern: string | RegExp | SyntaxElement;
-  name?: string;
+  pattern: string | RegExp | SyntaxElement | LiteralExp;
 }
 
-export function Token(pattern: string | RegExp | SyntaxElement, name?: string): TokenMarker {
+export function Token(pattern: string | RegExp | SyntaxElement | LiteralExp): TokenMarker {
   return {
     __isTokenMarker: true,
-    pattern,
-    name
+    pattern
   };
 }
 
@@ -2963,18 +2839,35 @@ export function unwrapToken(pattern: any): any {
   return pattern;
 }
 
-export interface StrictLiteralMarker {
-  __isStrictLiteralMarker: true;
-  literal: string | RegExp;
-  pattern: string | RegExp;
+export class LiteralExp {
+  public readonly __isLiteralExp = true;
+  constructor(public literal: string | RegExp, public pattern: string | RegExp) {}
 }
 
-export function StrictLiteral(literal: string | RegExp, pattern: string | RegExp): StrictLiteralMarker {
-  return {
-    __isStrictLiteralMarker: true,
-    literal,
-    pattern
-  };
+export function LiteralMatch(literal: string | RegExp, pattern: string | RegExp): LiteralExp {
+  return new LiteralExp(literal, pattern);
+}
+
+export function Element(name: string): SyntaxElement {
+  return new SyntaxElement(name);
 }
 
 export { findDiff } from './utils';
+export interface OneOffMarker {
+  __isOneOffMarker: true;
+  patterns: any[];
+}
+
+export function OneOff(...patterns: any[]): OneOffMarker {
+  return {
+    __isOneOffMarker: true,
+    patterns
+  };
+}
+
+export function OneOffToken(...patterns: any[]): OneOffMarker {
+  return {
+    __isOneOffMarker: true,
+    patterns: patterns.map(p => Token(p))
+  };
+}

@@ -23,7 +23,7 @@ if (typeof window !== 'undefined') {
 import('prismjs/components/prism-clike');
 import('prismjs/components/prism-javascript');
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, generateFullTypeScript, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, StrictLiteral, SuggestionItem } from './lib/engine';
+import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, generateFullTypeScript, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, SuggestionItem, LiteralMatch, Element, OneOff, OneOffToken } from './lib/engine';
 import { cn } from './lib/utils';
 import { runGrammarDiagnostics, Diagnostic } from './lib/diagnostics';
 import { ProjectLibraryModal } from './components/ProjectLibraryModal';
@@ -760,12 +760,12 @@ export default function App() {
       SyntaxElement.Reset();
       // Execute the grammar code
       // We provide SyntaxElement and the Sort helper to the execution context
-      const executionFunc = new Function('SyntaxElement', 'Sort', 'Token', 'DefaultLeadingTrivia', 'DefaultTrailingTrivia', `
+      const executionFunc = new Function('SyntaxElement', 'Sort', 'Token', 'DefaultLeadingTrivia', 'DefaultTrailingTrivia', 'LiteralMatch', 'Element', 'OneOff', 'OneOffToken', `
         ${debouncedGrammarCode}
         return typeof root !== 'undefined' ? root : null;
       `);
       
-      const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, StrictLiteral);
+      const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, OneOff, OneOffToken);
       if (root instanceof SyntaxElement) {
         root.autoInjectLoopBoundaries();
         setRootElement(root);

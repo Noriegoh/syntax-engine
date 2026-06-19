@@ -31,19 +31,19 @@ export function getRuleVisualConfig(type: string, value: any, isToken?: boolean)
         textAccent: 'text-sky-300 font-mono',
         iconDotColor: 'bg-sky-400 ring-4 ring-sky-500/20 shadow-[0_0_10px_rgba(56,189,248,0.6)]'
       };
-    case 'strictLiteral':
+    case 'literalMatch':
       return {
-        typeName: 'Strict-Liter',
-        subtitle: 'STRICT LITERAL MATCH',
+        typeName: 'LiteralMatch',
+        subtitle: 'LITERAL MATCH CHECK',
         badgeClass: 'bg-sky-500/10 text-sky-400 border border-sky-500/20',
         borderStyle: 'bg-sky-500/5 border-sky-500/30 hover:bg-sky-500/10',
         textAccent: 'text-sky-300 font-mono',
         iconDotColor: 'bg-sky-400 ring-4 ring-sky-500/20 shadow-[0_0_10px_rgba(56,189,248,0.6)]'
       };
-    case 'caseInsensitiveStrictLiteral':
+    case 'caseInsensitiveLiteralMatch':
       return {
-        typeName: 'CI-Strict-Liter',
-        subtitle: 'CASE-INSENSITIVE STRICT LITERAL',
+        typeName: 'CI-LiteralMatch',
+        subtitle: 'CASE-INSENSITIVE LITERAL MATCH CHECK',
         badgeClass: 'bg-sky-500/10 text-sky-400 border border-sky-500/20',
         borderStyle: 'bg-sky-500/5 border-sky-500/30 hover:bg-sky-500/10',
         textAccent: 'text-sky-300 font-mono',
@@ -114,7 +114,7 @@ export function getRuleVisualConfig(type: string, value: any, isToken?: boolean)
       };
     case 'choice':
       return {
-        typeName: 'OneOf Choice',
+        typeName: isToken ? 'OneOffToken' : 'OneOff Choice',
         subtitle: 'BRANCH SELECTOR',
         badgeClass: 'bg-fuchsia-500/10 text-fuchsia-400 border border-fuchsia-500/20',
         borderStyle: 'bg-fuchsia-500/5 border-fuchsia-500/30 hover:bg-fuchsia-500/10',
@@ -228,10 +228,10 @@ export function buildRuleGraphTree(
       case 'literal':
         label = `"${String(item.value)}"`;
         break;
-      case 'strictLiteral':
+      case 'literalMatch':
         label = `"${String(item.value?.literal ?? '')}" strictly matching /${item.value?.pattern?.source ?? ''}/`;
         break;
-      case 'caseInsensitiveStrictLiteral':
+      case 'caseInsensitiveLiteralMatch':
         label = `"${String(item.value?.literal ?? '')}" case-insensitively strictly matching /${item.value?.pattern?.source ?? ''}/`;
         break;
       case 'caseInsensitiveLiteral':
@@ -869,11 +869,11 @@ export const VisualRulesInspector: React.FC<VisualRulesInspectorProps> = ({
                                   <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
                                     "{String(rule.value)}" (case-insensitive)
                                   </code>
-                                ) : rule.type === 'strictLiteral' ? (
+                                ) : rule.type === 'literalMatch' ? (
                                   <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
                                     "{String(rule.value?.literal)}" strictly matching /regex/ /{rule.value?.pattern?.source}/
                                   </code>
-                                ) : rule.type === 'caseInsensitiveStrictLiteral' ? (
+                                ) : rule.type === 'caseInsensitiveLiteralMatch' ? (
                                   <code className="text-[11px] font-mono text-sky-300 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-500/10">
                                     "{String(rule.value?.literal)}" case-insensitively strictly matching /regex/ /{rule.value?.pattern?.source}/
                                   </code>
@@ -956,8 +956,8 @@ export const VisualRulesInspector: React.FC<VisualRulesInspectorProps> = ({
                               <p className="text-[10px] text-slate-500 font-sans italic">
                                 {rule.type === 'literal' ? "Strict literal: matches the exact character sequence of this token keyword." :
                                  rule.type === 'caseInsensitiveLiteral' ? "Case-insensitive literal: matches the exact character sequence of this token keyword, ignoring capitalization rules." :
-                                 rule.type === 'strictLiteral' ? "Strict literal regex check: matches a pattern regex first, then fails if the matched string is not identical to the given literal." :
-                                 rule.type === 'caseInsensitiveStrictLiteral' ? "Case-insensitive strict literal regex check: matches a pattern regex first, then fails if the matched string is not case-insensitively identical to the given literal." :
+                                 rule.type === 'literalMatch' ? "Literal match regex check: matches a pattern regex first, then fails if the matched string is not identical to the given literal." :
+                                 rule.type === 'caseInsensitiveLiteralMatch' ? "Case-insensitive literal match regex check: matches a pattern regex first, then fails if the matched string is not case-insensitively identical to the given literal." :
                                  rule.type === 'regex' ? "Regexp scan: matches standard compiler token patterns, identifiers, numbers, etc." :
                                  rule.type === 'element' ? "Sub-element: executes another rule segment to build nested CST syntax nodes." :
                                  rule.type === 'whitespace' ? "Noise filter: parses and skips spaces, comments, and formatting characters dynamically." :
