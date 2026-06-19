@@ -58,8 +58,10 @@ export const CstQueryTab: React.FC<CstQueryTabProps> = ({
     
     const getNodeText = (node: any): string => {
       if (!node) return "";
-      if (typeof node.start === 'number' && typeof node.end === 'number') {
-        return debouncedTestInput.substring(node.start, node.end);
+      const start = typeof node.start === 'number' ? node.start : node.offset;
+      const end = typeof node.end === 'number' ? node.end : (typeof node.offset === 'number' && typeof node.width === 'number' ? node.offset + node.width : undefined);
+      if (typeof start === 'number' && typeof end === 'number') {
+        return debouncedTestInput.substring(start, end);
       }
       if (Array.isArray(node)) {
         return node.map(getNodeText).join("");
@@ -78,8 +80,10 @@ export const CstQueryTab: React.FC<CstQueryTabProps> = ({
     const renderNodeCard = (node: any, titleStr: string, badgeColor: string, copyKey: string) => {
       if (!node) return null;
       const matchedText = getNodeText(node);
-      const startCoords = typeof node.start === 'number' ? getLineAndCol(debouncedTestInput, node.start) : { line: 1, col: 1 };
-      const endCoords = typeof node.end === 'number' ? getLineAndCol(debouncedTestInput, node.end) : { line: 1, col: 1 };
+      const activeStart = typeof node.start === 'number' ? node.start : node.offset;
+      const activeEnd = typeof node.end === 'number' ? node.end : (typeof node.offset === 'number' && typeof node.width === 'number' ? node.offset + node.width : undefined);
+      const startCoords = typeof activeStart === 'number' ? getLineAndCol(debouncedTestInput, activeStart) : { line: 1, col: 1 };
+      const endCoords = typeof activeEnd === 'number' ? getLineAndCol(debouncedTestInput, activeEnd) : { line: 1, col: 1 };
       const isCopied = copiedMap[copyKey];
 
       return (

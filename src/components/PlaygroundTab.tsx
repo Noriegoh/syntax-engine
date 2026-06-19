@@ -557,12 +557,15 @@ export const PlaygroundTab: React.FC<PlaygroundTabProps> = ({
                     const activeNode = hoveredCstNode || selectedCstNode;
                     if (!activeNode) return null;
                     
+                    const startRaw = typeof activeNode.start === 'number' ? activeNode.start : activeNode.offset;
+                    const endRaw = typeof activeNode.end === 'number' ? activeNode.end : (typeof activeNode.offset === 'number' && typeof activeNode.width === 'number' ? activeNode.offset + activeNode.width : undefined);
+
                     let nodeText = "";
                     if (typeof activeNode === 'object' && activeNode !== null) {
-                      if (typeof activeNode.start === 'number' && typeof activeNode.end === 'number') {
-                        nodeText = debouncedTestInput.substring(Math.max(0, activeNode.start), Math.min(debouncedTestInput.length, activeNode.end));
+                      if (typeof startRaw === 'number' && typeof endRaw === 'number') {
+                        nodeText = debouncedTestInput.substring(Math.max(0, startRaw), Math.min(debouncedTestInput.length, endRaw));
                       } else if (activeNode.value !== undefined) {
-                        nodeText = String(activeNode.value);
+                        nodeText = typeof activeNode.value === 'object' ? JSON.stringify(activeNode.value) : String(activeNode.value);
                       }
                     } else {
                       nodeText = String(activeNode);
@@ -602,20 +605,20 @@ export const PlaygroundTab: React.FC<PlaygroundTabProps> = ({
                             </span>
                           </div>
 
-                          {typeof activeNode.start === 'number' && typeof activeNode.end === 'number' && (
+                          {typeof startRaw === 'number' && typeof endRaw === 'number' && (
                             <div className="grid grid-cols-2 gap-2 text-slate-400 font-mono text-[10px]">
                               <div className="bg-white/[0.02] p-1.5 rounded border border-white/5">
                                 <span className="block text-[8px] text-slate-600 font-black uppercase tracking-widest mb-0.5">Offset Range</span>
-                                <span className="text-white font-bold">{activeNode.start} &ndash; {activeNode.end}</span>
+                                <span className="text-white font-bold">{startRaw} &ndash; {endRaw}</span>
                               </div>
                               <div className="bg-white/[0.02] p-1.5 rounded border border-white/5">
                                 <span className="block text-[8px] text-slate-600 font-black uppercase tracking-widest mb-0.5">Length (chars)</span>
-                                <span className="text-indigo-300 font-bold">{activeNode.end - activeNode.start}</span>
+                                <span className="text-indigo-300 font-bold">{endRaw - startRaw}</span>
                               </div>
                               <div className="bg-white/[0.02] p-1.5 rounded border border-white/5 col-span-2">
                                 <span className="block text-[8px] text-slate-600 font-black uppercase tracking-widest mb-0.5">Match Location</span>
                                 <span className="text-emerald-400 font-bold">
-                                  Line {getLineAndCol(debouncedTestInput, activeNode.start).line}, Col {getLineAndCol(debouncedTestInput, activeNode.start).col}
+                                  Line {getLineAndCol(debouncedTestInput, startRaw).line}, Col {getLineAndCol(debouncedTestInput, startRaw).col}
                                 </span>
                               </div>
                             </div>
