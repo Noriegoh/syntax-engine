@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import * as acorn from 'acorn';
 import { 
   FolderOpen,
   Plus,
@@ -756,15 +757,28 @@ export default function App() {
       // Clear previous error
       setCodeError(null);
       
+      // Syntactically validate code before execution with acorn to pinpoint the exact line & column
+      try {
+        acorn.parse(debouncedGrammarCode, { ecmaVersion: 'latest', sourceType: 'module' });
+      } catch (acornErr: any) {
+        if (acornErr.loc) {
+          // Remove raw (1:12) trailing parenthesis from acorn error message, if present
+          const cleanMsg = acornErr.message ? acornErr.message.replace(/\s*\(\d+:\d+\)\s*$/, '') : "Syntax Error";
+          throw new SyntaxError(`${cleanMsg} (Line ${acornErr.loc.line}, Col ${acornErr.loc.column + 1})`);
+        }
+        throw acornErr;
+      }
+
       // Reset SyntaxElement static states to avoid leaking previous grammar definitions or default trivias
       SyntaxElement.Reset();
       // Execute the grammar code
       // We provide SyntaxElement and the Sort helper to the execution context
-      const executionFunc = new Function('SyntaxElement', 'Sort', 'Token', 'DefaultLeadingTrivia', 'DefaultTrailingTrivia', 'LiteralMatch', 'Element', 'OneOff', 'OneOffToken', `
+      const codeToRun = `(function(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, OneOff, OneOffToken) {
         ${debouncedGrammarCode}
         return typeof root !== 'undefined' ? root : null;
-      `);
+      })\n//# sourceURL=grammar-code.js`;
       
+      const executionFunc = eval(codeToRun);
       const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, OneOff, OneOffToken);
       if (root instanceof SyntaxElement) {
         root.autoInjectLoopBoundaries();
@@ -774,7 +788,38 @@ export default function App() {
         setCodeError("Variable 'root' (SyntaxElement) not found in code.");
       }
     } catch (err: any) {
-      setCodeError(err.message);
+      console.error("Syntax/Runtime error inside grammar:", err);
+      
+      let errorMsg = err.message || String(err);
+      const stack = err.stack || "";
+      
+      // Try to find "grammar-code.js:LINE:COL" or similar inside the stack trace
+      const match = stack.match(/grammar-code\.js:(\d+)(?::(\d+))?/);
+      if (match) {
+        const rawLine = parseInt(match[1], 10);
+        const col = match[2] ? parseInt(match[2], 10) : null;
+        
+        // We have 1 wrapper line in codeToRun before user's code, so subtract 1
+        const userLine = rawLine - 1;
+        if (userLine >= 1) {
+          if (col !== null) {
+            errorMsg = `${errorMsg} (Line ${userLine}, Col ${col})`;
+          } else {
+            errorMsg = `${errorMsg} (Line ${userLine})`;
+          }
+        }
+      } else if (err.lineNumber !== undefined) {
+        const userLine = err.lineNumber - 1;
+        if (userLine >= 1) {
+          if (err.columnNumber !== undefined) {
+            errorMsg = `${errorMsg} (Line ${userLine}, Col ${err.columnNumber})`;
+          } else {
+            errorMsg = `${errorMsg} (Line ${userLine})`;
+          }
+        }
+      }
+
+      setCodeError(errorMsg);
       setRootElement(null);
       setHierarchy(null);
     }
