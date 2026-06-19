@@ -72,7 +72,6 @@ Avoid legacy methods and hallucinations. Here is the exact public API contract o
 | **`As(fieldName)`** | Maps the matched child node's result under a key name in the parent node's properties. | `.Expects(id).As("identifier")` |
 | **`AsToken(tokenName)`** | Labels the matched sequence with a token type identifier without injecting spacer trivias. | `.Expects(/[0-9]+/).AsToken("Integer")` |
 | **`Ignore()`** | Hides the preceding rule's visual tree output while keeping its semantic match verification. | `.Token(";").Ignore()` |
-| **`IgnoreSelf()`** | Omits the rule's parent node wrapper from outputting, keeping child nodes inside. | `new SyntaxElement("wrapper").IgnoreSelf()` |
 | **`Inline()`** | Flattens matched elements directly under the container parent. | `.Expects(mods).Inline()` |
 
 ---

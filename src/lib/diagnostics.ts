@@ -867,6 +867,22 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     }
   }
 
+  // 10. Collect warnings from inlined elements (or any element with compiled warnings)
+  for (const el of Array.from(SyntaxElement.registry.values())) {
+    if (el.isInlined) {
+      for (const warn of el.warnings) {
+        if (!diagnostics.some(d => d.nodeName === (el.name || "Inlined") && d.message === warn)) {
+          diagnostics.push({
+            type: "warning",
+            nodeName: el.name || "Inlined",
+            message: warn,
+            suggestion: "Remove AST metadata configuration or custom naming from inlined elements."
+          });
+        }
+      }
+    }
+  }
+
   return diagnostics;
 }
 

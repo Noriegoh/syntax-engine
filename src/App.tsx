@@ -190,9 +190,10 @@ export default function App() {
   
   const csGeneratedFiles = useMemo(() => {
     if (!rootElement || !showCSharpModal) return [];
+    const rootName = rootElement.name ? String(rootElement.name).replace(/[^a-zA-Z0-9]/g, '') : 'Parser';
     if (csExportMode === 'bundle') {
       const code = generateFullCSharp(rootElement, debouncedCsNamespace, lastScopeBuilder || undefined);
-      return [{ name: `${rootElement.name ? rootElement.name.replace(/[^a-zA-Z0-9]/g, '') : 'Parser'}Bundle.cs`, content: code }];
+      return [{ name: `${rootName}Bundle.cs`, content: code }];
     } else {
       return generateModularCSharp(rootElement, {
         namespace: debouncedCsNamespace,
@@ -211,7 +212,8 @@ export default function App() {
     if (!rootElement || !showTSModal) return [];
     try {
       const code = generateFullTypeScript(rootElement);
-      const name = `${rootElement.name ? rootElement.name.replace(/[^a-zA-Z0-9]/g, '') : 'Parser'}Bundle.ts`;
+      const rootName = rootElement.name ? String(rootElement.name).replace(/[^a-zA-Z0-9]/g, '') : 'Parser';
+      const name = `${rootName}Bundle.ts`;
       return [{ name, content: code }];
     } catch (e) {
       console.error(e);

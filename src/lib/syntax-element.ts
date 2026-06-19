@@ -26,11 +26,9 @@ export const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'BeginScope', insertText: 'BeginScope(', type: 'method', description: 'Signal local lexical namespace creation (e.g., matching brace "{" )' },
   { label: 'EndScope', insertText: 'EndScope(', type: 'method', description: 'Signal local lexical namespace termination (e.g., matching brace "}" )' },
   { label: 'ExpectsEOF', insertText: 'ExpectsEOF()', type: 'method', description: 'Enforce complete final end-of-file condition' },
-  { label: 'AsASTNode', insertText: 'AsASTNode(', type: 'method', description: 'Re-bind generated visual abstract type identifier' },
   { label: 'As', insertText: 'As(', type: 'method', description: 'Assign field property name/label to the matched result' },
-  { label: 'AsNode', insertText: 'AsNode(', type: 'method', description: 'Instruct engine to construct visual AST Node representation instead of direct CST structure' },
-  { label: 'AsToken', insertText: 'AsToken(', type: 'method', description: 'Assign a custom token name to the matched terminal pattern without injecting trivias' },
-  { label: 'Ignore', insertText: 'Ignore()', type: 'method', description: 'Instruct engine to flatten and merge current SyntaxElement rule inside parent nodes' },
+  { label: 'Inline', insertText: 'Inline()', type: 'method', description: 'Inline this element, copying its rules directly into any receiving element at runtime' },
+  { label: 'InlinedElement', insertText: 'InlinedElement()', type: 'method', description: 'Helper to return a new anonymous, inlined SyntaxElement' },
   { label: 'IgnoreSelf', insertText: 'IgnoreSelf()', type: 'method', description: 'Skip this entire subtree node construction while still executing parsing checks' },
   { label: 'RecoverWith', insertText: 'RecoverWith(', type: 'method', description: 'Register explicit manual recovery delimiters for automated parser healing' },
   { label: 'SelfHeals', insertText: 'SelfHeals(', type: 'method', description: 'Designate current rules blocks automated healing boundaries' },
@@ -74,7 +72,6 @@ export interface Rule {
   value?: any;
   label?: string;
   ignored?: boolean;
-  tokenName?: string;
   isToken?: boolean;
   hasTokenWarning?: boolean; // Set when Token wraps choice elements inside OneOff
   hasLiteralMatchWarning?: boolean; // Set when LiteralMatch wraps choice elements inside OneOff
@@ -212,18 +209,7 @@ export class RedNode {
     public readonly parent: RedNode | null,
     public readonly offset: number
   ) {
-    const elementObj = SyntaxElement.registry?.get(green.type);
-    if (elementObj && elementObj.astNodeName) {
-      this.type = elementObj.astNodeName;
-    } else {
-      const parentRuleId = (green as any).parentRuleId !== undefined ? (green as any).parentRuleId : green.ruleId;
-      const rule = SyntaxElement.ruleRegistry?.get(parentRuleId);
-      if (rule && rule.tokenName) {
-        this.type = rule.tokenName;
-      } else {
-        this.type = green.type;
-      }
-    }
+    this.type = green.type;
     this.width = green.width;
   }
 
@@ -504,11 +490,109 @@ export class SyntaxElement {
   public readonly name: string;
   public readonly rules: Rule[] = [];
   
-  public isHiddenElement: boolean = false;
+  public isInlined: boolean = false;
+  public warnings: string[] = [];
+
+  public get isHiddenElement(): boolean {
+    return this.isInlined;
+  }
+  public set isHiddenElement(val: boolean) {
+    this.isInlined = val;
+  }
+
   public enumName: string | null = null;
-  public astNodeName: string | null = null;
-  public isIgnoredElement: boolean = false;
   public isAutoHealing: boolean = false;
+
+  public addWarning(message: string): void {
+    if (!this.warnings.includes(message)) {
+      this.warnings.push(message);
+    }
+  }
+
+  private checkInliningRecursion(source: any): void {
+    const checkSingle = (item: any) => {
+      const unwrapped = SyntaxElement.unwrapPattern(item);
+      if (unwrapped instanceof SyntaxElement) {
+        if (unwrapped.isInlined || this.isInlined) {
+          if (this.detectEndlessInliningRecursion(unwrapped)) {
+            throw new Error(`Endless recursion prohibited: inlining loop detected on element '${unwrapped.name || "Inlined"}'`);
+          }
+        }
+      }
+    };
+
+    if (Array.isArray(source)) {
+      source.forEach(checkSingle);
+    } else {
+      checkSingle(source);
+    }
+  }
+
+  private detectEndlessInliningRecursion(source: SyntaxElement, visited = new Set<SyntaxElement>()): boolean {
+    if (source === this) return true;
+    if (visited.has(source)) return false;
+    visited.add(source);
+
+    for (const rule of source.rules) {
+      if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
+        if (this.detectEndlessInliningRecursion(rule.value, visited)) return true;
+      } else if (rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'optional') {
+        const vals = Array.isArray(rule.value) ? rule.value : [rule.value];
+        for (const val of vals) {
+          const unwrapped = SyntaxElement.unwrapPattern(val);
+          if (unwrapped instanceof SyntaxElement) {
+            if (this.detectEndlessInliningRecursion(unwrapped, visited)) return true;
+          }
+        }
+      } else if (rule.type === 'separatedBy' && rule.value) {
+        const itemUnwrapped = SyntaxElement.unwrapPattern(rule.value.item);
+        if (itemUnwrapped instanceof SyntaxElement && this.detectEndlessInliningRecursion(itemUnwrapped, visited)) return true;
+        const sepUnwrapped = SyntaxElement.unwrapPattern(rule.value.separator);
+        if (sepUnwrapped instanceof SyntaxElement && this.detectEndlessInliningRecursion(sepUnwrapped, visited)) return true;
+      }
+    }
+    return false;
+  }
+
+  private inlineElementRules(source: SyntaxElement): void {
+    this.checkInliningRecursion(source);
+
+    // copy warnings too so they bubble up if any
+    for (const warn of source.warnings) {
+      this.addWarning(warn);
+    }
+
+    for (const rule of source.rules) {
+      const newId = nextRuleId();
+      if (rule.type === 'element' && rule.value instanceof SyntaxElement && rule.value.isInlined) {
+        this.inlineElementRules(rule.value);
+      } else {
+        this.rules.push({
+          ...rule,
+          id: newId,
+          value: this.cloneRuleValue(rule.value)
+        });
+      }
+    }
+  }
+
+  private cloneRuleValue(val: any): any {
+    if (val === null || val === undefined) return val;
+    if (val instanceof SyntaxElement) {
+      return val;
+    }
+    if (Array.isArray(val)) {
+      return val.map(item => this.cloneRuleValue(item));
+    }
+    if (typeof val === 'object') {
+      const cloned: any = {};
+      for (const k of Object.keys(val)) {
+        cloned[k] = this.cloneRuleValue(val[k]);
+      }
+      return cloned;
+    }
+    return val;
+  }
 
   public get isEnumTarget(): boolean {
     return this.enumName !== null;
@@ -682,28 +766,12 @@ export class SyntaxElement {
   }
 
   // Builder Methods
-  AsNode(nodeName: string): this {
-    this.astNodeName = nodeName;
-    SyntaxElement.registry.set(nodeName, this);
-    return this;
-  }
-
-  AsToken(tokenName: string): this {
-    if (this.rules.length > 0) {
-      let targetRule = this.rules[this.rules.length - 1];
-      for (let i = this.rules.length - 1; i >= 0; i--) {
-        const r = this.rules[i];
-        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia') {
-          targetRule = r;
-          break;
-        }
-      }
-      targetRule.tokenName = tokenName;
-    }
-    return this;
-  }
 
   MapToEnum(enumName: string): this {
+    if (this.isInlined) {
+      this.addWarning(`Calling MapToEnum("${enumName}") on an inlined syntax element has no effect, as the element will be flattened and its node will never be created in the AST.`);
+      console.warn(`Calling MapToEnum("${enumName}") on an inlined syntax element has no effect.`);
+    }
     this.enumName = enumName;
     return this;
   }
@@ -827,14 +895,17 @@ export class SyntaxElement {
     }
   }
 
-  Ignore(): this {
-    this.isHiddenElement = true;
+  Inline(): this {
+    this.isInlined = true;
+    if (this.name && this.name !== "Inlined" && this.name !== "") {
+      this.addWarning(`Defining a custom name "${this.name}" for an inlined syntax element has no effect, as the element will be flattened and its node will never be created in the AST.`);
+      console.warn(`Defining a custom name "${this.name}" for an inlined syntax element has no effect.`);
+    }
     return this;
   }
 
-  IgnoreSelf(): this {
-    this.isIgnoredElement = true;
-    return this;
+  Ignore(): this {
+    return this.Inline();
   }
 
   RecoverWith(...boundaries: (string | RegExp | SyntaxElement)[]): this {
@@ -922,8 +993,14 @@ export class SyntaxElement {
     if (!(element instanceof SyntaxElement)) {
       throw new Error("Rule parameter must be a SyntaxElement instance.");
     }
-    const id = nextRuleId();
-    this.rules.push({ id, type: 'element', value: element });
+    this.checkInliningRecursion(element);
+
+    if (element.isInlined) {
+      this.inlineElementRules(element);
+    } else {
+      const id = nextRuleId();
+      this.rules.push({ id, type: 'element', value: element });
+    }
     return this;
   }
 
@@ -1025,6 +1102,7 @@ export class SyntaxElement {
   }
 
   OneOff(...patterns: any[]): this {
+    this.checkInliningRecursion(patterns);
     if (patterns.length === 0) {
       patterns = [""];
     }
@@ -1078,6 +1156,8 @@ export class SyntaxElement {
   }
 
   Optional(pattern: any, ...additional: any[]): this {
+    this.checkInliningRecursion(pattern);
+    this.checkInliningRecursion(additional);
     if (pattern === undefined || pattern === null) {
       pattern = "";
     }
@@ -1125,6 +1205,8 @@ export class SyntaxElement {
   }
 
   ZeroOrMore(pattern: any, ...additional: any[]): this {
+    this.checkInliningRecursion(pattern);
+    this.checkInliningRecursion(additional);
     if (pattern === undefined || pattern === null) {
       pattern = "";
     }
@@ -1178,6 +1260,8 @@ export class SyntaxElement {
   }
 
   OneOrMore(pattern: any, ...additional: any[]): this {
+    this.checkInliningRecursion(pattern);
+    this.checkInliningRecursion(additional);
     if (pattern === undefined || pattern === null) {
       pattern = "";
     }
@@ -1255,6 +1339,8 @@ export class SyntaxElement {
   }
 
   SeparatedBy(item: any, separator: any): this {
+    this.checkInliningRecursion(item);
+    this.checkInliningRecursion(separator);
     if (item === undefined || item === null) {
       item = "";
     }
@@ -1344,9 +1430,6 @@ export class SyntaxElement {
       } else {
         rule = { id, type: 'literal', value: realPattern };
       }
-    }
-    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern && (pattern as any).name) {
-      rule.tokenName = (pattern as any).name;
     }
     this.rules.push(rule);
     
@@ -2850,6 +2933,12 @@ export function LiteralMatch(literal: string | RegExp, pattern: string | RegExp)
 
 export function Element(name: string): SyntaxElement {
   return new SyntaxElement(name);
+}
+
+export function InlinedElement(): SyntaxElement {
+  const el = new SyntaxElement("Inlined");
+  el.Inline();
+  return el;
 }
 
 export { findDiff } from './utils';

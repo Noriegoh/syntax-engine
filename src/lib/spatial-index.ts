@@ -230,7 +230,7 @@ function replaceInGreenTree(
 ): { node: GreenNode | null; matched: boolean; widthDelta: number } {
   const isMatch = currentOffset === targetStart &&
                   node.width === targetWidth &&
-                  (node.ruleId === targetRuleId || node.type === candidateElement.name || node.type === candidateElement.astNodeName);
+                  (node.ruleId === targetRuleId || node.type === candidateElement.name);
 
   if (isMatch) {
     const replacementWidth = replacement ? replacement.width : 0;

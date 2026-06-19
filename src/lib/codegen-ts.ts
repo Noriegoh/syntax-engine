@@ -323,10 +323,10 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
     }
   }
 
-  const visibleElements = elements.filter(el => !el.isHiddenElement && !el.isIgnoredElement);
+  const visibleElements = elements.filter(el => !el.isHiddenElement);
 
   const nodesCode = visibleElements.map(el => {
-    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+    const elName = sanitize(el.name);
     
     let propertiesStr = "";
     
@@ -342,9 +342,9 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
           isList = true;
           const leafValue = rule.type === 'separatedBy' ? rule.value.item : rule.value;
           if (leafValue instanceof SyntaxElement) {
-            tsType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+            tsType = sanitize(leafValue.name) + "Node";
           } else if (Array.isArray(leafValue)) {
-            const elNames = leafValue.filter(v => v instanceof SyntaxElement).map(v => (v.astNodeName ? sanitize(v.astNodeName) : sanitize(v.name)) + "Node");
+            const elNames = leafValue.filter(v => v instanceof SyntaxElement).map(v => sanitize(v.name) + "Node");
             if (elNames.length > 0) {
               const uniqueNames = Array.from(new Set(elNames));
               if (uniqueNames.length === 1) {
@@ -359,7 +359,7 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
         } else if (rule.type === 'element' || rule.type === 'optional' || rule.type === 'assert') {
           const leafValue = rule.value;
           if (leafValue instanceof SyntaxElement) {
-            tsType = (leafValue.astNodeName ? sanitize(leafValue.astNodeName) : sanitize(leafValue.name)) + "Node";
+            tsType = sanitize(leafValue.name) + "Node";
           }
         } else if (rule.type === 'choice') {
           tsType = "RedNode";
@@ -384,14 +384,14 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
         if (rule.ignored) continue;
         
         if (rule.type === 'element' && rule.value instanceof SyntaxElement) {
-          if (!rule.value.isHiddenElement && !rule.value.isIgnoredElement) {
-            childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+          if (!rule.value.isHiddenElement) {
+            childrenNodeTypes.add(sanitize(rule.value.name));
           }
         } else if (rule.type === 'choice') {
           for (const child of rule.value) {
             if (child instanceof SyntaxElement) {
-              if (!child.isHiddenElement && !child.isIgnoredElement) {
-                childrenNodeTypes.add(child.astNodeName ? sanitize(child.astNodeName) : sanitize(child.name));
+              if (!child.isHiddenElement) {
+                childrenNodeTypes.add(sanitize(child.name));
               }
             }
           }
@@ -403,27 +403,27 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
           rule.type === 'oneOrMore'
         ) {
           if (rule.value instanceof SyntaxElement) {
-            if (!rule.value.isHiddenElement && !rule.value.isIgnoredElement) {
-              childrenNodeTypes.add(rule.value.astNodeName ? sanitize(rule.value.astNodeName) : sanitize(rule.value.name));
+            if (!rule.value.isHiddenElement) {
+              childrenNodeTypes.add(sanitize(rule.value.name));
             }
           } else if (Array.isArray(rule.value)) {
             for (const sub of rule.value) {
               if (sub instanceof SyntaxElement) {
-                if (!sub.isHiddenElement && !sub.isIgnoredElement) {
-                  childrenNodeTypes.add(sub.astNodeName ? sanitize(sub.astNodeName) : sanitize(sub.name));
+                if (!sub.isHiddenElement) {
+                  childrenNodeTypes.add(sanitize(sub.name));
                 }
               }
             }
           }
         } else if (rule.type === 'separatedBy' && rule.value) {
           if (rule.value.item instanceof SyntaxElement) {
-            if (!rule.value.item.isHiddenElement && !rule.value.item.isIgnoredElement) {
-              childrenNodeTypes.add(rule.value.item.astNodeName ? sanitize(rule.value.item.astNodeName) : sanitize(rule.value.item.name));
+            if (!rule.value.item.isHiddenElement) {
+              childrenNodeTypes.add(sanitize(rule.value.item.name));
             }
           }
           if (rule.value.separator instanceof SyntaxElement) {
-            if (!rule.value.separator.isHiddenElement && !rule.value.separator.isIgnoredElement) {
-              childrenNodeTypes.add(rule.value.separator.astNodeName ? sanitize(rule.value.separator.astNodeName) : sanitize(rule.value.separator.name));
+            if (!rule.value.separator.isHiddenElement) {
+              childrenNodeTypes.add(sanitize(rule.value.separator.name));
             }
           }
         }
@@ -535,7 +535,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
   
   
   const parserMethods = elements.map(el => {
-    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+    const elName = sanitize(el.name);
     const childElements = new Set<string>();
     const boundaries: string[] = [];
     if (el.recoveryPatterns) {
@@ -1450,12 +1450,12 @@ ${ruleBlocks}
   }).join("\n\n");
   
   const combinedRegexes = Array.from(new Set([...regexFields, ...speculativeRegexes]));
-  const visibleElements = elements.filter(el => !el.isHiddenElement && !el.isIgnoredElement);
-  const customNodeTypes = Array.from(new Set(visibleElements.map(el => el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name))));
+  const visibleElements = elements.filter(el => !el.isHiddenElement);
+  const customNodeTypes = Array.from(new Set(visibleElements.map(el => sanitize(el.name))));
   
   // Factory cases map NodeType to concrete subclass node
   const factoryCases = visibleElements.map(el => {
-    const elName = el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+    const elName = sanitize(el.name);
     return `            case NodeType.${elName}: return new ${elName}Node(green, parent, offset);`;
   }).join("\n");
   

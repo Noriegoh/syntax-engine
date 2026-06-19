@@ -4,9 +4,11 @@ import { SyntaxElement } from './syntax-element';
 /**
  * Normalizes a string to be a safe C# or TS identifier.
  */
-export function sanitize(name: string): string {
-  if (!name) return "";
-  const parts = name
+export function sanitize(name: any): string {
+  if (name === null || name === undefined) return "";
+  const actualName = String(name);
+  if (!actualName) return "";
+  const parts = actualName
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2') // split camelCase
     .replace(/[^a-zA-Z0-9]/g, ' ')          // replace non-alphanumeric with spaces
     .split(/\s+/)
@@ -27,8 +29,10 @@ export function sanitize(name: string): string {
 /**
  * Escapes strings for code literal initialization.
  */
-export function escapeString(str: string): string {
-  return str
+export function escapeString(str: any): string {
+  if (str === null || str === undefined) return '';
+  const actualStr = str instanceof RegExp ? str.source : String(str);
+  return actualStr
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"')
     .replace(/\n/g, '\\n')
@@ -112,11 +116,11 @@ export abstract class BaseCodeGenerator implements ICodeGenerator {
   public abstract generate(): string;
 
   protected getSanitizedName(el: SyntaxElement): string {
-    return el.astNodeName ? sanitize(el.astNodeName) : sanitize(el.name);
+    return sanitize(el.name);
   }
 
   protected isTokenElement(el: SyntaxElement): boolean {
-    return el.rules.some(r => r.isToken === true || r.tokenName !== undefined);
+    return el.rules.some(r => r.isToken === true);
   }
 }
 

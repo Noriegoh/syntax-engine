@@ -30,7 +30,7 @@ const string = Element("string")
   .EndScope('"');
 
 const vectorLiteral = Element("vector_literal")
-  .AsNode("VectorLiteral")
+  
   .BeginScope(Token("("))
   .Expects(number).As("x")
   .Token(",")
@@ -42,7 +42,7 @@ const vectorLiteral = Element("vector_literal")
   .EndScope(Token(")"));
 
 const colorLiteral = Element("color_literal")
-  .AsNode("ColorLiteral")
+  
   .BeginScope(Token("("))
   .Expects(number).As("r")
   .Token(",")
@@ -55,7 +55,7 @@ const colorLiteral = Element("color_literal")
 
 // --- Property Reference ---
 const propRef = Element("prop_ref")
-  .AsNode("PropertyReference")
+  
   .BeginScope(Token("["))
   .Expects(id).As("name")
   .EndScope(Token("]"));
@@ -64,7 +64,7 @@ const propRef = Element("prop_ref")
 
 // 6.1 Blend
 const blendFactor = Element("blend_factor")
-  .AsNode("BlendFactor")
+  
   .OneOffToken(
     propRef,
     LiteralMatch(/OneMinusSrcColor/i, id_exp),
@@ -83,18 +83,18 @@ const blendFactor = Element("blend_factor")
 const renderTargetIndex = integerLiteral;
 
 const blendCommand = Element("blend_command")
-  .AsNode("BlendCommand")
+  
   .Token(LiteralMatch(/Blend/i, id_exp))
   .OneOffToken(
     LiteralMatch(/Off/i, id_exp),
     Element("blend_args")
-      .Ignore()
+      .Inline()
       .Optional(renderTargetIndex).As("rtIndex")
       .Expects(blendFactor).As("src")
       .Expects(blendFactor).As("dst")
       .Optional(
         Element("blend_alpha")
-          .Ignore()
+          .Inline()
           .Token(",")
           .Expects(blendFactor).As("srcAlpha")
           .Expects(blendFactor).As("dstAlpha")
@@ -103,7 +103,7 @@ const blendCommand = Element("blend_command")
 
 // --- 6.2 BlendOp
 const blendOperation = Element("blend_operation")
-  .AsNode("BlendOperation")
+  
   .OneOffToken(
     LiteralMatch(/LogicalAndReverse/i, id_exp),
     LiteralMatch(/LogicalAndInverted/i, id_exp),
@@ -144,20 +144,20 @@ const blendOperation = Element("blend_operation")
   );
 
 const blendOpCommand = Element("blend_op_command")
-  .AsNode("BlendOpCommand")
+  
   .Token(LiteralMatch(/BlendOp/i, id_exp))
   .Optional(renderTargetIndex).As("rtIndex")
   .Expects(blendOperation).As("op")
   .Optional(
     Element("blend_op_alpha")
-      .Ignore()
+      .Inline()
       .Token(",")
       .Expects(blendOperation).As("opAlpha")
   );
 
 // 6.3 ZWrite
 const onOffValue = Element("on_off_value")
-  .AsNode("OnOffValue")
+  
   .OneOffToken(
     propRef,
     LiteralMatch(/On/i, id_exp),
@@ -165,13 +165,13 @@ const onOffValue = Element("on_off_value")
   );
 
 const zWriteCommand = Element("zwrite_command")
-  .AsNode("ZWriteCommand")
+  
   .Token(LiteralMatch(/ZWrite/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.4 ZTest
 const compareFunction = Element("compare_function")
-  .AsNode("CompareFunction")
+  
   .OneOffToken(
     propRef,
     LiteralMatch(/LEqual/i, id_exp),
@@ -186,19 +186,19 @@ const compareFunction = Element("compare_function")
   );
 
 const zTestCommand = Element("ztest_command")
-  .AsNode("ZTestCommand")
+  
   .Token(LiteralMatch(/ZTest/i, id_exp))
   .Expects(compareFunction).As("func");
 
 // 6.5 ZClip
 const zClipCommand = Element("zclip_command")
-  .AsNode("ZClipCommand")
+  
   .Token(LiteralMatch(/ZClip/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.6 Cull
 const cullMode = Element("cull_mode")
-  .AsNode("CullMode")
+  
   .OneOffToken(
     propRef,
     LiteralMatch(/Back/i, id_exp),
@@ -207,20 +207,20 @@ const cullMode = Element("cull_mode")
   );
 
 const cullCommand = Element("cull_command")
-  .AsNode("CullCommand")
+  
   .Token(LiteralMatch(/Cull/i, id_exp))
   .Expects(cullMode).As("mode");
 
 // 6.7 Offset
 const offsetValue = Element("offset_value")
-  .AsNode("OffsetValue")
+  
   .OneOff(
     propRef,
     number
   );
 
 const offsetCommand = Element("offset_command")
-  .AsNode("OffsetCommand")
+  
   .Token(LiteralMatch(/Offset/i, id_exp))
   .Expects(offsetValue).As("factor")
   .Token(",")
@@ -230,7 +230,7 @@ const offsetCommand = Element("offset_command")
 const colorMaskChannels = Token(/[RGBA]+/i);
 
 const colorMaskValue = Element("color_mask_value")
-  .AsNode("ColorMaskValue")
+  
   .OneOff(
     propRef,
     integerLiteral,
@@ -239,27 +239,27 @@ const colorMaskValue = Element("color_mask_value")
   );
 
 const colorMaskCommand = Element("color_mask_command")
-  .AsNode("ColorMaskCommand")
+  
   .Token(LiteralMatch(/ColorMask/i, id_exp))
   .Expects(colorMaskValue).As("mask")
   .Optional(renderTargetIndex).As("rtIndex");
 
 // 6.9 AlphaToMask
 const alphaToMaskCommand = Element("alpha_to_mask_command")
-  .AsNode("AlphaToMaskCommand")
+  
   .Token(LiteralMatch(/AlphaToMask/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.10 Stencil Block
 const stencilValue = Element("stencil_value")
-  .AsNode("StencilValue")
+  
   .OneOff(
     propRef,
     integerLiteral
   );
 
 const stencilOpValue = Element("stencil_op_value")
-  .AsNode("StencilOpValue")
+  
   .OneOffToken(
     propRef,
     LiteralMatch(/Keep/i, id_exp),
@@ -272,24 +272,24 @@ const stencilOpValue = Element("stencil_op_value")
     LiteralMatch(/DecrWrap/i, id_exp)
   );
 
-const stencilRef = Element("stencil_ref").AsNode("StencilRef").Token(LiteralMatch(/Ref/i, id_exp)).Expects(stencilValue).As("val");
-const stencilReadMask = Element("stencil_read_mask").AsNode("StencilReadMask").Token(LiteralMatch(/ReadMask/i, id_exp)).Expects(stencilValue).As("val");
-const stencilWriteMask = Element("stencil_write_mask").AsNode("StencilWriteMask").Token(LiteralMatch(/WriteMask/i, id_exp)).Expects(stencilValue).As("val");
+const stencilRef = Element("stencil_ref").Token(LiteralMatch(/Ref/i, id_exp)).Expects(stencilValue).As("val");
+const stencilReadMask = Element("stencil_read_mask").Token(LiteralMatch(/ReadMask/i, id_exp)).Expects(stencilValue).As("val");
+const stencilWriteMask = Element("stencil_write_mask").Token(LiteralMatch(/WriteMask/i, id_exp)).Expects(stencilValue).As("val");
 
-const stencilComp = Element("stencil_comp").AsNode("StencilComp").Token(LiteralMatch(/Comp/i, id_exp)).Expects(compareFunction).As("func");
-const stencilPass = Element("stencil_pass").AsNode("StencilPass").Token(LiteralMatch(/Pass/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilFail = Element("stencil_fail").AsNode("StencilFail").Token(LiteralMatch(/Fail/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilZFail = Element("stencil_zfail").AsNode("StencilZFail").Token(LiteralMatch(/ZFail/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilComp = Element("stencil_comp").Token(LiteralMatch(/Comp/i, id_exp)).Expects(compareFunction).As("func");
+const stencilPass = Element("stencil_pass").Token(LiteralMatch(/Pass/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilFail = Element("stencil_fail").Token(LiteralMatch(/Fail/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilZFail = Element("stencil_zfail").Token(LiteralMatch(/ZFail/i, id_exp)).Expects(stencilOpValue).As("op");
 
-const stencilCompBack = Element("stencil_comp_back").AsNode("StencilCompBack").Token(LiteralMatch(/CompBack/i, id_exp)).Expects(compareFunction).As("func");
-const stencilPassBack = Element("stencil_pass_back").AsNode("StencilPassBack").Token(LiteralMatch(/PassBack/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilFailBack = Element("stencil_fail_back").AsNode("StencilFailBack").Token(LiteralMatch(/FailBack/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilZFailBack = Element("stencil_zfail_back").AsNode("StencilZFailBack").Token(LiteralMatch(/ZFailBack/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilCompBack = Element("stencil_comp_back").Token(LiteralMatch(/CompBack/i, id_exp)).Expects(compareFunction).As("func");
+const stencilPassBack = Element("stencil_pass_back").Token(LiteralMatch(/PassBack/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilFailBack = Element("stencil_fail_back").Token(LiteralMatch(/FailBack/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilZFailBack = Element("stencil_zfail_back").Token(LiteralMatch(/ZFailBack/i, id_exp)).Expects(stencilOpValue).As("op");
 
-const stencilCompFront = Element("stencil_comp_front").AsNode("StencilCompFront").Token(LiteralMatch(/CompFront/i, id_exp)).Expects(compareFunction).As("func");
-const stencilPassFront = Element("stencil_pass_front").AsNode("StencilPassFront").Token(LiteralMatch(/PassFront/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilFailFront = Element("stencil_fail_front").AsNode("StencilFailFront").Token(LiteralMatch(/FailFront/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilZFailFront = Element("stencil_zfail_front").AsNode("StencilZFailFront").Token(LiteralMatch(/ZFailFront/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilCompFront = Element("stencil_comp_front").Token(LiteralMatch(/CompFront/i, id_exp)).Expects(compareFunction).As("func");
+const stencilPassFront = Element("stencil_pass_front").Token(LiteralMatch(/PassFront/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilFailFront = Element("stencil_fail_front").Token(LiteralMatch(/FailFront/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilZFailFront = Element("stencil_zfail_front").Token(LiteralMatch(/ZFailFront/i, id_exp)).Expects(stencilOpValue).As("op");
 
 const stencilState = Element("stencil_state")
   .OneOff(
@@ -300,7 +300,7 @@ const stencilState = Element("stencil_state")
   );
 
 const stencilBlock = Element("stencil_block")
-  .AsNode("StencilBlock")
+  
   .Token(/Stencil/i)
   .BeginScope(Token("{"))
   .ZeroOrMore(stencilState).As("states")
@@ -308,7 +308,7 @@ const stencilBlock = Element("stencil_block")
 
 // 6.11 ColorMaterial (legacy)
 const colorMaterialCommand = Element("color_material_command")
-  .AsNode("ColorMaterialCommand")
+  
   .Token(LiteralMatch(/ColorMaterial/i, id_exp))
   .OneOffToken(
     LiteralMatch(/AmbientAndDiffuse/i, id_exp),
@@ -317,31 +317,31 @@ const colorMaterialCommand = Element("color_material_command")
 
 // 6.12 Lighting (legacy)
 const lightingCommand = Element("lighting_command")
-  .AsNode("LightingCommand")
+  
   .Token(LiteralMatch(/Lighting/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.13 Conservative Rasterization
 const conservativeCommand = Element("conservative_command")
-  .AsNode("ConservativeCommand")
+  
   .Token(LiteralMatch(/Conservative/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.14 AlphaTest (legacy)
 const alphaTestValue = Element("alpha_test_value")
-  .AsNode("AlphaTestValue")
+  
   .OneOff(
     propRef,
     number
   );
 
 const alphaTestMode = Element("alpha_test_mode")
-  .AsNode("AlphaTestMode")
+  
   .Expects(compareFunction).As("func")
   .Expects(alphaTestValue).As("val");
 
 const alphaTestCommand = Element("alpha_test_command")
-  .AsNode("AlphaTestCommand")
+  
   .Token(LiteralMatch(/AlphaTest/i, id_exp))
   .OneOffToken(
     LiteralMatch(/Off/i, id_exp),
@@ -350,7 +350,7 @@ const alphaTestCommand = Element("alpha_test_command")
 
 // 6.15 Fog Block (legacy)
 const fogMode = Element("fog_mode")
-  .AsNode("FogMode")
+  
   .OneOffToken(
     LiteralMatch(/Off/i, id_exp),
     LiteralMatch(/Global/i, id_exp),
@@ -360,23 +360,23 @@ const fogMode = Element("fog_mode")
   );
 
 const fogStateRange = Element("fog_state_range")
-  .Ignore()
+  .Inline()
   .Token(LiteralMatch(/Range/i, id_exp))
   .Expects(number).As("min")
   .Token(",")
   .Expects(number).As("max");
 
 const fogState = Element("fog_state")
-  .AsNode("FogState")
+  
   .OneOff(
-    Element("fog_state_mode").Ignore().Token(LiteralMatch(/Mode/i, id_exp)).Expects(fogMode).As("mode"),
-    Element("fog_state_color").Ignore().Token(/Color/i).Expects(vectorLiteral).As("color"),
-    Element("fog_state_density").Ignore().Token(LiteralMatch(/Density/i, id_exp)).Expects(number).As("density"),
+    Element("fog_state_mode").Inline().Token(LiteralMatch(/Mode/i, id_exp)).Expects(fogMode).As("mode"),
+    Element("fog_state_color").Inline().Token(/Color/i).Expects(vectorLiteral).As("color"),
+    Element("fog_state_density").Inline().Token(LiteralMatch(/Density/i, id_exp)).Expects(number).As("density"),
     fogStateRange
   );
 
 const fogBlock = Element("fog_block")
-  .AsNode("FogBlock")
+  
   .Token(/Fog/i)
   .BeginScope(Token("{"))
   .ZeroOrMore(fogState).As("states")
@@ -384,7 +384,7 @@ const fogBlock = Element("fog_block")
 
 // 6.16 SeparateSpecular (legacy)
 const separateSpecularCommand = Element("separate_specular_command")
-  .AsNode("SeparateSpecularCommand")
+  
   .Token(LiteralMatch(/SeparateSpecular/i, id_exp))
   .Expects(onOffValue).As("value");
 
@@ -411,19 +411,19 @@ const renderState = Element("render_state")
 
 // --- Section 4: LOD ---
 const lodDecl = Element("lod_decl")
-  .AsNode("LODDecl")
+  
   .Token(LiteralMatch(/LOD/i, id_exp))
   .Expects(integerLiteral).As("value");
 
 // --- Section 3: Tags Block ---
 const tagEntry = Element("tag_entry")
-  .AsNode("TagEntry")
+  
   .Expects(string).As("key")
   .Token("=")
   .Expects(string).As("value");
 
 const tagsBlock = Element("tags_block")
-  .AsNode("TagsBlock")
+  
   .Token(/Tags/i)
   .BeginScope(Token("{"))
   .ZeroOrMore(tagEntry).As("entries")
@@ -439,7 +439,7 @@ const hlslInclude = Token(/HLSLINCLUDE[\s\S]*?ENDHLSL/, "programBlock");
 const glslInclude = Token(/GLSLINCLUDE[\s\S]*?ENDGLSL/, "programBlock");
 
 const programBlock = Element("program_block")
-  .AsNode("ProgramBlock")
+  
   .OneOff(
     cgProgram,
     hlslProgram,
@@ -450,7 +450,7 @@ const programBlock = Element("program_block")
   );
 
 const includeBlock = Element("include_block")
-  .AsNode("IncludeBlock")
+  
   .OneOff(
     cgInclude,
     hlslInclude,
@@ -459,7 +459,7 @@ const includeBlock = Element("include_block")
 
 // --- Section 5: Pass Types ---
 const nameDecl = Element("name_decl")
-  .AsNode("NameDecl")
+  
   .Token(/Name/i)
   .Expects(string).As("value");
 
@@ -474,25 +474,25 @@ const passState = Element("pass_state")
   );
 
 const passBody = Element("pass_body")
-  .Ignore()
+  .Inline()
   .ZeroOrMore(passState).As("contents");
 
 const pass = Element("pass")
-  .AsNode("Pass")
+  
   .Token(/Pass/i)
   .BeginScope(Token("{"))
   .Expects(passBody)
   .EndScope(Token("}"));
 
 const grabPass = Element("grab_pass")
-  .AsNode("GrabPass")
+  
   .Token(/GrabPass/i)
   .BeginScope(Token("{"))
   .Optional(string).As("textureName")
   .EndScope(Token("}"));
 
 const usePass = Element("use_pass")
-  .AsNode("UsePass")
+  
   .Token(/UsePass/i)
   .Expects(string).As("passName");
 
@@ -515,11 +515,11 @@ const subShaderState = Element("subshader_state")
   );
 
 const subShaderBody = Element("subshader_body")
-  .Ignore()
+  .Inline()
   .ZeroOrMore(subShaderState).As("contents");
 
 const subShader = Element("subshader")
-  .AsNode("SubShader")
+  
   .Token(/SubShader/i)
   .BeginScope(Token("{"))
   .Expects(subShaderBody)
@@ -529,7 +529,7 @@ const subShader = Element("subshader")
 const propertyName = id;
 
 const attributeArg = Element("attribute_arg")
-  .AsNode("AttributeArg")
+  
   .OneOff(
     string,
     number,
@@ -537,11 +537,11 @@ const attributeArg = Element("attribute_arg")
   );
 
 const attributeContent = Element("attribute_content")
-  .AsNode("AttributeContent")
+  
   .Expects(id).As("name")
   .Optional(
     Element("attribute_args_block")
-      .Ignore()
+      .Inline()
       .BeginScope(Token("("))
       .Expects(attributeArg).As("firstArg")
       .ZeroOrMoreToken(Element("attribute_arg_comma").Token(",").Expects(attributeArg)).As("moreArgs")
@@ -549,13 +549,13 @@ const attributeContent = Element("attribute_content")
   );
 
 const attribute = Element("attribute")
-  .AsNode("Attribute")
+  
   .BeginScope(Token("["))
   .Expects(attributeContent)
   .EndScope(Token("]"));
 
 const rangeType = Element("range_type")
-  .AsNode("RangeType")
+  
   .Token(/Range/i)
   .BeginScope(Token("("))
   .Expects(number).As("min")
@@ -564,7 +564,7 @@ const rangeType = Element("range_type")
   .EndScope(Token(")"));
 
 const propertyType = Element("property_type")
-  .AsNode("PropertyType")
+  
   .OneOffToken(
     rangeType,
     LiteralMatch(/CubeArray/i, id_exp),
@@ -581,18 +581,18 @@ const propertyType = Element("property_type")
   );
 
 const textureOptions = Element("texture_options")
-  .Ignore()
+  .Inline()
   .ZeroOrMore(id);
 
 const textureDefault = Element("texture_default")
-  .AsNode("TextureDefault")
+  
   .Expects(string).As("texName")
   .BeginScope(Token("{"))
   .Expects(textureOptions).As("options")
   .EndScope(Token("}"));
 
 const propertyDefault = Element("property_default")
-  .AsNode("PropertyDefault")
+  
   .OneOff(
     vectorLiteral,
     colorLiteral,
@@ -601,7 +601,7 @@ const propertyDefault = Element("property_default")
   );
 
 const property = Element("property")
-  .AsNode("Property")
+  
   .ZeroOrMore(attribute).As("attributes")
   .Expects(propertyName).As("name")
   .BeginScope(Token("("))
@@ -613,7 +613,7 @@ const property = Element("property")
   .Expects(propertyDefault).As("defaultValue");
 
 const propertiesBlock = Element("properties_block")
-  .AsNode("PropertiesBlock")
+  
   .Token(/Properties/i)
   .BeginScope(Token("{"))
   .ZeroOrMore(property).As("properties")
@@ -632,11 +632,11 @@ const categoryState = Element("category_state")
   );
 
 const categoryBody = Element("category_body")
-  .Ignore()
+  .Inline()
   .ZeroOrMore(categoryState).As("contents");
 
 const categoryBlock = Element("category_block")
-  .AsNode("CategoryBlock")
+  
   .Token(/Category/i)
   .BeginScope(Token("{"))
   .Expects(categoryBody)
@@ -644,12 +644,12 @@ const categoryBlock = Element("category_block")
 
 // --- Top-Level Structure ---
 const fallbackDecl = Element("fallback_decl")
-  .AsNode("FallbackDecl")
+  
   .Token(LiteralMatch(/Fallback/i, id_exp))
   .OneOffToken(string, LiteralMatch(/Off/i, id_exp)).As("value");
 
 const customEditorDecl = Element("custom_editor_decl")
-  .AsNode("CustomEditorDecl")
+  
   .Token(/CustomEditor/i)
   .Expects(string).As("value");
 
@@ -663,7 +663,7 @@ const shaderBodyElement = Element("shader_element")
   );
 
 const shaderBody = Element("shader_body")
-  .Ignore()
+  .Inline()
   .ZeroOrMore(shaderBodyElement).As("contents");
 
 const root = Element("_root")
