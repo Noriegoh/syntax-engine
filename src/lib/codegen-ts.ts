@@ -872,10 +872,41 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
             `);
           });
 
+          const requiredChecks: string[] = [];
+          if (rule.requiredIndices && rule.requiredIndices.size > 0) {
+            rule.requiredIndices.forEach(idx => {
+              const reqPattern = patterns[idx];
+              const name = reqPattern instanceof SyntaxElement ? reqPattern.name : String(reqPattern);
+              requiredChecks.push(`
+                  if (!matchedItems_${ruleId}[${idx}]) {
+                      allRequiredMatched_${ruleId} = false;
+                      missingLabel_${ruleId} = "${escapeString(name)}";
+                  }`);
+            });
+          }
+
+          const validationBlock = requiredChecks.length > 0 ? `
+                  let allRequiredMatched_${ruleId} = true;
+                  let missingLabel_${ruleId} = "";
+                  ${requiredChecks.join('\n')}
+                  if (!allRequiredMatched_${ruleId}) {
+                      results.length = initialResultsCount_${ruleId};
+                      currentOffset = startOffset_${ruleId};
+                      const rec = this.tryRecover(text, startOffset_${ruleId}, ${ruleId}, "Missing required element in unordered list: " + missingLabel_${ruleId}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                      if (rec.recovered) {
+                          currentOffset = rec.recoveredOffset;
+                          panicked = true;
+                      } else {
+                          return rec.failResult!;
+                      }
+                  }
+          ` : '';
+
           return `
               // Optional List Rule (id: ${ruleId})
               if (!panicked) {
                   const startOffset_${ruleId} = currentOffset;
+                  const initialResultsCount_${ruleId} = results.length;
                   const matchedItems_${ruleId} = new Array(${patterns.length}).fill(false);
                   let matchedValidationVar_${ruleId} = true;
                   
@@ -883,6 +914,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                       matchedValidationVar_${ruleId} = false;
                       ${branchChecks.join('\n')}
                   }
+                  ${validationBlock}
               }`;
         }
       }

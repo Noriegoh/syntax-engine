@@ -1343,6 +1343,8 @@ export default function App() {
                               }
                             }}
                             isGrammarTab={designerEditorTab === 'grammar'}
+                            diagnostics={grammarDiagnostics}
+                            codeError={codeError}
                             className="h-full"
                           />
                         </div>

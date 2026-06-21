@@ -9,9 +9,9 @@ const ws = /\s+/;
 const comment = /\/\/.*|\/\*[\s\S]*?\*\//;
 const lineWs = /[ \t]+/;
 
-const leadingTrivia = Element('leading_trivia')
+const leadingTrivia = Element('LeadingTriva')
   .ZeroOrMore(ws, comment);
-const trailingTrivia = Element('trailing_trivia')
+const trailingTrivia = Element('TrailingTriva')
   .ZeroOrMore(lineWs, comment)
   .Optional(/\r?\n/);
 
@@ -29,7 +29,7 @@ const string = Element("string")
   .Expects(/([^"\\]|\\.)*/)
   .EndScope('"');
 
-const vectorLiteral = Element("vector_literal")  
+const vectorLiteral = Element("VectorLiteral")  
   .BeginScope(Token("("))
   .Expects(number).As("x")
   .Token(",")

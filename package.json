@@ -14,6 +14,7 @@
     "@codemirror/autocomplete": "^6.20.2",
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lint": "^6.9.7",
     "@google/genai": "^1.29.0",
     "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/vite": "^4.1.14",

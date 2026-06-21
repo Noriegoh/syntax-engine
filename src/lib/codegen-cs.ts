@@ -3244,11 +3244,41 @@ ${choiceChecks.join("\n")}
             `);
           });
 
+          const requiredChecks: string[] = [];
+          if (rule.requiredIndices && rule.requiredIndices.size > 0) {
+            rule.requiredIndices.forEach(idx => {
+              const reqPattern = patterns[idx];
+              const name = reqPattern instanceof SyntaxElement ? reqPattern.name : String(reqPattern);
+              requiredChecks.push(`
+                  if (!matchedItems_${ruleId}[${idx}])
+                  {
+                      allRequiredMatched_${ruleId} = false;
+                      missingLabel_${ruleId} = "${escapeString(name)}";
+                  }`);
+            });
+          }
+
+          const validationBlock = requiredChecks.length > 0 ? `
+                 bool allRequiredMatched_${ruleId} = true;
+                 string missingLabel_${ruleId} = "";
+                 ${requiredChecks.join('\n')}
+                 if (!allRequiredMatched_${ruleId})
+                 {
+                     results.RemoveRange(initialResultsCount_${ruleId}, results.Count - initialResultsCount_${ruleId});
+                     currentOffset = startOffset_${ruleId};
+                     if (!TryRecover(text, startOffset_${ruleId}, ${ruleId}, "Missing required element in unordered list: " + missingLabel_${ruleId}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                     {
+                         return failRes;
+                     }
+                 }
+          ` : '';
+
           return `
             // Optional List Rule (id: ${ruleId})
             if (!panicked)
             {
                 int startOffset_${ruleId} = currentOffset;
+                int initialResultsCount_${ruleId} = results.Count;
                 bool[] matchedItems_${ruleId} = new bool[${patterns.length}];
                 bool matchedValidationVar_${ruleId} = true;
                 
@@ -3257,6 +3287,7 @@ ${choiceChecks.join("\n")}
                     matchedValidationVar_${ruleId} = false;
                     ${branchChecks.join('\n')}
                 }
+                ${validationBlock}
             }`;
         }
       }

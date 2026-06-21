@@ -37,12 +37,36 @@
   box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5) !important;
   font-family: 'Fira Code', 'JetBrains Mono', monospace !important;
   font-size: 11px !important;
-  overflow: hidden !important;
 }
 
 .cm-tooltip-autocomplete > ul {
   max-height: 250px !important;
   padding: 4px 0 !important;
+  border-radius: 0.5rem !important;
+  overflow: hidden !important;
+}
+
+/* Custom Overrides for CodeMirror Autocomplete Info panel */
+.cm-tooltip.cm-completionInfo {
+  background-color: #111318 !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 0.5rem !important;
+  color: #e2e8f0 !important;
+  padding: 10px 14px !important;
+  font-family: 'Inter', system-ui, sans-serif !important;
+  font-size: 11.5px !important;
+  line-height: 1.5 !important;
+  max-width: 340px !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6) !important;
+  z-index: 200 !important;
+}
+
+.cm-completionInfo.cm-completionInfo-right {
+  margin-left: 8px !important;
+}
+
+.cm-completionInfo.cm-completionInfo-left {
+  margin-right: 8px !important;
 }
 
 .cm-tooltip-autocomplete > ul > li {
@@ -266,4 +290,169 @@ button.cm-button:hover,
 ::-moz-selection {
   background-color: rgba(99, 102, 241, 0.3) !important;
 }
+
+/* Custom highly visible diagnostic squiggles for CodeMirror 6 */
+.cm-lintRange {
+  background-position: bottom left !important;
+  background-repeat: repeat-x !important;
+}
+
+.cm-lintRange-error {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='3'%3E%3Cpath d='M0 2.5 L3 0 L6 2.5 L6 3 L3 0.5 L0 3 Z' fill='%23ef4444'/%3E%3C/svg%3E") !important;
+  background-color: rgba(239, 68, 68, 0.18) !important;
+  background-position: bottom left !important;
+  background-repeat: repeat-x !important;
+  background-size: 6px 3px !important;
+  padding-bottom: 1px !important;
+  border-bottom: none !important;
+}
+
+.cm-lintRange-warning {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='3'%3E%3Cpath d='M0 2.5 L3 0 L6 2.5 L6 3 L3 0.5 L0 3 Z' fill='%23f59e0b'/%3E%3C/svg%3E") !important;
+  background-color: rgba(245, 158, 11, 0.12) !important;
+  background-position: bottom left !important;
+  background-repeat: repeat-x !important;
+  background-size: 6px 3px !important;
+  padding-bottom: 1px !important;
+  border-bottom: none !important;
+}
+
+/* Custom Lint Gutter Marker customization */
+.cm-gutterElement:has(.cm-lint-marker) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+}
+
+.cm-lint-marker {
+  width: 8px !important;
+  height: 8px !important;
+  border-radius: 50% !important;
+  display: inline-block !important;
+  content: "" !important;
+  margin: 0 auto !important;
+}
+
+.cm-lint-marker-error {
+  background-color: #ef4444 !important;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.8) !important;
+}
+
+.cm-lint-marker-warning {
+  background-color: #f59e0b !important;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.8) !important;
+}
+
+/* Custom Tooltip Container for Lint Diagnostics */
+.cm-tooltip.cm-tooltip-lint {
+  background-color: #0f172a !important; /* deep rich blue slate matching editor theme */
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 0.5rem !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6) !important;
+  color: #e2e8f0 !important;
+  max-width: 360px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  z-index: 300 !important;
+}
+
+.cm-tooltip-lint .cm-diagnostics,
+.cm-tooltip-lint .cm-diagnostic {
+  background-color: #0f172a !important; /* prevent default white background from leaking */
+  color: #cbd5e1 !important;
+}
+
+.cm-tooltip-lint .cm-diagnostic {
+  padding: 10px 14px !important;
+  font-family: 'Inter', system-ui, sans-serif !important;
+  font-size: 11.5px !important;
+  line-height: 1.5 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  color: #cbd5e1 !important;
+}
+
+.cm-tooltip-lint .cm-diagnostic:last-child {
+  border-bottom: none !important;
+}
+
+.cm-tooltip-lint .cm-diagnostic-error {
+  border-left: 3px solid #ef4444 !important;
+}
+
+.cm-tooltip-lint .cm-diagnostic-warning {
+  border-left: 3px solid #f59e0b !important;
+}
+
+.cm-tooltip-lint .cm-diagnosticText {
+  white-space: pre-wrap !important;
+}
+
+.cm-tooltip-lint .cm-diagnosticSource {
+  font-size: 10px !important;
+  text-transform: uppercase !important;
+  font-weight: 600 !important;
+  opacity: 0.6 !important;
+  margin-right: 6px !important;
+}
+
+/* Custom Hover Tooltip styling (overriding CodeMirror default hover tooltips) */
+.cm-tooltip:not(.cm-tooltip-autocomplete):not(.cm-tooltip-lint) {
+  background-color: #0f172a !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  border-radius: 0.5rem !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6) !important;
+  color: #f1f5f9 !important;
+  padding: 10px 14px !important;
+  font-family: 'Inter', system-ui, sans-serif !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  max-width: 320px !important;
+  z-index: 400 !important;
+}
+
+.cm-hover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.cm-hover-type {
+  font-size: 10px;
+  background-color: rgba(99, 102, 241, 0.2);
+  color: #a5b4fc;
+  padding: 1px 5px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  font-family: inherit;
+}
+
+.cm-hover-body {
+  color: #cbd5e1;
+  font-size: 11.5px;
+}
+
+.cm-hover-shortcut {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: #38bdf8;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 5px;
+  font-style: italic;
+}
+
+/* IDE-style Cmd/Ctrl Goto Definition Interactive Links */
+.cm-goto-link {
+  text-decoration: underline !important;
+  text-underline-offset: 3px !important;
+  text-decoration-color: #38bdf8 !important;
+  text-decoration-thickness: 1.5px !important;
+  color: #38bdf8 !important;
+  cursor: pointer !important;
+}
+
+
 

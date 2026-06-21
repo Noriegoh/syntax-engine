@@ -39,7 +39,16 @@ export const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'Sort', insertText: 'Sort(', type: 'keyword', description: 'Sort array inputs descending by pattern length' },
   { label: 'DefaultLeadingTrivia', insertText: 'DefaultLeadingTrivia', type: 'variable', description: 'Pre-registered standard spacer elements container' },
   { label: 'DefaultTrailingTrivia', insertText: 'DefaultTrailingTrivia', type: 'variable', description: 'Pre-registered standard spacer elements container' },
+  { label: 'Required', insertText: 'Required(', type: 'method', description: 'Mark element rule as required in an unordered or optional list rule' },
+  { label: 'Unordered', insertText: 'Unordered(', type: 'method', description: 'Match zero, one, or multiple rules in any order' },
 ];
+
+export function Required(pattern: any): any {
+  if (pattern && typeof pattern === 'object' && '__isRequiredRule' in pattern) {
+    return pattern;
+  }
+  return { __isRequiredRule: true, pattern };
+}
 
 // ==========================================
 // SECTION 1: GLOBAL TYPE & INTERFACE DEFINITIONS
@@ -75,6 +84,7 @@ export interface Rule {
   hasTokenWarning?: boolean; // Set when Token wraps choice elements inside OneOff
   hasLiteralMatchWarning?: boolean; // Set when LiteralMatch wraps choice elements inside OneOff
   primitiveType?: string;
+  requiredIndices?: Set<number>;
 }
 
 export class RuleHelper {
@@ -1202,9 +1212,15 @@ export class SyntaxElement {
     const isArrayInput = Array.isArray(pattern);
     const allPatterns = isArrayInput ? flatten(pattern) : (hasAdditional ? flatten([pattern, ...additional]) : [pattern]);
 
+    const requiredIndices = new Set<number>();
     let hasLiteralMatch = false;
     const unwrapped: any[] = [];
-    for (const p of allPatterns) {
+    for (let i = 0; i < allPatterns.length; i++) {
+      let p = allPatterns[i];
+      if (p && typeof p === 'object' && '__isRequiredRule' in p) {
+        requiredIndices.add(i);
+        p = p.pattern;
+      }
       if (p && typeof p === 'object' && '__isLiteralExp' in p) {
         hasLiteralMatch = true;
         unwrapped.push(p);
@@ -1215,18 +1231,30 @@ export class SyntaxElement {
 
     const valueToWrite = unwrapped.length === 1 && !isArrayInput && !hasAdditional ? unwrapped[0] : unwrapped;
 
+    const id = nextRuleId();
+    const ruleObj: Rule = { id, type: 'optional', value: valueToWrite };
+    if (requiredIndices.size > 0) {
+      ruleObj.requiredIndices = requiredIndices;
+    }
+
     if (hasLiteralMatch) {
       const lead = SyntaxElement.defaultLeadingTrivia;
       const trail = SyntaxElement.defaultTrailingTrivia;
       if (lead) this.LeadingTrivia(lead);
-      const id = nextRuleId();
-      this.rules.push({ id, type: 'optional', value: valueToWrite });
+      this.rules.push(ruleObj);
       if (trail) this.TrailingTrivia(trail);
     } else {
-      const id = nextRuleId();
-      this.rules.push({ id, type: 'optional', value: valueToWrite });
+      this.rules.push(ruleObj);
     }
     return this;
+  }
+
+  Unordered(pattern: any, ...additional: any[]): this {
+    return this.Optional(pattern, ...additional);
+  }
+
+  Required(): any {
+    return Required(this);
   }
 
   ZeroOrMore(pattern: any, ...additional: any[]): this {
@@ -2418,6 +2446,7 @@ export class SyntaxElement {
     results: any[]
   ) {
     const isArray = Array.isArray(rule.value);
+    const initialResultsCount = results.length;
     
     if (!isArray) {
       const beforeOptErrorsLength = ctx.recoveredErrors.length;
@@ -2429,6 +2458,17 @@ export class SyntaxElement {
         return { success: true, newOffset: res.newOffset, dependencyLimit: res.dependencyLimit };
       } else {
         ctx.recoveredErrors.length = beforeOptErrorsLength;
+        // If single item was somehow required
+        if (rule.requiredIndices && rule.requiredIndices.has(0)) {
+          const reqPattern = rule.value;
+          const name = reqPattern instanceof SyntaxElement ? reqPattern.name : String(reqPattern);
+          return {
+            success: false,
+            newOffset: currentOffset,
+            dependencyLimit: res.dependencyLimit,
+            error: `Missing required element: ${name}`
+          };
+        }
         return { success: true, newOffset: currentOffset, dependencyLimit: res.dependencyLimit };
       }
     } else {
@@ -2462,6 +2502,23 @@ export class SyntaxElement {
         }
       }
       
+      if (rule.requiredIndices) {
+        for (const reqIdx of rule.requiredIndices) {
+          if (!matchedIndices.has(reqIdx)) {
+            // Unwind any added results
+            results.splice(initialResultsCount, results.length - initialResultsCount);
+            const reqPattern = patterns[reqIdx];
+            const name = reqPattern instanceof SyntaxElement ? reqPattern.name : String(reqPattern);
+            return {
+              success: false,
+              newOffset: currentOffset,
+              dependencyLimit: globalMaxDependencyLimit,
+              error: `Missing required element: ${name}`
+            };
+          }
+        }
+      }
+
       return { success: true, newOffset: scanOffset, dependencyLimit: globalMaxDependencyLimit };
     }
   }

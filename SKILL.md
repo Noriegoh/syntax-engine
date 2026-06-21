@@ -57,7 +57,8 @@ Avoid legacy methods and hallucinations. Here is the exact public API contract o
 | **`Optional(pattern, ...additional?)`** | Matches zero or one occurrences without raising thread failure. **Takes multiple arguments directly as an Optional List** (see below). | `.Optional(Token(";"))` |
 | **`ZeroOrMore(pattern, ...additional?)`** | Greedy-loops through matches. **Takes multiple arguments directly as an optimized, inlined choice** to avoid nesting. | `.ZeroOrMore(lineWs, comment)` |
 | **`OneOrMore(pattern, ...additional?)`** | Greedy-loops through matches (at least 1 required). Also accepts multiple parameters as choices. | `.OneOrMore(subShaderBlock)` |
-| **`SeparatedBy(item, separator)`** | Sequence matcher for items separated by a specific separator. | `.SeparatedBy(args, Token(","))` |
+| **`SeparatedBy(item, separator, optionsOrTrailing?, allowLeading?)`** | Sequence matcher for items separated by a specific separator. Supports trailing/leading separators and array-choice items. | `.SeparatedBy(args, Token(","), { allowTrailing: true })` |
+| **`SeparatedByToken(...)`** | Symmetrical-trivia-aware separated-by list matcher. Automatically wraps item lists and separator in `Token()`. | `.SeparatedByToken([id, num], ",", { allowTrailing: true })` |
 | **`Not(pattern, ...additional?)`** | Negative lookahead assertion check (prohibits the pattern from existing at pointer). | `.Not(Token("/"))` |
 
 ### 2. Scope and Recovery Setup
@@ -166,23 +167,79 @@ Do not crowd rules and schemas with unnecessary custom recovery setups on every 
 
 ---
 
-## 🔄 Optional List Rule (Permutation Parsing)
+## 🔄 Unordered / Optional List Rule (Permutation Parsing)
 
-When `.Optional()` is invoked with multiple arguments, it is parsed as an **Optional List Rule**.
+When `.Unordered()` (or `.Optional()`) is invoked with multiple arguments, it is parsed as an **Unordered/Optional List Rule**.
 
-### Key Rules of Optional Lists:
+### Key Rules of Unordered Lists:
 * **Order-Independence:** The items in the list can appear in **any order/permutation**.
 * **Uniqueness (At-Most-Once):** Each specified pattern can be matched **at most once**.
-* **Use Cases:** This is perfect for order-independent modifier sets (e.g., `public`, `static`, `readonly`, `override`), lists of optional attributes/decorators, or flexible metadata configurations.
+* **Selective Verification with `Required`:** In some contexts, some rules are optional while others are strictly **required** (must be parsed to succeed). You can wrap any pattern using `Required(pattern)` or call `.Required()` on a sub-element.
+* **Use Cases:** Elegant modifier lists (e.g., `public`, `static`, `readonly`) where some might be essential, lists of optional attributes/decorators, or flexible metadata configurations.
 
-### Clear Example:
+### Examples:
+
+#### 1. Basic Unordered List (Fully Optional)
 ```typescript
 // Compiles to match "public static readonly", "static public", or just "readonly", etc. (in any order, at most once)
 const memberModifiers = new SyntaxElement("modifiers")
-  .Optional(
+  .Unordered(
     Token("public"),
     Token("static"),
     Token("readonly"),
     Token("override")
   );
+```
+
+#### 2. Unordered List with Required Items
+You can mark specific rules in the unordered list as required using the `Required()` wrapper or the `.Required()` helper:
+```typescript
+import { Required } from "./syntax-element";
+
+// Match a list of modifiers in any order, where "readonly" must be present
+const requiredSet = new SyntaxElement("modifiers")
+  .Unordered(
+    Token("public"),
+    Token("static"),
+    Required(Token("readonly"))
+  );
+
+// Or using helper suffix:
+const staticElement = new SyntaxElement("staticKeyword").Expects("static");
+const requiredSetWithSuffix = new SyntaxElement("modifiers")
+  .Unordered(
+    Token("public"),
+    staticElement.Required()
+  );
+```
+
+---
+
+## 🔗 Separated-By List Rule (`SeparatedBy` & `SeparatedByToken`)
+
+The `SeparatedBy(item, separator, options?, allowLeading?)` method parses lists of elements separated by a delimiter. It has been enhanced with flexible alignment and format features:
+
+### 1. Optional Leading and Trailing Separators
+You can now specify whether a separator can optionally appear before the first item, or after the absolute last item in the list:
+* **Option Configuration Object:** Pass an options object: `{ allowLeading?: boolean; allowTrailing?: boolean }`
+* **Boolean Shorthand:** Pass a boolean as the third argument for `allowTrailing`, and a boolean as the fourth argument for `allowLeading`.
+
+```typescript
+// Match comma-separated arguments, allowing a trailing comma (e.g., "[1, 2, 3,]")
+const listWithTrailing = new SyntaxElement("list")
+  .SeparatedBy(item, Token(","), { allowTrailing: true });
+
+// Match slash-separated options, allowing both a leading slash and trailing slash (e.g., "/a/b/c/")
+const listLeadingAndTrailing = new SyntaxElement("paths")
+  .SeparatedByToken(segment, "/", { allowLeading: true, allowTrailing: true });
+```
+
+### 2. Multi-Element Choice List (No nested `OneOff` required)
+Just like `ZeroOrMore` and `OneOrMore`, the `item` parameter can be an **Array of patterns**. When an array of patterns is passed, the engine internally treats them as speculative ordered choices (speculatively matching any of the items in the list) without forcing you to wrap them in an explicit `.OneOff(...)` call:
+
+```typescript
+// Correct and highly optimized: matches a list separated by commas, where each element can be a string, number, or identifier
+const listWithChoices = new SyntaxElement("config")
+  .SeparatedByToken([stringLiteral, numericLiteral, identifier], ",");
+```
 ```

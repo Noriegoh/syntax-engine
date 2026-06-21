@@ -292,6 +292,18 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
             });
           }
         }
+      } else if (rule.type === 'optional') {
+        const isSingleRequired = rule.requiredIndices && rule.requiredIndices.has(0) && (!Array.isArray(rule.value) || rule.value.length === 1);
+        if (isSingleRequired) {
+          const unwrappedVal = Array.isArray(rule.value) ? rule.value[0] : rule.value;
+          const valRepr = unwrappedVal instanceof SyntaxElement ? unwrappedVal.name : String(unwrappedVal);
+          diagnostics.push({
+            type: "warning",
+            nodeName: elName,
+            message: `Redundant required optional rule: An element inside .Optional() or .Unordered() is marked as Required(), but since it is the only element, it is functionally fully required.`,
+            suggestion: `Simplify .Optional(Required(${valRepr})) (or .Unordered(Required(${valRepr}))) directly to .Expects(${unwrappedVal instanceof SyntaxElement ? unwrappedVal.name : `"${unwrappedVal}"`}).`
+          });
+        }
       }
     }
 
