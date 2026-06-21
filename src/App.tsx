@@ -1472,6 +1472,9 @@ export default function App() {
               setSelectedScope={setSelectedScope}
               selectedSymbol={selectedSymbol}
               setSelectedSymbol={setSelectedSymbol}
+              hoveredScope={hoveredScope}
+              hoveredSymbol={hoveredSymbol}
+              hoveredReference={hoveredReference}
               setHoveredScope={setHoveredScope}
               selectedReference={selectedReference}
               setSelectedReference={setSelectedReference}

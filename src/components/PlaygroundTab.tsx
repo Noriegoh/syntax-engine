@@ -77,10 +77,13 @@ interface PlaygroundTabProps {
   setSelectedScope: (scope: any) => void;
   selectedSymbol: any;
   setSelectedSymbol: (sym: any) => void;
+  hoveredScope: any;
   setHoveredScope: (scope: any) => void;
   selectedReference: any;
   setSelectedReference: (ref: any) => void;
+  hoveredSymbol: any;
   setHoveredSymbol: (sym: any) => void;
+  hoveredReference: any;
   setHoveredReference: (ref: any) => void;
   findSymbolById: (id: string) => any;
   
@@ -142,10 +145,13 @@ export const PlaygroundTab: React.FC<PlaygroundTabProps> = ({
   setSelectedScope,
   selectedSymbol,
   setSelectedSymbol,
+  hoveredScope,
   setHoveredScope,
   selectedReference,
   setSelectedReference,
+  hoveredSymbol,
   setHoveredSymbol,
+  hoveredReference,
   setHoveredReference,
   findSymbolById,
   
@@ -303,13 +309,14 @@ export const PlaygroundTab: React.FC<PlaygroundTabProps> = ({
               parserState={{
                 debouncedTestInput,
                 parseResult,
-                hoveredScope: null, // internally bound via tabs, but we can pass it down
-                selectedScope: null,
-                hoveredSymbol: null,
-                selectedSymbol: null,
-                hoveredReference: null,
-                selectedReference: null,
+                hoveredScope,
+                selectedScope,
+                hoveredSymbol,
+                selectedSymbol,
+                hoveredReference,
+                selectedReference,
                 parseError,
+                recoveredErrors,
                 symbols: allSymbolsAndReferences.symbols,
                 references: allSymbolsAndReferences.references
               }}

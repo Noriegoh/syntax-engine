@@ -1,7 +1,8 @@
 import React, { useMemo } from 'react';
-import CodeMirror from '@uiw/react-codemirror';
 import { ViewPlugin, DecorationSet, Decoration, ViewUpdate, EditorView } from '@codemirror/view';
 import { Range } from '@codemirror/state';
+
+import { RichCodeMirror } from './RichCodeMirror';
 
 const STYLE_PLAIN_ID = 0;
 const STYLE_COMMENT_ID = 1;
@@ -327,6 +328,7 @@ interface TestCodeMirrorProps {
     hoveredReference: any;
     selectedReference: any;
     parseError: any;
+    recoveredErrors?: any[];
     symbols?: any[];
     references?: any[];
   };
@@ -346,7 +348,101 @@ export const TestCodeMirror: React.FC<TestCodeMirrorProps> = React.memo(({
   style,
   className
 }) => {
-  const extensions = useMemo(() => {
+
+  const customDiagnostics = useMemo(() => {
+    const diags: any[] = [];
+
+    // Helper to find word bounds for a given offset in text
+    const getWordBounds = (text: string, offset: number) => {
+      let start = Math.max(0, Math.min(offset, text.length - 1));
+      let end = start;
+      if (text.length === 0) return { start: 0, end: 0 };
+      
+      if (/\w/.test(text[start])) {
+        while (start > 0 && /\w/.test(text[start - 1])) start--;
+        while (end < text.length && /\w/.test(text[end])) end++;
+      } else {
+        end = Math.min(text.length, start + 1);
+      }
+      return { start, end: Math.max(start + 1, end) };
+    };
+
+    // 1. Hard parseError
+    if (parserState.parseError) {
+      const err = parserState.parseError;
+      if (typeof err.start === 'number' && typeof err.end === 'number' && err.start < err.end) {
+        diags.push({
+          start: err.start,
+          end: err.end,
+          message: err.message || "Syntactic CST Parse Error",
+          severity: "error" as const
+        });
+      }
+    }
+
+    // 2. Soft recoveredErrors (syntactic warnings/recovered parsing mistakes)
+    const recErrors = parserState.recoveredErrors || [];
+    recErrors.forEach((err: any) => {
+      const bounds = getWordBounds(value, err.offset || 0);
+      diags.push({
+        start: bounds.start,
+        end: bounds.end,
+        message: err.message || "Syntactic Parsing Error (Recovered)",
+        severity: "error" as const
+      });
+    });
+
+    // 3. Unresolved symbols/references (semantic evaluation mistakes)
+    const refs = parserState.references || [];
+    refs.forEach((ref: any) => {
+      if (!ref.resolvedSymbolId) {
+        diags.push({
+          start: ref.start,
+          end: ref.end,
+          message: `Unresolved identifier '${ref.name}'`,
+          severity: "error" as const
+        });
+      }
+    });
+
+    // 4. Duplicate symbol declarations inside the same lexical scope
+    const syms = parserState.symbols || [];
+    syms.forEach((sym: any) => {
+      const duplicates = syms.filter(s => s.name === sym.name && s.scopeId === sym.scopeId);
+      if (duplicates.length > 1) {
+        const sorted = [...duplicates].sort((a, b) => a.start - b.start);
+        if (sym.id !== sorted[0].id) {
+          diags.push({
+            start: sym.start,
+            end: sym.end,
+            message: `Duplicate declaration of '${sym.name}' in the same scope`,
+            severity: "error" as const
+          });
+        }
+      }
+    });
+
+    return diags;
+  }, [
+    parserState.parseError, 
+    parserState.recoveredErrors, 
+    parserState.symbols, 
+    parserState.references, 
+    value
+  ]);
+
+  const customCodeError = useMemo(() => {
+    if (parserState.parseError) {
+      const err = parserState.parseError;
+      if (typeof err.start === 'number' && typeof err.end === 'number' && err.start < err.end) {
+        return null; // Handled directly in diagnostics above with physical start/end offsets!
+      }
+      return err.message || String(err);
+    }
+    return null;
+  }, [parserState.parseError]);
+
+  const customExtensions = useMemo(() => {
     // Custom CST decoration view-plugin
     const cstViewPlugin = ViewPlugin.fromClass(
       class {
@@ -376,67 +472,11 @@ export const TestCodeMirror: React.FC<TestCodeMirrorProps> = React.memo(({
       }
     });
 
-    // CodeMirror DOM Event Handlers for Ctrl/Cmd Click or Double-Click to Goto Definition
-    const domHandlers = EditorView.domEventHandlers({
-      dblclick(event, view) {
-        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-        if (pos !== null) {
-          const refs = parserState.references || [];
-          const syms = parserState.symbols || [];
-          const clickedRef = refs.find((r: any) => pos >= r.start && pos <= r.end);
-          if (clickedRef && clickedRef.resolvedSymbolId) {
-            const definition = syms.find((s: any) => s.id === clickedRef.resolvedSymbolId);
-            if (definition) {
-              event.preventDefault();
-              event.stopPropagation();
-              view.dispatch({
-                selection: { anchor: definition.start, head: definition.end },
-                scrollIntoView: true
-              });
-              if (onGotoDefinition) {
-                onGotoDefinition(definition);
-              }
-              return true;
-            }
-          }
-        }
-        return false;
-      },
-      click(event, view) {
-        if (event.ctrlKey || event.metaKey) {
-          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-          if (pos !== null) {
-            const refs = parserState.references || [];
-            const syms = parserState.symbols || [];
-            const clickedRef = refs.find((r: any) => pos >= r.start && pos <= r.end);
-            if (clickedRef && clickedRef.resolvedSymbolId) {
-              const definition = syms.find((s: any) => s.id === clickedRef.resolvedSymbolId);
-              if (definition) {
-                event.preventDefault();
-                event.stopPropagation();
-                view.dispatch({
-                  selection: { anchor: definition.start, head: definition.end },
-                  scrollIntoView: true
-                });
-                if (onGotoDefinition) {
-                  onGotoDefinition(definition);
-                }
-                return true;
-              }
-            }
-          }
-        }
-        return false;
-      }
-    });
-
     return [
       cstViewPlugin,
       selectionUpdateListener,
-      domHandlers,
-      testEditorTheme
     ];
-  }, [parserState, setCursorPosition, onGotoDefinition]);
+  }, [parserState, setCursorPosition]);
 
   const handleDocChange = (val: string, viewUpdate: ViewUpdate) => {
     let edit: EditDetail | undefined;
@@ -451,30 +491,62 @@ export const TestCodeMirror: React.FC<TestCodeMirrorProps> = React.memo(({
   };
 
   return (
-    <div className={`w-full h-full text-[13px] font-mono leading-relaxed overflow-hidden ${className || ''}`} style={style}>
-      <CodeMirror
-        ref={editorRef}
-        value={value}
-        height="100%"
-        theme="none"
-        extensions={extensions}
-        onChange={handleDocChange}
-        basicSetup={{
-          lineNumbers: true,
-          foldGutter: false,
-          dropCursor: true,
-          allowMultipleSelections: false,
-          indentOnInput: true,
-          syntaxHighlighting: false, // Disables CodeMirror defaults so custom CST markers override it flawlessly
-          bracketMatching: true,
-          closeBrackets: true,
-          autocompletion: false,
-          highlightActiveLineGutter: true,
-          highlightActiveLine: true,
-        }}
-        className="h-full"
-      />
-    </div>
+    <RichCodeMirror
+      value={value}
+      onChange={handleDocChange}
+      editorRef={editorRef}
+      style={style}
+      className={className}
+      extensions={customExtensions}
+      theme={testEditorTheme}
+      diagnostics={customDiagnostics}
+      codeError={customCodeError}
+      isDefinition={(word, docText, pos) => {
+        const refs = parserState.references || [];
+        return refs.some((r: any) => pos >= r.start && pos <= r.end && !!r.resolvedSymbolId);
+      }}
+      onGotoDefinition={(word, pos, view) => {
+        const refs = parserState.references || [];
+        const syms = parserState.symbols || [];
+        const clickedRef = refs.find((r: any) => pos >= r.start && pos <= r.end);
+        if (clickedRef && clickedRef.resolvedSymbolId) {
+          const definition = syms.find((s: any) => s.id === clickedRef.resolvedSymbolId);
+          if (definition) {
+            view.dispatch({
+              selection: { anchor: definition.start, head: definition.end },
+              scrollIntoView: true
+            });
+            if (onGotoDefinition) {
+              onGotoDefinition(definition);
+            }
+            return true;
+          }
+        }
+        return false;
+      }}
+      getCustomTooltip={(word, pos, view) => {
+        const refs = parserState.references || [];
+        const syms = parserState.symbols || [];
+        const clickedRef = refs.find((r: any) => pos >= r.start && pos <= r.end);
+        if (clickedRef && clickedRef.resolvedSymbolId) {
+          const definition = syms.find((s: any) => s.id === clickedRef.resolvedSymbolId);
+          if (definition) {
+            return {
+              header: word,
+              type: definition.kind || "symbol",
+              body: `CST symbol reference defined of type <strong class="text-pink-400 font-mono">${definition.kind || "unknown"}</strong> at Line ${view.state.doc.lineAt(definition.start).number}.`,
+              shortcut: "⚡ Cmd+Click / Ctrl+Click to jump to definition"
+            };
+          }
+        }
+        return null;
+      }}
+      basicSetup={{
+        foldGutter: false,
+        syntaxHighlighting: false, // Prevents default CodeMirror highlights from interfering with custom CST layout
+        autocompletion: false,
+      }}
+    />
   );
 });
 
