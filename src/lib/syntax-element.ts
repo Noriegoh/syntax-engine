@@ -29,7 +29,6 @@ export const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'As', insertText: 'As(', type: 'method', description: 'Assign field property name/label to the matched result' },
   { label: 'Inline', insertText: 'Inline()', type: 'method', description: 'Inline this element, copying its rules directly into any receiving element at runtime' },
   { label: 'InlinedElement', insertText: 'InlinedElement()', type: 'method', description: 'Helper to return a new anonymous, inlined SyntaxElement' },
-  { label: 'IgnoreSelf', insertText: 'IgnoreSelf()', type: 'method', description: 'Skip this entire subtree node construction while still executing parsing checks' },
   { label: 'RecoverWith', insertText: 'RecoverWith(', type: 'method', description: 'Register explicit manual recovery delimiters for automated parser healing' },
   { label: 'SelfHeals', insertText: 'SelfHeals(', type: 'method', description: 'Designate current rules blocks automated healing boundaries' },
   { label: 'MapToEnum', insertText: 'MapToEnum(', type: 'method', description: 'Map matched string tokens to target C# compilation enumerations' },
@@ -91,6 +90,11 @@ export class RuleHelper {
     return rule.type === 'optional' || rule.type === 'zeroOrMore' || rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia';
   }
 
+  public static isLiteral(rule:Rule):boolean
+  {
+    return rule.type == "literal" || rule.type == "caseInsensitiveLiteral" || rule.type == "literalMatch" || rule.type == "caseInsensitiveLiteralMatch";
+  }
+
   public static isStructural(rule: Rule): boolean {
     if (rule.type === 'leadingTrivia' || rule.type === 'trailingTrivia') return false;
     if (rule.type === 'optional' || rule.type === 'zeroOrMore') return false;
@@ -99,7 +103,7 @@ export class RuleHelper {
   }
 
   public static isLoop(rule: Rule): boolean {
-    return rule.type === 'zeroOrMore' || rule.type === 'oneOrMore';
+    return rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type == "separatedBy";
   }
 
   public static isScope(rule: Rule): boolean {
@@ -546,7 +550,15 @@ export class SyntaxElement {
         }
       } else if (rule.type === 'separatedBy' && rule.value) {
         const itemUnwrapped = SyntaxElement.unwrapPattern(rule.value.item);
-        if (itemUnwrapped instanceof SyntaxElement && this.detectEndlessInliningRecursion(itemUnwrapped, visited)) return true;
+        const checkElement = (p: any): boolean => {
+          if (p instanceof SyntaxElement) {
+            return this.detectEndlessInliningRecursion(p, visited);
+          } else if (Array.isArray(p)) {
+            return p.some(checkElement);
+          }
+          return false;
+        };
+        if (checkElement(itemUnwrapped)) return true;
         const sepUnwrapped = SyntaxElement.unwrapPattern(rule.value.separator);
         if (sepUnwrapped instanceof SyntaxElement && this.detectEndlessInliningRecursion(sepUnwrapped, visited)) return true;
       }
@@ -618,8 +630,16 @@ export class SyntaxElement {
   }
 
   public static unwrapPattern(p: any): any {
-    if (p && typeof p === 'object' && 'pattern' in p) {
-      return p.pattern;
+    if (p && typeof p === 'object') {
+      if ('__isTokenMarker' in p) {
+        return SyntaxElement.unwrapPattern(p.pattern);
+      }
+      if ('__isLiteralExp' in p || ('literal' in p && 'pattern' in p)) {
+        return p.literal;
+      }
+      if ('pattern' in p) {
+        return p.pattern;
+      }
     }
     return p;
   }
@@ -689,8 +709,13 @@ export class SyntaxElement {
       case 'optional':
       case 'zeroOrMore':
         return true;
-      case 'separatedBy':
-        return SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(rule.value.item), nullable);
+      case 'separatedBy': {
+        const itemUnwrapped = SyntaxElement.unwrapPattern(rule.value.item);
+        if (Array.isArray(itemUnwrapped)) {
+          return itemUnwrapped.some((alt: any) => SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(alt), nullable));
+        }
+        return SyntaxElement.isPatternNullable(itemUnwrapped, nullable);
+      }
       case 'oneOrMore':
         if (Array.isArray(rule.value)) {
           return rule.value.some((alt: any) => SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(alt), nullable));
@@ -746,14 +771,25 @@ export class SyntaxElement {
         }
       } else if (rule.type === 'separatedBy' && rule.value) {
         const unwrappedItem = SyntaxElement.unwrapPattern(rule.value.item);
-        if (unwrappedItem instanceof SyntaxElement) {
-          referenced.add(unwrappedItem);
-        }
-        if (SyntaxElement.isPatternNullable(unwrappedItem, nullable)) {
-          const unwrappedSep = SyntaxElement.unwrapPattern(rule.value.separator);
-          if (unwrappedSep instanceof SyntaxElement) {
-            referenced.add(unwrappedSep);
+        const addReachable = (p: any) => {
+          if (p instanceof SyntaxElement) {
+            referenced.add(p);
+          } else if (Array.isArray(p)) {
+            p.forEach(addReachable);
           }
+        };
+        addReachable(unwrappedItem);
+        
+        let isItemNullable = false;
+        if (Array.isArray(unwrappedItem)) {
+          isItemNullable = unwrappedItem.some((alt: any) => SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(alt), nullable));
+        } else {
+          isItemNullable = SyntaxElement.isPatternNullable(unwrappedItem, nullable);
+        }
+
+        if (isItemNullable) {
+          const unwrappedSep = SyntaxElement.unwrapPattern(rule.value.separator);
+          addReachable(unwrappedSep);
         }
       }
       
@@ -904,10 +940,6 @@ export class SyntaxElement {
     return this;
   }
 
-  Ignore(): this {
-    return this.Inline();
-  }
-
   RecoverWith(...boundaries: (string | RegExp | SyntaxElement)[]): this {
     this.recoveryPatterns = boundaries;
     return this;
@@ -966,13 +998,6 @@ export class SyntaxElement {
         this.Expects(item);
       }
       return this;
-    }
-    if (pattern && typeof pattern === 'object' && '__isOneOffMarker' in pattern) {
-      if ((pattern as any).isToken) {
-        return this.OneOffToken(...(pattern as any).patterns);
-      } else {
-        return this.OneOff(...(pattern as any).patterns);
-      }
     }
     if (pattern && typeof pattern === 'object' && ('__isTokenMarker' in pattern || '__isLiteralExp' in pattern)) {
       return this.Token(pattern);
@@ -1338,23 +1363,70 @@ export class SyntaxElement {
     return this;
   }
 
-  SeparatedBy(item: any, separator: any): this {
-    this.checkInliningRecursion(item);
-    this.checkInliningRecursion(separator);
+  SeparatedBy(
+    item: any,
+    separator: any,
+    optionsOrAllowTrailing?: boolean | { allowLeading?: boolean; allowTrailing?: boolean },
+    allowLeading?: boolean
+  ): this {
     if (item === undefined || item === null) {
       item = "";
     }
     if (separator === undefined || separator === null) {
       separator = "";
     }
-    
+
+    let allowTrailing = false;
+    let computedAllowLeading = false;
+    if (typeof optionsOrAllowTrailing === 'boolean') {
+      allowTrailing = optionsOrAllowTrailing;
+      computedAllowLeading = !!allowLeading;
+    } else if (optionsOrAllowTrailing && typeof optionsOrAllowTrailing === 'object') {
+      allowTrailing = !!optionsOrAllowTrailing.allowTrailing;
+      computedAllowLeading = !!optionsOrAllowTrailing.allowLeading;
+    }
+
+    const flatten = (arr: any[]): any[] => {
+      const res: any[] = [];
+      for (const x of arr) {
+        if (Array.isArray(x)) {
+          res.push(...flatten(x));
+        } else {
+          res.push(x);
+        }
+      }
+      return res;
+    };
+
+    const isArrayInput = Array.isArray(item);
+    const allItems = isArrayInput ? flatten(item) : [item];
+    const unwrappedItems: any[] = [];
+    for (const p of allItems) {
+      this.checkInliningRecursion(p);
+      unwrappedItems.push(p);
+    }
+    const itemToWrite = unwrappedItems.length === 1 && !isArrayInput ? unwrappedItems[0] : unwrappedItems;
+
+    this.checkInliningRecursion(separator);
+
     const id = nextRuleId();
-    this.rules.push({ id, type: 'separatedBy', value: { item, separator } });
+    this.rules.push({
+      id,
+      type: 'separatedBy',
+      value: { item: itemToWrite, separator, allowTrailing, allowLeading: computedAllowLeading }
+    });
     return this;
   }
 
-  SeparatedByToken(item: any, separator: any): this {
-    return this.SeparatedBy(Token(item), Token(separator));
+  SeparatedByToken(
+    item: any,
+    separator: any,
+    optionsOrAllowTrailing?: boolean | { allowLeading?: boolean; allowTrailing?: boolean },
+    allowLeading?: boolean
+  ): this {
+    const isArrayInput = Array.isArray(item);
+    const processedItem = isArrayInput ? item.map(p => Token(p)) : Token(item);
+    return this.SeparatedBy(processedItem, Token(separator), optionsOrAllowTrailing, allowLeading);
   }
 
   Assert(pattern: any, ...additional: any[]): this {
@@ -2636,52 +2708,124 @@ export class SyntaxElement {
     ctx: any,
     results: any[]
   ) {
-    const { item, separator } = rule.value;
+    const { item, separator, allowTrailing, allowLeading } = rule.value;
     const matches = [];
     const loopStartOffset = currentOffset;
     let localMaxOffset = currentOffset;
 
-    // Parse first item
-    const res1 = this.parsePattern(item, text, currentOffset, memo, rule.id, ctx);
-    localMaxOffset = Math.max(localMaxOffset, res1.dependencyLimit);
-    if (!res1.success) {
-      return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: "Expected first item in separated list" };
+    const parsePatternOrArray = (pat: any, offset: number) => {
+      const isPatArray = Array.isArray(pat);
+      const beforeErrLength = ctx.recoveredErrors.length;
+      const beforeActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
+
+      if (isPatArray) {
+        for (const subPat of pat) {
+          const res = this.parsePattern(subPat, text, offset, memo, rule.id, ctx);
+          localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
+          if (res.success) {
+            return { success: true, res };
+          }
+          ctx.recoveredErrors.length = beforeErrLength;
+          if (ctx.activeScopeEnds) {
+            ctx.activeScopeEnds.length = beforeActiveScopeEndsLength;
+          }
+        }
+        return { success: false, res: null };
+      } else {
+        const res = this.parsePattern(pat, text, offset, memo, rule.id, ctx);
+        localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
+        return { success: res.success, res };
+      }
+    };
+
+    let firstItemMatched = false;
+
+    // Optional leading separator
+    if (allowLeading) {
+      const beforeLeadSepOffset = currentOffset;
+      const beforeLeadSepErrorsLength = ctx.recoveredErrors.length;
+      const beforeLeadSepScopesLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
+
+      const resSep = parsePatternOrArray(separator, currentOffset);
+      if (resSep.success && resSep.res) {
+        // Separator matched, now we must match the item
+        const resItem = parsePatternOrArray(item, resSep.res.newOffset);
+        if (resItem.success && resItem.res) {
+          // Both matches succeeded, commit!
+          if (resSep.res.value && (resSep.res.value.width > 0 || resSep.res.value.type === 'eof')) {
+            matches.push(resSep.res.value);
+          }
+          if (resItem.res.value && (resItem.res.value.width > 0 || resItem.res.value.type === 'eof')) {
+            matches.push(resItem.res.value);
+          }
+          currentOffset = resItem.res.newOffset;
+          firstItemMatched = true;
+        } else {
+          // If the item failed after the leading separator, backtrack completely and try parsing item directly
+          ctx.recoveredErrors.length = beforeLeadSepErrorsLength;
+          if (ctx.activeScopeEnds) {
+            ctx.activeScopeEnds.length = beforeLeadSepScopesLength;
+          }
+        }
+      }
     }
 
-    if (res1.value && (res1.value.width > 0 || res1.value.type === 'eof')) {
-      matches.push(res1.value);
+    if (!firstItemMatched) {
+      // Parse first item directly
+      const resItem = parsePatternOrArray(item, currentOffset);
+      if (!resItem.success || !resItem.res) {
+        return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: "Expected first item in separated list" };
+      }
+      if (resItem.res.value && (resItem.res.value.width > 0 || resItem.res.value.type === 'eof')) {
+        matches.push(resItem.res.value);
+      }
+      currentOffset = resItem.res.newOffset;
     }
-    currentOffset = res1.newOffset;
 
     // Loop for (separator item)*
     while (currentOffset < text.length) {
       const beforeSepOffset = currentOffset;
       const beforeSepErrorsLength = ctx.recoveredErrors.length;
+      const beforeSepScopesLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
 
       // Parse separator
-      const resSep = this.parsePattern(separator, text, currentOffset, memo, rule.id, ctx);
-      localMaxOffset = Math.max(localMaxOffset, resSep.dependencyLimit);
-      if (!resSep.success) {
+      const resSep = parsePatternOrArray(separator, currentOffset);
+      if (!resSep.success || !resSep.res) {
         ctx.recoveredErrors.length = beforeSepErrorsLength;
+        if (ctx.activeScopeEnds) {
+          ctx.activeScopeEnds.length = beforeSepScopesLength;
+        }
         break;
       }
 
       // Parse subsequent item
-      const resItem = this.parsePattern(item, text, resSep.newOffset, memo, rule.id, ctx);
-      localMaxOffset = Math.max(localMaxOffset, resItem.dependencyLimit);
-      if (!resItem.success) {
-        ctx.recoveredErrors.length = beforeSepErrorsLength;
+      const resItem = parsePatternOrArray(item, resSep.res.newOffset);
+      if (resItem.success && resItem.res) {
+        // Succeeded matching both separator and item!
+        if (resSep.res.value && (resSep.res.value.width > 0 || resSep.res.value.type === 'eof')) {
+          matches.push(resSep.res.value);
+        }
+        if (resItem.res.value && (resItem.res.value.width > 0 || resItem.res.value.type === 'eof')) {
+          matches.push(resItem.res.value);
+        }
+        currentOffset = resItem.res.newOffset;
+      } else {
+        // Separator matched but subsequent item failed
+        if (allowTrailing) {
+          // Consume the trailing separator, update offset, and stop
+          if (resSep.res.value && (resSep.res.value.width > 0 || resSep.res.value.type === 'eof')) {
+            matches.push(resSep.res.value);
+          }
+          currentOffset = resSep.res.newOffset;
+        } else {
+          // Backtrack separator parsing and stop
+          ctx.recoveredErrors.length = beforeSepErrorsLength;
+          if (ctx.activeScopeEnds) {
+            ctx.activeScopeEnds.length = beforeSepScopesLength;
+          }
+        }
         break;
       }
-
-      // Succeeded matching both!
-      if (resSep.value && (resSep.value.width > 0 || resSep.value.type === 'eof')) {
-        matches.push(resSep.value);
-      }
-      if (resItem.value && (resItem.value.width > 0 || resItem.value.type === 'eof')) {
-        matches.push(resItem.value);
-      }
-      currentOffset = resItem.newOffset;
     }
 
     if (matches.length > 0) {
@@ -2942,21 +3086,3 @@ export function InlinedElement(): SyntaxElement {
 }
 
 export { findDiff } from './utils';
-export interface OneOffMarker {
-  __isOneOffMarker: true;
-  patterns: any[];
-}
-
-export function OneOff(...patterns: any[]): OneOffMarker {
-  return {
-    __isOneOffMarker: true,
-    patterns
-  };
-}
-
-export function OneOffToken(...patterns: any[]): OneOffMarker {
-  return {
-    __isOneOffMarker: true,
-    patterns: patterns.map(p => Token(p))
-  };
-}

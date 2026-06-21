@@ -416,11 +416,16 @@ export function generateStronglyTypedAstTypeScriptClasses(rootElement: SyntaxEle
             }
           }
         } else if (rule.type === 'separatedBy' && rule.value) {
-          if (rule.value.item instanceof SyntaxElement) {
-            if (!rule.value.item.isHiddenElement) {
-              childrenNodeTypes.add(sanitize(rule.value.item.name));
+          const collectTypes = (p: any) => {
+            if (p instanceof SyntaxElement) {
+              if (!p.isHiddenElement) {
+                childrenNodeTypes.add(sanitize(p.name));
+              }
+            } else if (Array.isArray(p)) {
+              p.forEach(collectTypes);
             }
-          }
+          };
+          collectTypes(rule.value.item);
           if (rule.value.separator instanceof SyntaxElement) {
             if (!rule.value.separator.isHiddenElement) {
               childrenNodeTypes.add(sanitize(rule.value.separator.name));
@@ -497,11 +502,16 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
           }
         }
       } else if (rule.type === 'separatedBy' && rule.value) {
-        if (rule.value.item instanceof RegExp) {
-          if (!isSimpleCaseInsensitiveRegex(rule.value.item)) {
-            registerPattern(rule.value.item, ruleId, 'Spec');
+        const registerPatterns = (p: any) => {
+          if (p instanceof RegExp) {
+            if (!isSimpleCaseInsensitiveRegex(p)) {
+              registerPattern(p, ruleId, 'Spec');
+            }
+          } else if (Array.isArray(p)) {
+            p.forEach(registerPatterns);
           }
-        }
+        };
+        registerPatterns(rule.value.item);
         if (rule.value.separator instanceof RegExp) {
           if (!isSimpleCaseInsensitiveRegex(rule.value.separator)) {
             registerPattern(rule.value.separator, ruleId, 'Spec');
@@ -1193,63 +1203,169 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
       }
       
       if (rule.type === 'separatedBy' && rule.value) {
-        const sIdItem = nextSpecId();
-        const sIdSep = nextSpecId();
-        let specificDfaNameItem: string | undefined;
-        if (rule.value.item instanceof RegExp) {
-          specificDfaNameItem = getOrCreateDfaMethod(rule.value.item, 'Spec', ruleId);
+        const isItemArray = Array.isArray(rule.value.item);
+        let specItemCode = "";
+        let specItemMatchedName = "";
+        let specItemParsedAstName = "";
+        let specItemNewOffsetName = "";
+        let isItemInlineExpr = "";
+
+        if (isItemArray) {
+          const sIdMatched = `matched_item_${ruleId}`;
+          const sIdAst = `parsedAst_item_${ruleId}`;
+          const sIdNewOffset = `newOffset_item_${ruleId}`;
+          const sIdInline = `isInline_item_${ruleId}`;
+
+          const patterns = rule.value.item as any[];
+          const branchChecks: string[] = [];
+          patterns.forEach((p, idx) => {
+            const sId = nextSpecId();
+            let specificDfaName: string | undefined;
+            if (p instanceof RegExp) {
+              specificDfaName = getOrCreateDfaMethod(p, 'Spec', ruleId);
+            }
+            const spec = compileSpeculativeMatchTypeScript(p, ruleId, sId, childElements, specificDfaName);
+            const isIterInline = p instanceof SyntaxElement && p.isHiddenElement;
+            branchChecks.push(`
+                if (!${sIdMatched}) {
+                    const beforeBranchOffset = currentOffset;
+                    const errCount_branch = ctx.recoveredErrors.length;
+                    ${spec.code.trim()}
+                    if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset) {
+                        ${sIdMatched} = true;
+                        ${sIdAst} = ${spec.parsedAstName};
+                        ${sIdNewOffset} = ${spec.newOffsetName};
+                        ${sIdInline} = ${isIterInline};
+                    } else {
+                        ctx.recoveredErrors.splice(errCount_branch, ctx.recoveredErrors.length - errCount_branch);
+                    }
+                }`);
+          });
+
+          specItemCode = `
+            let ${sIdMatched} = false;
+            let ${sIdAst}: any = null;
+            let ${sIdNewOffset} = currentOffset;
+            let ${sIdInline} = false;
+            ${branchChecks.join('\n')}
+          `;
+          specItemMatchedName = sIdMatched;
+          specItemParsedAstName = sIdAst;
+          specItemNewOffsetName = sIdNewOffset;
+          isItemInlineExpr = sIdInline;
+        } else {
+          const sIdItem = nextSpecId();
+          let specificDfaNameItem: string | undefined;
+          if (rule.value.item instanceof RegExp) {
+            specificDfaNameItem = getOrCreateDfaMethod(rule.value.item, 'Spec', ruleId);
+          }
+          const spec = compileSpeculativeMatchTypeScript(rule.value.item, ruleId, sIdItem, childElements, specificDfaNameItem);
+          const isItemInline = rule.value.item instanceof SyntaxElement && rule.value.item.isHiddenElement;
+
+          specItemCode = spec.code;
+          specItemMatchedName = spec.matchedName;
+          specItemParsedAstName = spec.parsedAstName;
+          specItemNewOffsetName = spec.newOffsetName;
+          isItemInlineExpr = String(isItemInline);
         }
-        const specItem = compileSpeculativeMatchTypeScript(rule.value.item, ruleId, sIdItem, childElements, specificDfaNameItem);
+
+        const sIdSep = nextSpecId();
         let specificDfaNameSep: string | undefined;
         if (rule.value.separator instanceof RegExp) {
           specificDfaNameSep = getOrCreateDfaMethod(rule.value.separator, 'Spec', ruleId);
         }
         const specSep = compileSpeculativeMatchTypeScript(rule.value.separator, ruleId, sIdSep, childElements, specificDfaNameSep);
-        const isItemInline = rule.value.item instanceof SyntaxElement && rule.value.item.isHiddenElement;
         const isSepInline = rule.value.separator instanceof SyntaxElement && rule.value.separator.isHiddenElement;
         
+        const allowLeading = !!rule.value.allowLeading;
+        const allowTrailing = !!rule.value.allowTrailing;
+        
         return `
-            // Separated By Rule (id: ${ruleId})
+            // Separated By Rule (id: ${ruleId}, allowLeading: ${allowLeading}, allowTrailing: ${allowTrailing})
             if (!panicked) {
-                const startOffset_${ruleId} = currentOffset;
                 const startLoopOffset = currentOffset;
                 const loopResults: GreenNode[] = [];
                 let isFirst = true;
-                while (currentOffset < text.length) {
-                    if (!isFirst) {
+
+                ${allowLeading ? `
+                // Optional leading separator
+                const beforeLeadSepOffset_${ruleId} = currentOffset;
+                const leadSepErrorsCount_${ruleId} = ctx.recoveredErrors.length;
+                ${specSep.code.trim()}
+                if (${specSep.matchedName} && ${specSep.newOffsetName} > beforeLeadSepOffset_${ruleId}) {
+                    // Try to match item next
+                    const tempOffset_${ruleId} = currentOffset;
+                    currentOffset = ${specSep.newOffsetName};
+                    ${specItemCode.trim()}
+                    if (${specItemMatchedName} && ${specItemNewOffsetName} > currentOffset) {
+                        currentOffset = tempOffset_${ruleId};
+                        this.addNode(loopResults, ${specSep.parsedAstName}, ${isSepInline});
+                        this.addNode(loopResults, ${specItemParsedAstName}, ${isItemInlineExpr});
+                        currentOffset = ${specItemNewOffsetName};
+                        isFirst = false;
+                    } else {
+                        // Backtrack leading separator
+                        currentOffset = tempOffset_${ruleId};
+                        ctx.recoveredErrors.splice(leadSepErrorsCount_${ruleId}, ctx.recoveredErrors.length - leadSepErrorsCount_${ruleId});
+                    }
+                }
+                ` : ''}
+
+                if (isFirst) {
+                    // Expect first item directly
+                    ${specItemCode.trim()}
+                    if (${specItemMatchedName} && ${specItemNewOffsetName} > currentOffset) {
+                        this.addNode(loopResults, ${specItemParsedAstName}, ${isItemInlineExpr});
+                        currentOffset = ${specItemNewOffsetName};
+                        isFirst = false;
+                    } else {
+                        const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected first item in separator list", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                        if (rec.recovered) {
+                            currentOffset = rec.recoveredOffset;
+                            panicked = true;
+                        } else {
+                            return rec.failResult!;
+                        }
+                    }
+                }
+
+                if (!panicked) {
+                    // Loop for (separator item)*
+                    while (currentOffset < text.length) {
                         const beforeSepOffset = currentOffset;
                         const sepErrorsCount = ctx.recoveredErrors.length;
                         ${specSep.code.trim()}
                         if (${specSep.matchedName} && ${specSep.newOffsetName} > beforeSepOffset) {
-                            this.addNode(loopResults, ${specSep.parsedAstName}, ${isSepInline});
-                            currentOffset = ${specSep.newOffsetName};
+                            // Separator matched, try subsequently matching item
+                            const afterSepOffset = ${specSep.newOffsetName};
+                            const beforeItemOffset = afterSepOffset;
+                            const tempOffset = currentOffset;
+                            currentOffset = afterSepOffset;
+                            
+                            ${specItemCode.trim()}
+                            if (${specItemMatchedName} && ${specItemNewOffsetName} > beforeItemOffset) {
+                                currentOffset = tempOffset;
+                                this.addNode(loopResults, ${specSep.parsedAstName}, ${isSepInline});
+                                this.addNode(loopResults, ${specItemParsedAstName}, ${isItemInlineExpr});
+                                currentOffset = ${specItemNewOffsetName};
+                            } else {
+                                // Separator matched but subsequent item failed
+                                currentOffset = tempOffset;
+                                if (${allowTrailing}) {
+                                    this.addNode(loopResults, ${specSep.parsedAstName}, ${isSepInline});
+                                    currentOffset = afterSepOffset;
+                                } else {
+                                    ctx.recoveredErrors.splice(sepErrorsCount, ctx.recoveredErrors.length - sepErrorsCount);
+                                }
+                                break;
+                            }
                         } else {
                             ctx.recoveredErrors.splice(sepErrorsCount, ctx.recoveredErrors.length - sepErrorsCount);
                             break;
                         }
                     }
-                    const beforeItemOffset = currentOffset;
-                    const itemErrorsCount = ctx.recoveredErrors.length;
-                    ${specItem.code.trim()}
-                    if (${specItem.matchedName} && ${specItem.newOffsetName} > beforeItemOffset) {
-                        this.addNode(loopResults, ${specItem.parsedAstName}, ${isItemInline});
-                        currentOffset = ${specItem.newOffsetName};
-                        isFirst = false;
-                    } else {
-                        ctx.recoveredErrors.splice(itemErrorsCount, ctx.recoveredErrors.length - itemErrorsCount);
-                        // If we parsed separator but failed item, that's error!
-                        if (!isFirst) {
-                            const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected trailing item in separator list", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
-                            if (rec.recovered) {
-                                currentOffset = rec.recoveredOffset;
-                                panicked = true;
-                            } else {
-                                return rec.failResult!;
-                            }
-                        }
-                        break;
-                    }
                 }
+
                 if (loopResults.length > 0) {
                     this.addNode(results, new GreenNode(NodeType.ZeroOrMore, loopResults, ${ruleId}, currentOffset - startLoopOffset), ${isInline});
                     hasCommitted = true;

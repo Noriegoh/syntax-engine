@@ -1,4 +1,5 @@
 import { SyntaxElement, RuleHelper } from "./syntax-element";
+import { isSimpleCaseInsensitiveRegex, matchRegex } from "./utils";
 
 export interface Diagnostic {
   type: "error" | "warning" | "info";
@@ -49,12 +50,15 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
           visit(rule.value);
         }
       } else if (rule.type === 'separatedBy' && rule.value) {
-        if (rule.value.item instanceof SyntaxElement) {
-          visit(rule.value.item);
-        }
-        if (rule.value.separator instanceof SyntaxElement) {
-          visit(rule.value.separator);
-        }
+        const visitPattern = (p: any) => {
+          if (p instanceof SyntaxElement) {
+            visit(p);
+          } else if (Array.isArray(p)) {
+            p.forEach(visitPattern);
+          }
+        };
+        visitPattern(rule.value.item);
+        visitPattern(rule.value.separator);
       }
     }
   }
@@ -218,7 +222,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
         type: "error",
         nodeName: elName,
         message: "This SyntaxElement has no grammar rules defined.",
-        suggestion: "Add rules using expects, expectsOneOf, token, or other expectation methods in your grammar builder."
+        suggestion: "Add rules using expects, oneof, token, or other expectation methods in your grammar builder."
       });
       continue;
     }
@@ -237,24 +241,6 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     // Rule C: Shadowing & Sorting Hazard in Choices (Warning)
     for (const rule of el.rules) {
       if (rule.type === 'choice') {
-        // Warning check for Token() wrappers when used inside OneOff
-        if (rule.hasTokenWarning) {
-          if (rule.isToken) {
-            diagnostics.push({
-              type: "warning",
-              nodeName: elName,
-              message: `Prohibited use of Token() inside OneOffToken(). Please pass raw patterns directly as OneOffToken() automatically handles skipped trivias.`,
-              suggestion: `Remove Token() wrapper from OneOffToken() arguments.`
-            });
-          } else {
-            diagnostics.push({
-              type: "warning",
-              nodeName: elName,
-              message: `Mixed Token wrapper inside OneOff: Calling OneOff with Token(...) wrapping individual choices runs with trivia rules on the parent block instead. This causes non-Token choices to unexpectedly parse with trivas too.`,
-              suggestion: `Avoid wrapping choice alternatives of OneOff inside Token(). Instead, call root.OneOffToken(...) to explicitly match any choice branch with default leading and trailing trivas.`
-            });
-          }
-        }
         // Warning check for LiteralMatch() wrappers when used inside OneOff
         if (rule.hasLiteralMatchWarning) {
           diagnostics.push({
@@ -286,23 +272,6 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
           }
         }
       } else if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
-        if (rule.hasTokenWarning) {
-          if (rule.isToken) {
-            diagnostics.push({
-              type: "warning",
-              nodeName: elName,
-              message: `Prohibited use of Token() inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}(). Please pass raw patterns directly as ${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}() automatically handles skipped trivias.`,
-              suggestion: `Do not use Token() inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}().`
-            });
-          } else {
-            diagnostics.push({
-              type: "warning",
-              nodeName: elName,
-              message: `Mixed Token wrapper inside ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'}: Calling ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} with Token(...) wrapping individual elements runs with trivia rules on the parent block instead. This causes non-Token elements to unexpectedly parse with trivas too.`,
-              suggestion: `Avoid wrapping option elements of ${rule.type === 'zeroOrMore' ? 'ZeroOrMore' : 'OneOrMore'} inside Token(). Instead, call root.${rule.type === 'zeroOrMore' ? 'ZeroOrMoreToken' : 'OneOrMoreToken'}(...) to explicitly match elements with default leading and trailing trivas per match.`
-            });
-          }
-        }
         if (rule.hasLiteralMatchWarning) {
           diagnostics.push({
             type: "warning",
@@ -323,41 +292,23 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
             });
           }
         }
-      } else if (rule.type === 'separatedBy') {
-        if (rule.hasTokenWarning) {
-          if (rule.isToken) {
-            diagnostics.push({
-              type: "warning",
-              nodeName: elName,
-              message: `Prohibited use of Token() inside SeparatedByToken(). Please pass raw patterns directly as SeparatedByToken() automatically handles skipped trivias.`,
-              suggestion: `Do not use Token() inside SeparatedByToken().`
-            });
-          } else {
-            diagnostics.push({
-              type: "warning",
-              nodeName: elName,
-              message: `Mixed Token wrapper inside SeparatedBy: Calling SeparatedBy with Token(...) wrapping item or separator runs with trivia rules on the parent block instead. This causes non-Token elements to unexpectedly parse with trivas too.`,
-              suggestion: `Avoid wrapping item or separator of SeparatedBy inside Token(). Instead, call root.SeparatedByToken(...) to explicitly match elements with default leading and trailing trivas.`
-            });
-          }
-        }
       }
     }
 
     // Rule D: Regex inside an Enum-mapped SyntaxElement (Warning)
     if (el.isEnumTarget) {
-      let hasRegex = false;
+      let notLiteral = false;
       let regexPattern = "";
       for (const rule of el.rules) {
-        if (rule.type === 'regex') {
-          hasRegex = true;
+        if (!RuleHelper.isLiteral(rule)) {
+          notLiteral = true;
           regexPattern = String(rule.value);
         } else if (rule.type === 'choice') {
           const choiceList = rule.value;
           if (Array.isArray(choiceList)) {
             for (const c of choiceList) {
               if (c instanceof RegExp) {
-                hasRegex = true;
+                notLiteral = true;
                 regexPattern = String(c);
                 break;
               }
@@ -366,12 +317,12 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
         }
       }
 
-      if (hasRegex) {
+      if (notLiteral) {
         diagnostics.push({
           type: "warning",
           nodeName: elName,
-          message: `Enum-mapped element contains a regular expression pattern "${regexPattern}".`,
-          suggestion: "Enums should strictly represent constant string keywords. Consider separating the regex into its own Node (e.g. ExpectsOneOf(builtin_type, custom_identifier))."
+          message: `Enum-mapped element contains a non-literal rule "${regexPattern}".`,
+          suggestion: "Enums should strictly represent constant string keywords. Consider separating the rule into its own Node (e.g. ExpectsOneOf(builtin_type, custom_identifier))."
         });
       }
     }
@@ -549,22 +500,6 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     for (const rule of el.rules) {
       if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
         const unwrapped = SyntaxElement.unwrapPattern(rule.value);
-        let isNullable = false;
-        
-        if (Array.isArray(unwrapped)) {
-          isNullable = unwrapped.every(p => SyntaxElement.isPatternNullable(p, nullable));
-        } else {
-          isNullable = SyntaxElement.isPatternNullable(unwrapped, nullable);
-        }
-
-        if (isNullable) {
-          diagnostics.push({
-            type: "warning",
-            nodeName: elName,
-            message: `Potential infinite loop: Loop rule ('${rule.type}') contains a nullable pattern. It can match empty input repeatedly without consuming characters, causing parser lockup.`,
-            suggestion: "Ensure the pattern inside the loop is not nullable (i.e. it must match at least one character) to prevent the parser from freezing."
-          });
-        }
 
         // Check if the loop inner consists entirely of lookaheads or assertions:
         const isLookahead = (val: any): boolean => {
@@ -595,6 +530,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
         const choiceList = rule.value;
         if (Array.isArray(choiceList)) {
           const seen = new Set<string>();
+          let hasDuplicateWarning = false;
           for (const choice of choiceList) {
             const unwrapped = unwrapPattern(choice);
             let repr = "";
@@ -619,18 +555,21 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
 
             if (repr) {
               if (seen.has(repr)) {
-                let disp = repr;
-                if (repr.startsWith("literal:")) disp = repr.slice(8);
-                else if (repr.startsWith("regex:")) disp = repr.slice(6);
-                else if (repr.startsWith("element:")) disp = repr.slice(8);
-                else if (repr.startsWith("token:")) disp = repr.slice(6);
+                if (!hasDuplicateWarning) {
+                  let disp = repr;
+                  if (repr.startsWith("literal:")) disp = repr.slice(8);
+                  else if (repr.startsWith("regex:")) disp = repr.slice(6);
+                  else if (repr.startsWith("element:")) disp = repr.slice(8);
+                  else if (repr.startsWith("token:")) disp = repr.slice(6);
 
-                diagnostics.push({
-                  type: "warning",
-                  nodeName: elName,
-                  message: `Duplicate alternative: The choice list contains a duplicate entry for "${disp}".`,
-                  suggestion: "Remove the duplicate choice from the alternative list since it is redundant and can never be reached."
-                });
+                  diagnostics.push({
+                    type: "warning",
+                    nodeName: elName,
+                    message: `Duplicate alternative: The choice list contains a duplicate entry for "${disp}".`,
+                    suggestion: "Remove the duplicate choice from the alternative list since it is redundant and can never be reached."
+                  });
+                  hasDuplicateWarning = true;
+                }
               } else {
                 seen.add(repr);
               }
@@ -658,22 +597,11 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
       if (rule.type === 'choice') {
         const choiceList = rule.value;
         if (Array.isArray(choiceList)) {
-          // Large choice lists warning/info
-          if (choiceList.length >= 8) {
-            diagnostics.push({
-              type: "info",
-              nodeName: elName,
-              message: `Large target alternatives: Choice rule has ${choiceList.length} different options.`,
-              suggestion: "Having many nested alternatives can slow down parsing. Consider ordering them by probability of occurrence (most common first) to speed up matching, or grouping them with common prefixes."
-            });
-          }
-
           // Non-sorted literals check & prefix masking warnings
           const stringChoicesWithIndices = choiceList
             .map((c, index) => ({ value: unwrapPattern(c), index }))
             .filter(item => typeof item.value === 'string') as { value: string, index: number }[];
 
-          let hasMaskingWarning = false;
           for (let i = 0; i < stringChoicesWithIndices.length; i++) {
             for (let j = i + 1; j < stringChoicesWithIndices.length; j++) {
               const shorter = stringChoicesWithIndices[i];
@@ -685,7 +613,6 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
                   message: `Greedy match masking: The choice alternative '${shorter.value}' (index ${shorter.index}) is a prefix of '${longer.value}' (index ${longer.index}). The parser will always match the shorter prefix and fail to recognize the longer option.`,
                   suggestion: `Move the longer option '${longer.value}' before the shorter prefix '${shorter.value}' in the OneOff list.`
                 });
-                hasMaskingWarning = true;
               }
             }
           }
@@ -705,64 +632,46 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
       }
     }
 
-    // New Custom Checking: Ignored/Inlined elements constraints (.Ignore() / isHiddenElement)
-    if (el.isHiddenElement) {
-      // Rule 1: Cannot contain loop rules
-      const hasLoop = el.rules.some(r => r.type === 'zeroOrMore' || r.type === 'oneOrMore' || r.type === 'separatedBy');
-      if (hasLoop) {
-        diagnostics.push({
-          type: "error",
-          nodeName: elName,
-          message: `Ignored element "${elName}" cannot contain loop rules like ZeroOrMore, OneOrMore, or SeparatedBy.`,
-          suggestion: "Remove the .Ignore() call from this element, or pull the loop rules out into a separate node."
-        });
-      }
-
-      // Rule 2: Cannot have multiple callers
-      const elCallers = callers.get(el);
-      if (elCallers && elCallers.size > 1) {
-        const parentNames = Array.from(elCallers).map(p => p.name).join(", ");
-        diagnostics.push({
-          type: "error",
-          nodeName: elName,
-          message: `Rule "${elName}" is ignored (inlined) but has ${elCallers.size} callers: ${parentNames}.`,
-          suggestion: "An ignored/inlined element should strictly have only a single caller to inline its evaluation correctly. Remove the .Ignore() call."
-        });
-      }
-    }
-
-    // Rule 3: Loop rule cannot target ignored element
+    // Rule 3: Loop rule cannot target inlined element
     for (const rule of el.rules) {
       if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
         const unwrapped = unwrapPattern(rule.value);
-        const checkTargetIgnored = (p: any) => {
+        const checkTargetInlined = (p: any) => {
           if (p instanceof SyntaxElement && p.isHiddenElement) {
             diagnostics.push({
               type: "error",
               nodeName: elName,
-              message: `Loop rule '${rule.type}' cannot target ignored/inlined element "${p.name}".`,
-              suggestion: `An ignored rule cannot be processed under loops since it flattens multiple parsed items at once. Remove .Ignore() from "${p.name}".`
+              message: `Loop rule '${rule.type}' cannot target inlined element "${p.name}".`,
+              suggestion: `An inlined rule cannot be processed under loops since it flattens multiple parsed items at once. Remove .Inline() from "${p.name}".`
             });
           }
         };
         if (Array.isArray(unwrapped)) {
-          unwrapped.forEach(checkTargetIgnored);
+          unwrapped.forEach(checkTargetInlined);
         } else {
-          checkTargetIgnored(unwrapped);
+          checkTargetInlined(unwrapped);
         }
       } else if (rule.type === 'separatedBy' && rule.value) {
-        const checkTargetIgnored = (p: any, role: string) => {
+        const checkTargetInlined = (p: any, role: string) => {
           if (p instanceof SyntaxElement && p.isHiddenElement) {
             diagnostics.push({
               type: "error",
               nodeName: elName,
-              message: `SeparatedBy list rule cannot use ignored/inlined element "${p.name}" as ${role}.`,
-              suggestion: `An ignored rule cannot be processed under loops since it flattens multiple parsed items at once. Remove .Ignore() from "${p.name}".`
+              message: `SeparatedBy list rule cannot use inlined element "${p.name}" as ${role}.`,
+              suggestion: `An inlined rule cannot be processed under loops since it flattens multiple parsed items at once. Remove .Inline() from "${p.name}".`
             });
           }
         };
-        checkTargetIgnored(unwrapPattern(rule.value.item), "list item");
-        checkTargetIgnored(unwrapPattern(rule.value.separator), "separator");
+        const checkItem = (itemPat: any) => {
+          const unwrapped = unwrapPattern(itemPat);
+          if (Array.isArray(unwrapped)) {
+            unwrapped.forEach(p => checkTargetInlined(p, "list item"));
+          } else {
+            checkTargetInlined(unwrapped, "list item");
+          }
+        };
+        checkItem(rule.value.item);
+        checkTargetInlined(unwrapPattern(rule.value.separator), "separator");
       }
     }
 
@@ -771,35 +680,41 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
       const elCallers = callers.get(el);
       if (elCallers && elCallers.size === 1) {
         const parent = Array.from(elCallers)[0];
-        const hasLoop = el.rules.some(r => r.type === 'zeroOrMore' || r.type === 'oneOrMore' || r.type === 'separatedBy');
-        
+
         let parentUsesInLoop = false;
         for (const rule of parent.rules) {
-          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+          if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'choice') {
             const unwrapped = unwrapPattern(rule.value);
             const isTarget = (p: any): boolean => p === el || (Array.isArray(p) && p.includes(el));
             if (isTarget(unwrapped)) {
               parentUsesInLoop = true;
             }
           } else if (rule.type === 'separatedBy' && rule.value) {
-            if (unwrapPattern(rule.value.item) === el || unwrapPattern(rule.value.separator) === el) {
+            const isTarget = (p: any): boolean => {
+              const unwrapped = unwrapPattern(p);
+              return unwrapped === el || (Array.isArray(unwrapped) && unwrapped.includes(el));
+            };
+            if (isTarget(rule.value.item) || isTarget(rule.value.separator)) {
               parentUsesInLoop = true;
             }
+          } else if(rule.type == 'optional')
+          {
+            parentUsesInLoop=true;
           }
         }
 
-        if (!hasLoop && !parentUsesInLoop) {
+        if (!parentUsesInLoop) {
           diagnostics.push({
             type: "info",
             nodeName: elName,
             message: `Rule "${elName}" has exactly one caller ("${parent.name}").`,
-            suggestion: `To optimize parsing performance and simplify generated code, consider ignoring/inlining it by appending .Ignore() to its definition.`
+            suggestion: `To optimize parsing performance and simplify generated code, consider ignoring/inlining it by appending .Inline() to its definition.`
           });
         }
       }
     }
 
-    // Custom check: Consecutive StrictLiteral rules
+    // Custom check: Consecutive LiteralMatch rules
     const structuralRules = el.structuralRules;
 
     for (let i = 0; i < structuralRules.length - 1; i++) {
@@ -813,8 +728,8 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
         diagnostics.push({
           type: "warning",
           nodeName: elName,
-          message: `Consecutive StrictLiteral warning: A strict literal rule for "${p1}" is placed directly adjacent to another strict literal rule for "${p2}".`,
-          suggestion: "Only the boundary word/keyword adjacent to an identifier usually needs to perform a strict-literal check. Placing consecutive strict literals can be redundant or logically incorrect. Combine them if they form a single token, or use standard Token/literal rules."
+          message: `Consecutive LiteralMatch warning: A literal match rule for "${p1}" is placed directly adjacent to another literal match rule for "${p2}".`,
+          suggestion: "Only the boundary word/keyword adjacent to an identifier usually needs to perform a strict-literal check. Placing consecutive literal matchs can be redundant or logically incorrect. Combine them if they form a single token, or use standard Token/literal rules."
         });
       }
     }
@@ -851,7 +766,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
             // Find the first structural rule
             const firstSubsequent = subsequentRules[0];
             const nextTriggers = getStartingPatterns(firstSubsequent);
-            const overlaps = nextRuleOverlapsBoundary(nextTriggers, pattern);
+            const overlaps = nextRuleOverlapsBoundary(nextTriggers, pattern, literal);
 
             if (!overlaps) {
               diagnostics.push({
@@ -862,22 +777,6 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
               });
             }
           }
-        }
-      }
-    }
-  }
-
-  // 10. Collect warnings from inlined elements (or any element with compiled warnings)
-  for (const el of Array.from(SyntaxElement.registry.values())) {
-    if (el.isInlined) {
-      for (const warn of el.warnings) {
-        if (!diagnostics.some(d => d.nodeName === (el.name || "Inlined") && d.message === warn)) {
-          diagnostics.push({
-            type: "warning",
-            nodeName: el.name || "Inlined",
-            message: warn,
-            suggestion: "Remove AST metadata configuration or custom naming from inlined elements."
-          });
         }
       }
     }
@@ -912,19 +811,41 @@ function getStartingPatterns(ruleValue: any, visited = new Set<any>()): { string
   } else if (typeof unwrapped === 'string') {
     result.strings.push(unwrapped);
   } else if (unwrapped instanceof RegExp) {
-    result.regexes.push(unwrapped);
+    if (isSimpleCaseInsensitiveRegex(unwrapped)) {
+      result.strings.push(unwrapped.source);
+    } else {
+      result.regexes.push(unwrapped);
+    }
   } else if (typeof unwrapped === 'object' && unwrapped !== null) {
     if ('type' in unwrapped) {
       const type = unwrapped.type;
       const value = unwrapped.value;
       if (type === 'literal' || type === 'beginScope' || type === 'endScope') {
-        if (typeof value === 'string') result.strings.push(value);
+        if (typeof value === 'string') {
+          result.strings.push(value);
+        } else if (value instanceof RegExp) {
+          if (isSimpleCaseInsensitiveRegex(value)) {
+            result.strings.push(value.source);
+          } else {
+            result.regexes.push(value);
+          }
+        } else if (value instanceof SyntaxElement) {
+          const sub = getStartingPatterns(value, visited);
+          result.strings.push(...sub.strings);
+          result.regexes.push(...sub.regexes);
+        }
       } else if (type === 'literalMatch' || type === 'caseInsensitiveLiteralMatch') {
         if (value && typeof value === 'object') {
           if (value.literal) result.strings.push(value.literal);
         }
       } else if (type === 'regex' || type === 'caseInsensitiveLiteral') {
-        if (value instanceof RegExp) result.regexes.push(value);
+        if (value instanceof RegExp) {
+          if (isSimpleCaseInsensitiveRegex(value)) {
+            result.strings.push(value.source);
+          } else {
+            result.regexes.push(value);
+          }
+        }
       } else if (type === 'choice' || type === 'zeroOrMore' || type === 'oneOrMore') {
         const sub = getStartingPatterns(value, visited);
         result.strings.push(...sub.strings);
@@ -938,13 +859,25 @@ function getStartingPatterns(ruleValue: any, visited = new Set<any>()): { string
         result.strings.push(...sub.strings);
         result.regexes.push(...sub.regexes);
       } else if (type === 'separatedBy' && value) {
-        const sub = getStartingPatterns(value.item, visited);
-        result.strings.push(...sub.strings);
-        result.regexes.push(...sub.regexes);
+        if (value.allowLeading) {
+          const subSep = getStartingPatterns(value.separator, visited);
+          result.strings.push(...subSep.strings);
+          result.regexes.push(...subSep.regexes);
+        }
+        const subItem = getStartingPatterns(value.item, visited);
+        result.strings.push(...subItem.strings);
+        result.regexes.push(...subItem.regexes);
       }
     } else if ('literal' in unwrapped && 'pattern' in unwrapped) {
-      if (typeof unwrapped.literal === 'string') result.strings.push(unwrapped.literal);
-      else if (unwrapped.literal instanceof RegExp) result.regexes.push(unwrapped.literal);
+      if (typeof unwrapped.literal === 'string') {
+        result.strings.push(unwrapped.literal);
+      } else if (unwrapped.literal instanceof RegExp) {
+        if (isSimpleCaseInsensitiveRegex(unwrapped.literal)) {
+          result.strings.push(unwrapped.literal.source);
+        } else {
+          result.regexes.push(unwrapped.literal);
+        }
+      }
     } else if ('__isTokenMarker' in unwrapped && unwrapped.pattern) {
       const sub = getStartingPatterns(unwrapped.pattern, visited);
       result.strings.push(...sub.strings);
@@ -955,10 +888,19 @@ function getStartingPatterns(ruleValue: any, visited = new Set<any>()): { string
   return result;
 }
 
-function nextRuleOverlapsBoundary(nextTriggers: { strings: string[], regexes: RegExp[] }, boundaryRegex: RegExp): boolean {
+function canCharBlend(literal: string, char: string, boundaryRegex: RegExp): boolean {
+  const testStr = literal + char;
+  const match = matchRegex(boundaryRegex, testStr, 0);
+  if (match && match[0].length > literal.length) {
+    return true;
+  }
+  return false;
+}
+
+function nextRuleOverlapsBoundary(nextTriggers: { strings: string[], regexes: RegExp[] }, boundaryRegex: RegExp, literal: string): boolean {
   for (const s of nextTriggers.strings) {
     if (s.length > 0) {
-      if (boundaryRegex.test(s.charAt(0))) {
+      if (canCharBlend(literal, s.charAt(0), boundaryRegex)) {
         return true;
       }
     }
@@ -966,7 +908,7 @@ function nextRuleOverlapsBoundary(nextTriggers: { strings: string[], regexes: Re
   const sampleChars = ["a", "z", "A", "Z", "0", "9", "_"];
   for (const r of nextTriggers.regexes) {
     for (const char of sampleChars) {
-      if (boundaryRegex.test(char) && r.test(char)) {
+      if (r.test(char) && canCharBlend(literal, char, boundaryRegex)) {
         return true;
       }
     }

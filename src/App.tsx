@@ -24,7 +24,7 @@ if (typeof window !== 'undefined') {
 import('prismjs/components/prism-clike');
 import('prismjs/components/prism-javascript');
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, generateFullTypeScript, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, SuggestionItem, LiteralMatch, Element, OneOff, OneOffToken } from './lib/engine';
+import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, generateFullTypeScript, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, InlinedElement } from './lib/engine';
 import { cn } from './lib/utils';
 import { runGrammarDiagnostics, Diagnostic } from './lib/diagnostics';
 import { ProjectLibraryModal } from './components/ProjectLibraryModal';
@@ -58,8 +58,6 @@ const STYLE_ID_TO_NAME = [
   "active-symbol-reference",
   "active-reference-direct"
 ];
-
-const styleIdToNameList = [...STYLE_ID_TO_NAME];
 
 const styleNameToIdMap = new Map<string, number>();
 for (let i = 0; i < STYLE_ID_TO_NAME.length; i++) {
@@ -775,13 +773,13 @@ export default function App() {
       SyntaxElement.Reset();
       // Execute the grammar code
       // We provide SyntaxElement and the Sort helper to the execution context
-      const codeToRun = `(function(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, OneOff, OneOffToken) {
+      const codeToRun = `(function(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, InlinedElement) {
         ${debouncedGrammarCode}
         return typeof root !== 'undefined' ? root : null;
       })\n//# sourceURL=grammar-code.js`;
       
       const executionFunc = eval(codeToRun);
-      const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, OneOff, OneOffToken);
+      const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, InlinedElement);
       if (root instanceof SyntaxElement) {
         root.autoInjectLoopBoundaries();
         setRootElement(root);

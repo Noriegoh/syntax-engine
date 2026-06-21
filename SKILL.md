@@ -119,6 +119,7 @@ const op = new SyntaxElement("op")
     />/
   );
 ```
+Having many nested alternatives can slow down parsing. Consider ordering them by probability of occurrence (most common first) to speed up matching, or grouping them with common prefixes.
 
 ### 4. Code Resilience Injection
 Always append `.RecoverWith(...)` to statements inside lists (like member lines, function declarations) and `.SelfHeals(...)` to block structures (such as structs or classes):

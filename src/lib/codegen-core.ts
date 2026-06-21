@@ -76,12 +76,15 @@ export function collectElements(root: SyntaxElement): SyntaxElement[] {
           visit(rule.value);
         }
       } else if (rule.type === 'separatedBy' && rule.value) {
-        if (rule.value.item instanceof SyntaxElement) {
-          visit(rule.value.item);
-        }
-        if (rule.value.separator instanceof SyntaxElement) {
-          visit(rule.value.separator);
-        }
+        const visitPattern = (p: any) => {
+          if (p instanceof SyntaxElement) {
+            visit(p);
+          } else if (Array.isArray(p)) {
+            p.forEach(visitPattern);
+          }
+        };
+        visitPattern(rule.value.item);
+        visitPattern(rule.value.separator);
       }
     }
   }

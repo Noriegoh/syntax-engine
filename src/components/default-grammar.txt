@@ -9,7 +9,8 @@ const ws = /\s+/;
 const comment = /\/\/.*|\/\*[\s\S]*?\*\//;
 const lineWs = /[ \t]+/;
 
-const leadingTrivia = Element('leading_trivia').ZeroOrMore(ws, comment);
+const leadingTrivia = Element('leading_trivia')
+  .ZeroOrMore(ws, comment);
 const trailingTrivia = Element('trailing_trivia')
   .ZeroOrMore(lineWs, comment)
   .Optional(/\r?\n/);
@@ -19,9 +20,9 @@ DefaultTrailingTrivia(trailingTrivia);
 
 // --- Section 10: Primitives ---
 const id_exp = /[a-zA-Z_][a-zA-Z0-9_]*/;
-const id = Token(id_exp, "id");
-const number = Token(/-?(?:[0-9]*\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+)/, "number");
-const integerLiteral = Token(/-?[0-9]+/, "integerLiteral");
+const id = Token(id_exp);
+const number = Token(/-?(?:[0-9]*\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+)/);
+const integerLiteral = Token(/-?[0-9]+/);
 
 const string = Element("string")
   .BeginScope('"')
@@ -40,7 +41,7 @@ const vectorLiteral = Element("vector_literal")
   .EndScope(Token(")"));
 
 // --- Property Reference ---
-const propRef = Element("prop_ref")  
+const propRef = Element("PropertyReference")  
   .BeginScope(Token("["))
   .Expects(id).As("name")
   .EndScope(Token("]"));
@@ -48,7 +49,7 @@ const propRef = Element("prop_ref")
 // --- Section 6: Render State Commands ---
 
 // 6.1 Blend
-const blendFactor = Element("blend_factor")  
+const blendFactor = Element("BlendFactor")  
   .OneOffToken(
     propRef,
     LiteralMatch(/OneMinusSrcColor/i, id_exp),
@@ -62,22 +63,20 @@ const blendFactor = Element("blend_factor")
     LiteralMatch(/DstAlpha/i, id_exp),
     LiteralMatch(/One/i, id_exp),
     LiteralMatch(/Zero/i, id_exp)
-  );
+  ).MapToEnum();
 
 const renderTargetIndex = integerLiteral;
 
-const blendCommand = Element("blend_command")  
+const blendCommand = Element("BlendCommand")  
   .Token(LiteralMatch(/Blend/i, id_exp))
   .OneOffToken(
     LiteralMatch(/Off/i, id_exp),
-    new SyntaxElement("blend_args")
-      .Inline()
+    Element("BlendArgs")
       .Optional(renderTargetIndex).As("rtIndex")
       .Expects(blendFactor).As("src")
       .Expects(blendFactor).As("dst")
       .Optional(
-        new SyntaxElement("blend_alpha")
-          .Inline()
+        new SyntaxElement("BlendAlpha")
           .Token(",")
           .Expects(blendFactor).As("srcAlpha")
           .Expects(blendFactor).As("dstAlpha")
@@ -85,7 +84,7 @@ const blendCommand = Element("blend_command")
   );
 
 // --- 6.2 BlendOp
-const blendOperation = Element("blend_operation")  
+const blendOperation = Element("BlendOperation")  
   .OneOffToken(
     LiteralMatch(/LogicalAndReverse/i, id_exp),
     LiteralMatch(/LogicalAndInverted/i, id_exp),
@@ -123,33 +122,32 @@ const blendOperation = Element("blend_operation")
     LiteralMatch(/Sub/i, id_exp),
     LiteralMatch(/Min/i, id_exp),
     LiteralMatch(/Max/i, id_exp)
-  );
+  ).MapToEnum();
 
-const blendOpCommand = Element("blend_op_command")  
+const blendOpCommand = Element("BlendOpCommand")  
   .Token(LiteralMatch(/BlendOp/i, id_exp))
   .Optional(renderTargetIndex).As("rtIndex")
   .Expects(blendOperation).As("op")
   .Optional(
-    new SyntaxElement("blend_op_alpha")
-      .Inline()
+    new SyntaxElement("BlendOpAlpha")
       .Token(",")
       .Expects(blendOperation).As("opAlpha")
   );
 
 // 6.3 ZWrite
-const onOffValue = Element("on_off_value")  
+const onOffValue = Element("OneOffValue")  
   .OneOffToken(
     propRef,
     LiteralMatch(/On/i, id_exp),
     LiteralMatch(/Off/i, id_exp)
   );
 
-const zWriteCommand = Element("zwrite_command")  
+const zWriteCommand = Element("ZWriteCommand")  
   .Token(LiteralMatch(/ZWrite/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.4 ZTest
-const compareFunction = Element("compare_function")  
+const compareFunction = Element("CompareFunction")  
   .OneOffToken(
     propRef,
     LiteralMatch(/LEqual/i, id_exp),
@@ -161,72 +159,57 @@ const compareFunction = Element("compare_function")
     LiteralMatch(/Always/i, id_exp),
     LiteralMatch(/Never/i, id_exp),
     LiteralMatch(/Off/i, id_exp)
-  );
+  ).MapToEnum();
 
-const zTestCommand = Element("ztest_command")  
+const zTestCommand = Element("ZTestCommand")  
   .Token(LiteralMatch(/ZTest/i, id_exp))
   .Expects(compareFunction).As("func");
 
 // 6.5 ZClip
-const zClipCommand = Element("zclip_command")  
+const zClipCommand = Element("ZClipCommand")  
   .Token(LiteralMatch(/ZClip/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.6 Cull
-const cullMode = Element("cull_mode")  
+
+const cullCommand = Element("CullCommand")  
+  .Token(LiteralMatch(/Cull/i, id_exp))
   .OneOffToken(
     propRef,
     LiteralMatch(/Back/i, id_exp),
     LiteralMatch(/Front/i, id_exp),
     LiteralMatch(/Off/i, id_exp)
-  );
-
-const cullCommand = Element("cull_command")  
-  .Token(LiteralMatch(/Cull/i, id_exp))
-  .Expects(cullMode).As("mode");
+  ).As("mode").MapToEnum();
 
 // 6.7 Offset
-const offsetValue = Element("offset_value")  
-  .OneOff(
-    propRef,
-    number
-  );
 
-const offsetCommand = Element("offset_command")  
+const offsetCommand = Element("OffsetCommand")
   .Token(LiteralMatch(/Offset/i, id_exp))
-  .Expects(offsetValue).As("factor")
+  .OneOff(propRef, number).As("factor")
   .Token(",")
-  .Expects(offsetValue).As("units");
+  .OneOff(propRef, number).As("units");
 
 // 6.8 ColorMask
 const colorMaskChannels = Token(/[RGBA]+/i);
 
-const colorMaskValue = Element("color_mask_value")  
-  .OneOff(
-    propRef,
-    integerLiteral,
-    colorMaskChannels,
-    Token(LiteralMatch(/0/, id_exp))
-  );
-
-const colorMaskCommand = Element("color_mask_command")  
+const colorMaskCommand = Element("ColorMaskCommand")
   .Token(LiteralMatch(/ColorMask/i, id_exp))
-  .Expects(colorMaskValue).As("mask")
+  .OneOff(propRef, integerLiteral, colorMaskChannels).As("mask")
   .Optional(renderTargetIndex).As("rtIndex");
 
 // 6.9 AlphaToMask
-const alphaToMaskCommand = Element("alpha_to_mask_command")  
+const alphaToMaskCommand = Element("AlphaToMaskCommand")
   .Token(LiteralMatch(/AlphaToMask/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.10 Stencil Block
-const stencilValue = Element("stencil_value")  
+const stencilValue = Element("StencilValue")  
   .OneOff(
     propRef,
     integerLiteral
   );
 
-const stencilOpValue = Element("stencil_op_value")  
+const stencilOpValue = Element("StencilOpValue")  
   .OneOffToken(
     propRef,
     LiteralMatch(/Keep/i, id_exp),
@@ -237,43 +220,38 @@ const stencilOpValue = Element("stencil_op_value")
     LiteralMatch(/Invert/i, id_exp),
     LiteralMatch(/IncrWrap/i, id_exp),
     LiteralMatch(/DecrWrap/i, id_exp)
-  );
+  ).MapToEnum();
 
-const stencilRef = Element("stencil_ref").Token(LiteralMatch(/Ref/i, id_exp)).Expects(stencilValue).As("val");
-const stencilReadMask = Element("stencil_read_mask").Token(LiteralMatch(/ReadMask/i, id_exp)).Expects(stencilValue).As("val");
-const stencilWriteMask = Element("stencil_write_mask").Token(LiteralMatch(/WriteMask/i, id_exp)).Expects(stencilValue).As("val");
+const stencilRef = Element("StencilRef").Token(LiteralMatch(/Ref/i, id_exp)).Expects(stencilValue).As("val");
+const stencilReadMask = Element("StencilReadMask").Token(LiteralMatch(/ReadMask/i, id_exp)).Expects(stencilValue).As("val");
+const stencilWriteMask = Element("StencilWriteMask").Token(LiteralMatch(/WriteMask/i, id_exp)).Expects(stencilValue).As("val");
 
-const stencilComp = Element("stencil_comp").Token(LiteralMatch(/Comp/i, id_exp)).Expects(compareFunction).As("func");
-const stencilPass = Element("stencil_pass").Token(LiteralMatch(/Pass/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilFail = Element("stencil_fail").Token(LiteralMatch(/Fail/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilZFail = Element("stencil_zfail").Token(LiteralMatch(/ZFail/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilComp = Element("StencilComp").Token(LiteralMatch(/Comp/i, id_exp)).Expects(compareFunction).As("func");
+const stencilPass = Element("StencilPass").Token(LiteralMatch(/Pass/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilFail = Element("StencilFail").Token(LiteralMatch(/Fail/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilZFail = Element("StencilZFail").Token(LiteralMatch(/ZFail/i, id_exp)).Expects(stencilOpValue).As("op");
 
-const stencilCompBack = Element("stencil_comp_back").Token(LiteralMatch(/CompBack/i, id_exp)).Expects(compareFunction).As("func");
-const stencilPassBack = Element("stencil_pass_back").Token(LiteralMatch(/PassBack/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilFailBack = Element("stencil_fail_back").Token(LiteralMatch(/FailBack/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilZFailBack = Element("stencil_zfail_back").Token(LiteralMatch(/ZFailBack/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilCompBack = Element("StencilCompBack").Token(LiteralMatch(/CompBack/i, id_exp)).Expects(compareFunction).As("func");
+const stencilPassBack = Element("StencilPassBack").Token(LiteralMatch(/PassBack/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilFailBack = Element("StencilFailBack").Token(LiteralMatch(/FailBack/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilZFailBack = Element("StencilZFailBack").Token(LiteralMatch(/ZFailBack/i, id_exp)).Expects(stencilOpValue).As("op");
 
-const stencilCompFront = Element("stencil_comp_front").Token(LiteralMatch(/CompFront/i, id_exp)).Expects(compareFunction).As("func");
-const stencilPassFront = Element("stencil_pass_front").Token(LiteralMatch(/PassFront/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilFailFront = Element("stencil_fail_front").Token(LiteralMatch(/FailFront/i, id_exp)).Expects(stencilOpValue).As("op");
-const stencilZFailFront = Element("stencil_zfail_front").Token(LiteralMatch(/ZFailFront/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilCompFront = Element("StencilCompFront").Token(LiteralMatch(/CompFront/i, id_exp)).Expects(compareFunction).As("func");
+const stencilPassFront = Element("StencilPassFront").Token(LiteralMatch(/PassFront/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilFailFront = Element("StencilFailFront").Token(LiteralMatch(/FailFront/i, id_exp)).Expects(stencilOpValue).As("op");
+const stencilZFailFront = Element("StencilZFailFront").Token(LiteralMatch(/ZFailFront/i, id_exp)).Expects(stencilOpValue).As("op");
 
-const stencilState = Element("stencil_state")
-  .OneOff(
-    stencilCompBack, stencilPassBack, stencilFailBack, stencilZFailBack,
-    stencilCompFront, stencilPassFront, stencilFailFront, stencilZFailFront,
-    stencilRef, stencilReadMask, stencilWriteMask,
-    stencilComp, stencilPass, stencilFail, stencilZFail
-  );
-
-const stencilBlock = Element("stencil_block")  
+const stencilBlock = Element("StencilBlock")  
   .Token(/Stencil/i)
   .BeginScope(Token("{"))
-  .ZeroOrMore(stencilState).As("states")
+  .ZeroOrMore(stencilCompBack, stencilPassBack, stencilFailBack, stencilZFailBack,
+    stencilCompFront, stencilPassFront, stencilFailFront, stencilZFailFront,
+    stencilRef, stencilReadMask, stencilWriteMask,
+    stencilComp, stencilPass, stencilFail, stencilZFail).As("states")
   .EndScope(Token("}"));
 
 // 6.11 ColorMaterial (legacy)
-const colorMaterialCommand = Element("color_material_command")  
+const colorMaterialCommand = Element("ColorMaterialCommand")  
   .Token(LiteralMatch(/ColorMaterial/i, id_exp))
   .OneOffToken(
     LiteralMatch(/AmbientAndDiffuse/i, id_exp),
@@ -281,27 +259,25 @@ const colorMaterialCommand = Element("color_material_command")
   ).As("value");
 
 // 6.12 Lighting (legacy)
-const lightingCommand = Element("lighting_command")  
+const lightingCommand = Element("LightingCommand")  
   .Token(LiteralMatch(/Lighting/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.13 Conservative Rasterization
-const conservativeCommand = Element("conservative_command")  
+const conservativeCommand = Element("ConservativeCommand")  
   .Token(LiteralMatch(/Conservative/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // 6.14 AlphaTest (legacy)
-const alphaTestValue = Element("alpha_test_value")  
+
+const alphaTestMode = Element("AlphaTestMode")  
+  .Expects(compareFunction).As("func")
   .OneOff(
     propRef,
     number
-  );
+  ).As("val");
 
-const alphaTestMode = Element("alpha_test_mode")  
-  .Expects(compareFunction).As("func")
-  .Expects(alphaTestValue).As("val");
-
-const alphaTestCommand = Element("alpha_test_command")  
+const alphaTestCommand = Element("AlphaTestCommand")  
   .Token(LiteralMatch(/AlphaTest/i, id_exp))
   .OneOffToken(
     LiteralMatch(/Off/i, id_exp),
@@ -309,7 +285,7 @@ const alphaTestCommand = Element("alpha_test_command")
   ).As("mode");
 
 // 6.15 Fog Block (legacy)
-const fogMode = Element("fog_mode")  
+const fogMode = Element("FogMode")
   .OneOffToken(
     LiteralMatch(/Off/i, id_exp),
     LiteralMatch(/Global/i, id_exp),
@@ -318,35 +294,30 @@ const fogMode = Element("fog_mode")
     LiteralMatch(/Exp/i, id_exp)
   );
 
-const fogStateRange = Element("fog_state_range")
-  .Inline()
+const fogStateRange = Element("FogStateRange")
   .Token(LiteralMatch(/Range/i, id_exp))
   .Expects(number).As("min")
   .Token(",")
   .Expects(number).As("max");
 
-const fogState = Element("fog_state")  
-  .OneOff(
-    new SyntaxElement("fog_state_mode").Inline().Token(LiteralMatch(/Mode/i, id_exp)).Expects(fogMode).As("mode"),
-    new SyntaxElement("fog_state_color").Inline().Token(/Color/i).Expects(vectorLiteral).As("color"),
-    new SyntaxElement("fog_state_density").Inline().Token(LiteralMatch(/Density/i, id_exp)).Expects(number).As("density"),
-    fogStateRange
-  );
+const fogStateMode = Element("FogStateMode").Token(LiteralMatch(/Mode/i, id_exp)).Expects(fogMode).As("mode");
+const fogStateColor = Element("FogStateColor").Token(/Color/i).Expects(vectorLiteral).As("color");
+const fogStateDensity = Element("FogStateColor").Token(LiteralMatch(/Density/i, id_exp)).Expects(number).As("density");
 
-const fogBlock = Element("fog_block")  
+const fogBlock = Element("FogBlock")  
   .Token(/Fog/i)
   .BeginScope(Token("{"))
-  .ZeroOrMore(fogState).As("states")
+  .Optional(fogStateMode, fogStateColor, fogStateDensity, fogStateRange).As("states")
   .EndScope(Token("}"));
 
 // 6.16 SeparateSpecular (legacy)
-const separateSpecularCommand = Element("separate_specular_command")  
+const separateSpecularCommand = Element("SeparateSpecularCommand")  
   .Token(LiteralMatch(/SeparateSpecular/i, id_exp))
   .Expects(onOffValue).As("value");
 
 // Render State Groupings
-const renderState = Element("render_state")
-  .OneOff(
+const renderState = Element("RenderState")
+  .ZeroOrMore(
     blendCommand,
     blendOpCommand,
     zWriteCommand,
@@ -366,17 +337,17 @@ const renderState = Element("render_state")
   );
 
 // --- Section 4: LOD ---
-const lodDecl = Element("lod_decl")  
+const lodDecl = Element("LODDecl")  
   .Token(LiteralMatch(/LOD/i, id_exp))
   .Expects(integerLiteral).As("value");
 
 // --- Section 3: Tags Block ---
-const tagEntry = Element("tag_entry")  
+const tagEntry = Element("TagEntry")  
   .Expects(string).As("key")
   .Token("=")
   .Expects(string).As("value");
 
-const tagsBlock = Element("tags_block")  
+const tagsBlock = Element("TagsBlock")  
   .Token(/Tags/i)
   .BeginScope(Token("{"))
   .ZeroOrMore(tagEntry).As("entries")
@@ -409,90 +380,62 @@ const includeBlock = Element("include_block")
   );
 
 // --- Section 5: Pass Types ---
-const nameDecl = Element("name_decl")  
+const nameDecl = Element("NameDecl")  
   .Token(/Name/i)
   .Expects(string).As("value");
 
-const passState = Element("pass_state")
-  .OneOff(
+const passBlock = Element("PassBlock")  
+  .Token(/Pass/i)
+  .BeginScope(Token("{"))
+  .ZeroOrMore(
     tagsBlock,
     nameDecl,
     lodDecl,
     renderState,
     includeBlock,
-    programBlock
-  );
-
-const passBody = Element("pass_body")
-  .Inline()
-  .ZeroOrMore(passState).As("contents");
-
-const pass = Element("pass")  
-  .Token(/Pass/i)
-  .BeginScope(Token("{"))
-  .Expects(passBody)
+    programBlock).As("contents")
   .EndScope(Token("}"));
 
-const grabPass = Element("grab_pass")  
+const grabPass = Element("GrabPass")
   .Token(/GrabPass/i)
   .BeginScope(Token("{"))
   .Optional(string).As("textureName")
   .EndScope(Token("}"));
 
-const usePass = Element("use_pass")  
+const usePass = Element("UsePass") 
   .Token(/UsePass/i)
   .Expects(string).As("passName");
 
 // --- Section 2: SubShader ---
-const subShaderState = Element("subshader_state")
-  .OneOff(
-    pass,
+
+const subShader = Element("SubShaderBlock")  
+  .Token(/SubShader/i)
+  .BeginScope(Token("{"))
+  .ZeroOrMore(passBlock,
     grabPass,
     usePass,
     tagsBlock,
     lodDecl,
     renderState,
     includeBlock,
-    programBlock
-  );
-
-const subShaderBody = Element("subshader_body")
-  .Inline()
-  .ZeroOrMore(subShaderState).As("contents");
-
-const subShader = Element("subshader")  
-  .Token(/SubShader/i)
-  .BeginScope(Token("{"))
-  .Expects(subShaderBody)
+    programBlock).As("contents")
   .EndScope(Token("}"));
 
 // --- Section 1: Properties Block ---
 const propertyName = id;
 
-const attributeArg = Element("attribute_arg")  
-  .OneOff(
-    string,
-    number,
-    id
-  );
-
-const attributeContent = Element("attribute_content")  
+const attribute = Element("Attribute")  
+  .BeginScope(Token("["))
   .Expects(id).As("name")
   .Optional(
-    new SyntaxElement("attribute_args_block")
-      .Inline()
+    new SyntaxElement("AttributeArgs")
       .BeginScope(Token("("))
-      .Expects(attributeArg).As("firstArg")
-      .ZeroOrMoreToken(new SyntaxElement("attribute_arg_comma").Token(",").Expects(attributeArg)).As("moreArgs")
+      .SeparatedByToken(string, number, id, ",").As("args")
       .EndScope(Token(")"))
-  );
-
-const attribute = Element("attribute")  
-  .BeginScope(Token("["))
-  .Expects(attributeContent)
+  )
   .EndScope(Token("]"));
 
-const rangeType = Element("range_type")  
+const rangeType = Element("RangeType")  
   .Token(/Range/i)
   .BeginScope(Token("("))
   .Expects(number).As("min")
@@ -500,7 +443,18 @@ const rangeType = Element("range_type")
   .Expects(number).As("max")
   .EndScope(Token(")"));
 
-const propertyType = Element("property_type")  
+const textureDefault = Element("TextureDefault")  
+  .Expects(string).As("texName")
+  .BeginScope(Token("{"))
+  .ZeroOrMore(id).As("options")
+  .EndScope(Token("}"));
+
+const property = Element("Property")  
+  .ZeroOrMore(attribute).As("attributes")
+  .Expects(propertyName).As("name")
+  .BeginScope(Token("("))
+  .Expects(string).As("displayName")
+  .Token(",")
   .OneOffToken(
     rangeType,
     LiteralMatch(/CubeArray/i, id_exp),
@@ -514,37 +468,16 @@ const propertyType = Element("property_type")
     LiteralMatch(/Float/i, id_exp),
     LiteralMatch(/Vector/i, id_exp),
     LiteralMatch(/Any/i, id_exp)
-  );
-
-const textureOptions = Element("texture_options")
-  .Inline()
-  .ZeroOrMore(id);
-
-const textureDefault = Element("texture_default")  
-  .Expects(string).As("texName")
-  .BeginScope(Token("{"))
-  .Expects(textureOptions).As("options")
-  .EndScope(Token("}"));
-
-const propertyDefault = Element("property_default")  
+  ).As("type")
+  .EndScope(Token(")"))
+  .Token("=")
   .OneOff(
     vectorLiteral,
     textureDefault,
     number
-  );
+  ).As("defaultValue");
 
-const property = Element("property")  
-  .ZeroOrMore(attribute).As("attributes")
-  .Expects(propertyName).As("name")
-  .BeginScope(Token("("))
-  .Expects(string).As("displayName")
-  .Token(",")
-  .Expects(propertyType).As("type")
-  .EndScope(Token(")"))
-  .Token("=")
-  .Expects(propertyDefault).As("defaultValue");
-
-const propertiesBlock = Element("properties_block")  
+const propertiesBlock = Element("PropertiesBlock")  
   .Token(/Properties/i)
   .BeginScope(Token("{"))
   .ZeroOrMore(property).As("properties")
@@ -552,7 +485,7 @@ const propertiesBlock = Element("properties_block")
 
 // --- Section 9: Category Block (legacy) ---
 
-const categoryBlock = Element("category_block")  
+const categoryBlock = Element("CategoryBlock")  
   .Token(/Category/i)
   .BeginScope(Token("{"))
   .Optional(tagsBlock)
@@ -570,20 +503,19 @@ const categoryBlock = Element("category_block")
   .EndScope(Token("}"));
 
 // --- Top-Level Structure ---
-const fallbackDecl = Element("fallback_decl")  
+const fallbackDecl = Element("FallbackDecl")  
   .Token(LiteralMatch(/Fallback/i, id_exp))
   .OneOffToken(string, LiteralMatch(/Off/i, id_exp)).As("value");
 
-const customEditorDecl = Element("custom_editor_decl")  
+const customEditorDecl = Element("CustomEditorDecl")  
   .Token(/CustomEditor/i)
   .Token(string).As("value");
 
-const root = Element("shader_body")
+const root = Element("ShaderBody")
   .Token(/Shader/i)
   .Token(string).As("shaderName")
   .BeginScope(Token("{"))
   .Optional(propertiesBlock)
   .OneOrMore(subShader, categoryBlock)
-  .Optional(fallbackDecl)
-  .Optional(customEditorDecl)
+  .Optional(fallbackDecl, customEditorDecl)
   .EndScope(Token("}"));
