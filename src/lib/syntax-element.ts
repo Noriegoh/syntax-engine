@@ -27,10 +27,10 @@ export const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'EndScope', insertText: 'EndScope(', type: 'method', description: 'Signal local lexical namespace termination (e.g., matching brace "}" )' },
   { label: 'ExpectsEOF', insertText: 'ExpectsEOF()', type: 'method', description: 'Enforce complete final end-of-file condition' },
   { label: 'As', insertText: 'As(', type: 'method', description: 'Assign field property name/label to the matched result' },
+  { label: 'WithError', insertText: 'WithError(', type: 'method', description: 'Attach a custom user-defined manual error message to the last defined rule' },
   { label: 'Inline', insertText: 'Inline()', type: 'method', description: 'Inline this element, copying its rules directly into any receiving element at runtime' },
   { label: 'InlinedElement', insertText: 'InlinedElement()', type: 'method', description: 'Helper to return a new anonymous, inlined SyntaxElement' },
   { label: 'RecoverWith', insertText: 'RecoverWith(', type: 'method', description: 'Register explicit manual recovery delimiters for automated parser healing' },
-  { label: 'SelfHeals', insertText: 'SelfHeals(', type: 'method', description: 'Designate current rules blocks automated healing boundaries' },
   { label: 'MapToEnum', insertText: 'MapToEnum(', type: 'method', description: 'Map matched string tokens to target C# compilation enumerations' },
   { label: 'SeparatedBy', insertText: 'SeparatedBy(', type: 'method', description: 'Sequence matcher for elements separated by distinct separator literal/token' },
   { label: 'SeparatedByToken', insertText: 'SeparatedByToken(', type: 'method', description: 'Sequence matcher for elements separated by separator while skipping trivia' },
@@ -41,6 +41,7 @@ export const GRAMMAR_SUGGESTIONS: SuggestionItem[] = [
   { label: 'DefaultTrailingTrivia', insertText: 'DefaultTrailingTrivia', type: 'variable', description: 'Pre-registered standard spacer elements container' },
   { label: 'Required', insertText: 'Required(', type: 'method', description: 'Mark element rule as required in an unordered or optional list rule' },
   { label: 'Unordered', insertText: 'Unordered(', type: 'method', description: 'Match zero, one, or multiple rules in any order' },
+  { label: 'Regex', insertText: 'Regex(', type: 'method', description: 'Create a named or standard regular expression pattern' },
 ];
 
 export function Required(pattern: any): any {
@@ -69,8 +70,6 @@ export type RuleType =
   | 'zeroOrMore' 
   | 'oneOrMore' 
   | 'eof' 
-  | 'beginScope' 
-  | 'endScope'
   | 'literalMatch'
   | 'caseInsensitiveLiteralMatch';
 
@@ -85,11 +84,15 @@ export interface Rule {
   hasLiteralMatchWarning?: boolean; // Set when LiteralMatch wraps choice elements inside OneOff
   primitiveType?: string;
   requiredIndices?: Set<number>;
+  customErrorMessage?: string;
+  recoveryPatterns?: (string | RegExp | SyntaxElement)[];
+  explicitRecoveryPatterns?: (string | RegExp | SyntaxElement)[];
+  parentRuleId?: number;
 }
 
 export class RuleHelper {
   public static isList(rule: Rule): boolean {
-    return rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'separatedBy';
+    return rule.type == "choice" || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type === 'separatedBy';
   }
 
   public static isTrivia(rule: Rule): boolean {
@@ -116,10 +119,6 @@ export class RuleHelper {
     return rule.type === 'zeroOrMore' || rule.type === 'oneOrMore' || rule.type == "separatedBy";
   }
 
-  public static isScope(rule: Rule): boolean {
-    return rule.type === 'beginScope' || rule.type === 'endScope';
-  }
-
   public static hasArrayValue(rule: Rule): boolean {
     return (rule.type === 'choice' || rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') && Array.isArray(rule.value);
   }
@@ -129,7 +128,7 @@ export class RuleHelper {
   }
 
   public static isTerminalTextValue(rule: Rule): boolean {
-    return (rule.type === 'literal' || rule.type === 'endScope' || rule.type === 'beginScope') && typeof rule.value === 'string';
+    return rule.type === 'literal' && typeof rule.value === 'string';
   }
 
   public static hasOptionalOrTriviaOrLoop(rule: Rule): boolean {
@@ -148,6 +147,7 @@ export class RuleHelper {
 export interface ParseError {
   message: string;
   offset: number;
+  recoveredOffset?: number;
 }
 
 export interface ParseResult {
@@ -515,7 +515,6 @@ export class SyntaxElement {
   }
 
   public enumName: string | null = null;
-  public isAutoHealing: boolean = false;
 
   public addWarning(message: string): void {
     if (!this.warnings.includes(message)) {
@@ -620,9 +619,6 @@ export class SyntaxElement {
     return this.enumName !== null;
   }
 
-  public recoveryPatterns: (string | RegExp | SyntaxElement)[] | null = null;
-  public autoHealingBoundaries: (string | RegExp | SyntaxElement)[] | null = null;
-
   constructor(name: string) {
     this.id = ++SyntaxElement.lastId;
     this.name = name;
@@ -637,6 +633,22 @@ export class SyntaxElement {
         rule.type !== 'trailingTrivia'
       );
     });
+  }
+
+  public static getPatternDescription(pat: any): string {
+    if (!pat) return "unknown";
+    if (pat instanceof SyntaxElement) return pat.name || "anonymous element";
+    if (typeof pat === 'object') {
+      if ('__isTokenMarker' in pat) return pat.name || SyntaxElement.getPatternDescription(pat.pattern);
+      if ('__isLiteralExp' in pat) return `"${pat.literal}"`;
+    }
+    if (pat instanceof RegExp) {
+      if ('overrideName' in pat && typeof (pat as any).overrideName === 'string') {
+        return (pat as any).overrideName;
+      }
+      return pat.source;
+    }
+    return `"${String(pat)}"`;
   }
 
   public static unwrapPattern(p: any): any {
@@ -707,8 +719,6 @@ export class SyntaxElement {
       case 'literal':
       case 'regex':
       case 'element':
-      case 'beginScope':
-      case 'endScope':
         return SyntaxElement.isPatternNullable(SyntaxElement.unwrapPattern(rule.value), nullable);
       case 'not':
       case 'assert':
@@ -771,8 +781,6 @@ export class SyntaxElement {
         rule.type === 'leadingTrivia' ||
         rule.type === 'trailingTrivia' ||
         rule.type === 'not' ||
-        rule.type === 'beginScope' ||
-        rule.type === 'endScope' ||
         rule.type === 'assert'
       ) {
         const unwrapped = SyntaxElement.unwrapPattern(rule.value);
@@ -827,12 +835,27 @@ export class SyntaxElement {
       let targetRule = this.rules[this.rules.length - 1];
       for (let i = this.rules.length - 1; i >= 0; i--) {
         const r = this.rules[i];
-        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia') {
+        if (!RuleHelper.isTrivia(r)) {
           targetRule = r;
           break;
         }
       }
       targetRule.label = fieldName;
+    }
+    return this;
+  }
+
+  WithError(errorMessage: string): this {
+    if (this.rules.length > 0) {
+      let targetRule = this.rules[this.rules.length - 1];
+      for (let i = this.rules.length - 1; i >= 0; i--) {
+        const r = this.rules[i];
+        if (!RuleHelper.isTrivia(r)) {
+          targetRule = r;
+          break;
+        }
+      }
+      targetRule.customErrorMessage = errorMessage;
     }
     return this;
   }
@@ -932,7 +955,7 @@ export class SyntaxElement {
       let targetRule = this.rules[this.rules.length - 1];
       for (let i = this.rules.length - 1; i >= 0; i--) {
         const r = this.rules[i];
-        if (r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia') {
+        if (!RuleHelper.isTrivia(r)) {
           targetRule = r;
           break;
         }
@@ -951,52 +974,27 @@ export class SyntaxElement {
   }
 
   RecoverWith(...boundaries: (string | RegExp | SyntaxElement)[]): this {
-    this.recoveryPatterns = boundaries;
-    return this;
-  }
-
-  SelfHeals(...boundaries: (string | RegExp | SyntaxElement)[]): this {
-    this.isAutoHealing = true;
-    if (boundaries.length > 0) {
-      this.autoHealingBoundaries = boundaries;
+    if (this.rules.length > 0) {
+      let targetRule = this.rules[this.rules.length - 1];
+      for (let i = this.rules.length - 1; i >= 0; i--) {
+        const r = this.rules[i];
+        if (!RuleHelper.isTrivia(r)) {
+          targetRule = r;
+          break;
+        }
+      }
+      targetRule.explicitRecoveryPatterns ??= [];
+      targetRule.explicitRecoveryPatterns.push(...boundaries);
     }
     return this;
   }
 
   BeginScope(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
-    if (pattern === undefined || pattern === null) {
-      pattern = "";
-    }
-    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
-      const inner = pattern.pattern;
-      const lead = SyntaxElement.defaultLeadingTrivia;
-      const trail = SyntaxElement.defaultTrailingTrivia;
-      if (lead) this.LeadingTrivia(lead);
-      this.BeginScope(inner as any);
-      if (trail) this.TrailingTrivia(trail);
-    } else {
-      const id = nextRuleId();
-      this.rules.push({ id, type: 'beginScope', value: pattern });
-    }
-    return this;
+    return this.Expects(pattern);
   }
 
   EndScope(pattern: string | RegExp | SyntaxElement | TokenMarker): this {
-    if (pattern === undefined || pattern === null) {
-      pattern = "";
-    }
-    if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
-      const inner = pattern.pattern;
-      const lead = SyntaxElement.defaultLeadingTrivia;
-      const trail = SyntaxElement.defaultTrailingTrivia;
-      if (lead) this.LeadingTrivia(lead);
-      this.EndScope(inner as any);
-      if (trail) this.TrailingTrivia(trail);
-    } else {
-      const id = nextRuleId();
-      this.rules.push({ id, type: 'endScope', value: pattern });
-    }
-    return this;
+    return this.Expects(pattern);
   }
 
   Expects(pattern: any): this {
@@ -1502,34 +1500,30 @@ export class SyntaxElement {
     
     let rule: Rule;
     const id = nextRuleId();
-    if (realPattern && typeof realPattern === 'object' && 'type' in realPattern && ((realPattern as any).type === 'beginScope' || (realPattern as any).type === 'endScope')) {
-      rule = { id, type: (realPattern as any).type, value: (realPattern as any).value };
-    } else {
-      if (realPattern instanceof SyntaxElement) {
-        rule = { id, type: 'element', value: realPattern };
-      } else if (realPattern instanceof RegExp) {
-        if (isSimpleCaseInsensitiveRegex(realPattern)) {
-          rule = { id, type: 'caseInsensitiveLiteral', value: realPattern };
-        } else {
-          rule = { id, type: 'regex', value: realPattern };
-        }
-      } else if (realPattern instanceof LiteralExp) {
-        let litVal = "";
-        let ruleType: RuleType = 'literalMatch';
-        if (realPattern.literal instanceof RegExp) {
-          if (!isSimpleCaseInsensitiveRegex(realPattern.literal)) {
-            throw new Error("Regex pattern for LiteralMatch must be a simple case-insensitive regex pattern (have 'i' flag and no regex special chars).");
-          }
-          litVal = realPattern.literal.source;
-          ruleType = 'caseInsensitiveLiteralMatch';
-        } else {
-          litVal = String(realPattern.literal);
-        }
-        const regexVal = typeof realPattern.pattern === 'string' ? new RegExp(realPattern.pattern) : realPattern.pattern;
-        rule = { id, type: ruleType, value: { literal: litVal, pattern: regexVal } };
+    if (realPattern instanceof SyntaxElement) {
+      rule = { id, type: 'element', value: realPattern };
+    } else if (realPattern instanceof RegExp) {
+      if (isSimpleCaseInsensitiveRegex(realPattern)) {
+        rule = { id, type: 'caseInsensitiveLiteral', value: realPattern };
       } else {
-        rule = { id, type: 'literal', value: realPattern };
+        rule = { id, type: 'regex', value: realPattern };
       }
+    } else if (realPattern instanceof LiteralExp) {
+      let litVal = "";
+      let ruleType: RuleType = 'literalMatch';
+      if (realPattern.literal instanceof RegExp) {
+        if (!isSimpleCaseInsensitiveRegex(realPattern.literal)) {
+          throw new Error("Regex pattern for LiteralMatch must be a simple case-insensitive regex pattern (have 'i' flag and no regex special chars).");
+        }
+        litVal = realPattern.literal.source;
+        ruleType = 'caseInsensitiveLiteralMatch';
+      } else {
+        litVal = String(realPattern.literal);
+      }
+      const regexVal = typeof realPattern.pattern === 'string' ? new RegExp(realPattern.pattern) : realPattern.pattern;
+      rule = { id, type: ruleType, value: { literal: litVal, pattern: regexVal } };
+    } else {
+      rule = { id, type: 'literal', value: realPattern };
     }
     this.rules.push(rule);
     
@@ -1575,6 +1569,7 @@ export class SyntaxElement {
   }
 
   autoInjectLoopBoundaries(visited: Set<number> = new Set()): void {
+    const isRootCall = visited.size === 0;
     if (visited.has(this.id)) return;
     visited.add(this.id);
 
@@ -1695,24 +1690,155 @@ export class SyntaxElement {
         }
       }
     }
+    
+    if (isRootCall) {
+      this.precomputeRecoveryBoundaries();
+    }
   }
 
-  private gatherFollowPatterns(rules: Rule[], startIndex: number, visitedElements: Set<number>): any[] {
+  public precomputeRecoveryBoundaries(visited: Set<number> = new Set()): void {
+    const isRootCall = visited.size === 0;
+    if (isRootCall) {
+      this.linkParentRules();
+    }
+    if (visited.has(this.id)) return;
+    visited.add(this.id);
+
+    // 1. Recurse sub-elements first
+    for (const rule of this.rules) {
+      if (rule.value instanceof SyntaxElement) {
+        rule.value.precomputeRecoveryBoundaries(visited);
+      } else if (RuleHelper.hasArrayValue(rule)) {
+        for (const choice of rule.value) {
+          if (choice instanceof SyntaxElement) {
+            choice.precomputeRecoveryBoundaries(visited);
+          }
+        }
+      } else if (RuleHelper.isLoop(rule)) {
+        if (rule.value instanceof SyntaxElement) {
+          rule.value.precomputeRecoveryBoundaries(visited);
+        } else if (Array.isArray(rule.value)) {
+          for (const choice of rule.value) {
+            if (choice instanceof SyntaxElement) {
+              choice.precomputeRecoveryBoundaries(visited);
+            }
+          }
+        }
+      } else if (rule.type === 'optional' && rule.value instanceof SyntaxElement) {
+        rule.value.precomputeRecoveryBoundaries(visited);
+      }
+    }
+
+    // 2. Precompute future expected patterns for each of this element's rules
+    for (let i = 0; i < this.rules.length; i++) {
+      const rule = this.rules[i];
+      const futureRecoveryPatterns = this.gatherFollowPatterns(this.rules, i + 1, new Set());
+      
+      // If the current rule is a repetition loop (zeroOrMore/oneOrMore), 
+      // we can also expect the loop's starting patterns if it repeats.
+      if (rule.type === 'zeroOrMore' || rule.type === 'oneOrMore') {
+        const loopStartPatterns = this.collectStartPatterns(rule, new Set());
+        futureRecoveryPatterns.push(...loopStartPatterns);
+      }
+
+      const unwrappedFuture = futureRecoveryPatterns
+        .map(p => unwrapToken(p))
+        .filter(p => p !== null && p !== undefined && p !== "");
+
+      const explicit = rule.explicitRecoveryPatterns || [];
+      const combined = [...explicit];
+
+      for (const p of unwrappedFuture) {
+        // if (!combined.some(cp => {
+        //   if (cp === p) return true;
+        //   if (cp instanceof RegExp && p instanceof RegExp) {
+        //     return cp.source === p.source && cp.flags === p.flags;
+        //   }
+        //   return false;
+        // })) {
+        //   combined.push(p);
+        // }
+        combined.push(p);
+      }
+      rule.recoveryPatterns = combined;
+    }
+
+    // 3. Precompute recovery patterns for this element itself
+      const patterns: (string | RegExp | SyntaxElement)[] = [];
+      for (let i = this.rules.length - 1; i >= 0; i--) {
+        const r = this.rules[i];
+        if (r.type === 'literal' && typeof r.value === 'string') {
+          const val = r.value;
+          if (!patterns.includes(val)) patterns.push(val);
+          break;
+        } else if (RuleHelper.hasOptionalOrTriviaOrLoop(r)) {
+          continue;
+        } else {
+          break;
+        }
+      }
+  }
+
+  public linkParentRules(visited: Set<number> = new Set()): void {
+    if (visited.has(this.id)) return;
+    visited.add(this.id);
+
+    for (const rule of this.rules) {
+      const childElements = this.findReferencedElementsInRule(rule);
+      for (const child of childElements) {
+        if (child.rules) {
+          for (const childRule of child.rules) {
+            if (childRule.parentRuleId === undefined) {
+              childRule.parentRuleId = rule.id;
+            }
+            else
+            {
+            console.log(`TWICEEE: ${this.name}, ${child.name}, ${rule.id}, ${childRule.parentRuleId}`);
+            }
+          }
+        }
+        child.linkParentRules(visited);
+      }
+    }
+  }
+
+  private findReferencedElementsInRule(rule: Rule): SyntaxElement[] {
+    const found: SyntaxElement[] = [];
+    const collect = (val: any, visitedObjects = new Set<any>()) => {
+      if (!val || visitedObjects.has(val)) return;
+      visitedObjects.add(val);
+
+      if (val instanceof SyntaxElement) {
+        found.push(val);
+        return;
+      }
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          collect(item, visitedObjects);
+        }
+      } else if (typeof val === 'object') {
+        for (const k of Object.keys(val)) {
+          collect(val[k], visitedObjects);
+        }
+      }
+    };
+    collect(rule.value);
+    return found;
+  }
+
+  public gatherFollowPatterns(rules: Rule[], startIndex: number, visitedElements: Set<number>): any[] {
     const patterns: any[] = [];
     for (let j = startIndex; j < rules.length; j++) {
       const rule = rules[j];
       const subPatterns = this.collectStartPatterns(rule, visitedElements);
       patterns.push(...subPatterns);
-      if (!this.isOptionalRule(rule)) {
-        break;
-      }
     }
     return patterns;
   }
 
   private collectStartPatterns(rule: Rule, visitedElements: Set<number>): any[] {
     if (!rule) return [];
-    if (rule.type === 'literal' || rule.type === 'beginScope' || rule.type === 'endScope') {
+    if (rule.type === 'literal') {
       return [rule.value];
     }
     if (rule.type === 'regex' || rule.type === 'caseInsensitiveLiteral') {
@@ -1721,7 +1847,7 @@ export class SyntaxElement {
     if (rule.type === 'literalMatch' || rule.type === 'caseInsensitiveLiteralMatch') {
       return [rule.value.pattern];
     }
-    if (rule.type === 'choice' && Array.isArray(rule.value)) {
+    if (RuleHelper.isList(rule) && Array.isArray(rule.value)) {
       const pats: any[] = [];
       for (const choice of rule.value) {
         if (choice instanceof SyntaxElement) {
@@ -1876,14 +2002,18 @@ export class SyntaxElement {
         if (slice.toLowerCase() === source.toLowerCase()) {
           return { success: true, value: GreenNode.create('literal', slice, ruleId, source.length), newOffset: currentOffset + source.length, dependencyLimit: currentOffset + source.length };
         } else {
-          return { success: false, error: `Expected case-insensitive literal: ${source}`, newOffset: currentOffset, dependencyLimit: currentOffset + source.length };
+          const hasOverride = 'overrideName' in pattern && typeof (pattern as any).overrideName === 'string';
+          const errMsg = hasOverride ? `Expected ${(pattern as any).overrideName}` : `Expected case-insensitive literal: ${source}`;
+          return { success: false, error: errMsg, newOffset: currentOffset, dependencyLimit: currentOffset + source.length };
         }
       }
       const match = matchRegex(pattern, text, currentOffset);
       if (match) {
         return { success: true, value: GreenNode.create('token', match[0], ruleId, match[0].length), newOffset: currentOffset + match[0].length, dependencyLimit: currentOffset + match[0].length };
       } else {
-        return { success: false, error: `Regex failed: ${pattern.source}`, newOffset: currentOffset, dependencyLimit: currentOffset + 1 };
+        const hasOverride = 'overrideName' in pattern && typeof (pattern as any).overrideName === 'string';
+        const errMsg = hasOverride ? `Expected ${(pattern as any).overrideName}` : `Expected match for pattern: ${pattern.source}`;
+        return { success: false, error: errMsg, newOffset: currentOffset, dependencyLimit: currentOffset + 1 };
       }
     } else {
       if (text.startsWith(pattern as string, currentOffset)) {
@@ -1892,102 +2022,6 @@ export class SyntaxElement {
         return { success: false, error: `Expected literal: ${pattern}`, newOffset: currentOffset, dependencyLimit: currentOffset + (pattern as string).length };
       }
     }
-  }
-
-  private handleFailure(
-    text: string, 
-    currentOffset: number, 
-    ruleId: number, 
-    errorMsg: string, 
-    memo: Map<string, ParseResult>, 
-    ctx: any, 
-    hasCommitted: boolean, 
-    localMaxOffset: number
-  ): { action: 'break' | 'fail', err: ParseResult, res?: any, dependencyLimit: number } {
-    let err = this.fail(errorMsg, currentOffset, ruleId, ctx);
-    let currentLimit = localMaxOffset;
-
-    // 1. Explicit or auto-derived recovery patterns
-    const isExplicit = !this.recoveryPatterns ? false : true;
-    let derivedRecovery = this.recoveryPatterns;
-    if (!derivedRecovery) {
-      derivedRecovery = this.getAutoRecoveryPatterns(ctx);
-    }
-
-    if (derivedRecovery) {
-      let shouldRecover = hasCommitted;
-      if (!shouldRecover && isExplicit) {
-        let nextCharIndex = currentOffset;
-        while (nextCharIndex < text.length && /\s/.test(text[nextCharIndex])) {
-          nextCharIndex++;
-        }
-        if (nextCharIndex < text.length) {
-          const char = text[nextCharIndex];
-          let isScopeEnd = false;
-          if (ctx.activeScopeEnds && ctx.activeScopeEnds.length > 0) {
-            for (const scopeEnd of ctx.activeScopeEnds) {
-              if (typeof scopeEnd.value === 'string') {
-                if (char === scopeEnd.value[0]) {
-                  isScopeEnd = true;
-                  break;
-                }
-              } else if (scopeEnd.value instanceof RegExp) {
-                const refObj = new RegExp('^(?:' + scopeEnd.value.source + ')', scopeEnd.value.flags);
-                if (refObj.test(text.slice(nextCharIndex))) {
-                  isScopeEnd = true;
-                  break;
-                }
-              } else if (scopeEnd.value instanceof SyntaxElement) {
-                const lits = scopeEnd.value.getTerminalLiterals();
-                if (lits.some(lit => char === lit[0])) {
-                  isScopeEnd = true;
-                  break;
-                }
-              }
-            }
-          }
-          if (!isScopeEnd) {
-            shouldRecover = true;
-          }
-        }
-      }
-
-      if (shouldRecover) {
-        const r = this.attemptRecovery(text, currentOffset, derivedRecovery, memo, ctx);
-        if (r) {
-          currentLimit = Math.max(currentLimit, r.dependencyLimit);
-          const msg = `Syntax Error in ${this.name}: ${err.error} at offset ${currentOffset}. Recovered at offset ${r.newOffset}`;
-          ctx.recoveredErrors.push({ message: msg, offset: currentOffset });
-          const res = GreenNode.create('error_node', msg, 0, r.newOffset - currentOffset);
-          err.dependencyLimit = currentLimit;
-          return { action: 'break', err, res: { newOffset: r.newOffset, node: res }, dependencyLimit: currentLimit };
-        }
-      }
-    } 
-    // 2. Fallback auto-recovery (self-healing)
-    else if (hasCommitted && (this.isAutoHealing || (ctx.activeScopeEnds && ctx.activeScopeEnds.length > 0))) {
-      let fallbackPatterns = this.autoHealingBoundaries;
-      if (!fallbackPatterns) {
-        if (ctx.activeScopeEnds && ctx.activeScopeEnds.length > 0) {
-          fallbackPatterns = ctx.activeScopeEnds.map((e: any) => e.value);
-        } else {
-          fallbackPatterns = ["}", ";", "\n"];
-        }
-      }
-      const r = this.attemptRecovery(text, currentOffset, fallbackPatterns, memo, ctx);
-      if (r && r.newOffset >= currentOffset) {
-        currentLimit = Math.max(currentLimit, r.dependencyLimit);
-        const skippedContent = text.slice(currentOffset, r.newOffset).trim();
-        const cleanSnippet = skippedContent.length > 25 ? skippedContent.slice(0, 22) + '...' : skippedContent;
-        const msg = `Self-Healed: Malformed structure in ${this.name}. Skipped "${cleanSnippet}" to sync at next boundary.`;
-        ctx.recoveredErrors.push({ message: msg, offset: currentOffset });
-        const res = GreenNode.create('error_node', msg, 0, r.newOffset - currentOffset);
-        err.dependencyLimit = currentLimit;
-        return { action: 'break', err, res: { newOffset: r.newOffset, node: res }, dependencyLimit: currentLimit };
-      }
-    }
-    err.dependencyLimit = currentLimit;
-    return { action: 'fail', err, dependencyLimit: currentLimit };
   }
 
   parse(
@@ -2013,15 +2047,11 @@ export class SyntaxElement {
       cached = memo.get(`${this.id}-${offset}`);
     }
 
-    const ctx: any = context || { maxOffset: -1, maxError: null, expectedPaths: [], recoveredErrors: [], activeScopeEnds: [] };
+    const ctx: any = context || { maxOffset: -1, maxError: null, expectedPaths: [], recoveredErrors: [] };
     if (ctx.maxOffset === undefined) ctx.maxOffset = -1;
     if (ctx.maxError === undefined) ctx.maxError = null;
     if (ctx.expectedPaths === undefined) ctx.expectedPaths = [];
     if (ctx.recoveredErrors === undefined) ctx.recoveredErrors = [];
-    if (!ctx.activeScopeEnds) {
-      ctx.activeScopeEnds = [];
-    }
-    const initialActiveScopeEndsLength = ctx.activeScopeEnds.length;
 
     let profilerNode: any = null;
     let profilerStartTime = 0;
@@ -2055,7 +2085,8 @@ export class SyntaxElement {
         if (cached.recoveredErrors) {
           cached.recoveredErrors = cached.recoveredErrors.map(err => ({
             ...err,
-            offset: err.offset + d
+            offset: err.offset + d,
+            recoveredOffset: typeof err.recoveredOffset === 'number' ? err.recoveredOffset + d : undefined
           }));
         }
         cached.astDelta = 0;
@@ -2076,9 +2107,6 @@ export class SyntaxElement {
         ctx.profileStack.pop();
       }
 
-      if (ctx.activeScopeEnds.length > initialActiveScopeEndsLength) {
-        ctx.activeScopeEnds.length = initialActiveScopeEndsLength;
-      }
       return cached;
     }
 
@@ -2111,9 +2139,6 @@ export class SyntaxElement {
       ctx.profileStack.pop();
     }
 
-    if (ctx.activeScopeEnds.length > initialActiveScopeEndsLength) {
-      ctx.activeScopeEnds.length = initialActiveScopeEndsLength;
-    }
     return res;
   }
 
@@ -2132,7 +2157,7 @@ export class SyntaxElement {
     let results: any[] = [];
     let panicked = false;
     let hasCommitted = false;
-    const initialActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
+    let highTension = false;
 
     for (const rule of this.rules) {
       if (panicked) break;
@@ -2156,8 +2181,6 @@ export class SyntaxElement {
         case 'literal':
         case 'caseInsensitiveLiteral':
         case 'regex':
-        case 'beginScope':
-        case 'endScope':
           res = this.evaluatePatternRule(rule, text, currentOffset, memo, ctx, results);
           break;
 
@@ -2216,28 +2239,71 @@ export class SyntaxElement {
           hasCommitted = true;
         }
       } else {
+        currentOffset = res.newOffset;
         if (res.panicked) {
           panicked = true;
-          currentOffset = res.newOffset;
+          
           if (res.newOffset > offset) hasCommitted = true;
           break;
         }
 
-        if (ctx.activeScopeEnds) {
-          ctx.activeScopeEnds.length = initialActiveScopeEndsLength;
-        }
-
-        const rec = this.handleFailure(text, currentOffset, rule.id, res.error || "Match failed", memo, ctx, hasCommitted, localMaxOffset);
-        localMaxOffset = Math.max(localMaxOffset, rec.dependencyLimit);
-
-        if (rec.action === 'break') {
-          results.push(rec.res.node);
-          currentOffset = rec.res.newOffset;
-          panicked = true;
-          break;
-        }
+        const errorMsgToUse = rule.customErrorMessage || res.error || "Match failed";
         
-        return rec.err;
+        let shouldRecover = !highTension;
+        let recovered = false;
+        if (!shouldRecover && ctx.rootElement === this) {
+          shouldRecover = true;
+        }
+
+        if (shouldRecover) {
+
+          let r = this.attemptRecovery(text, currentOffset, rule.recoveryPatterns || [], memo, ctx);
+          if (!r && hasCommitted) {
+            // Walk up static parentRuleId chains
+            let parentId = rule.parentRuleId;
+            const visitedRules = new Set<number>();
+            while (parentId !== undefined && !visitedRules.has(parentId)) {
+              visitedRules.add(parentId);
+              const parentRule = SyntaxElement.ruleRegistry.get(parentId);
+              console.log(parentRule.label);
+              if (parentRule) {
+                if (parentRule.recoveryPatterns && parentRule.recoveryPatterns.length > 0) {
+                  const parentR = this.attemptRecovery(text, currentOffset, parentRule.recoveryPatterns, memo, ctx);
+                  if (parentR) {
+                    r = parentR;
+                    break;
+                  }
+                }
+                parentId = parentRule.parentRuleId;
+              } else {
+                break;
+              }
+            }
+          }
+
+          if (r) {
+            localMaxOffset = Math.max(localMaxOffset, r.dependencyLimit);
+            const matchedOffset = r.newOffset;
+
+            const msg = `Syntax Error in ${this.name}: ${errorMsgToUse} at offset ${currentOffset}. Recovered at offset ${matchedOffset}`;
+            ctx.recoveredErrors.push({ message: msg, offset: currentOffset, recoveredOffset: matchedOffset });
+            const errNode = GreenNode.create('error_node', msg, 0, matchedOffset - currentOffset);
+            results.push(errNode);
+
+            currentOffset = matchedOffset;
+            panicked = false;
+            recovered = true; // Mark as successfully recovered
+          }
+        }
+
+        if (recovered) {
+          if(!hasCommitted) highTension=true;
+          continue; // ✅ Skip returning the fatal error and continue parsing the next sequence rules!
+        }
+
+        const err = this.fail(errorMsgToUse, currentOffset, rule.id, ctx);
+        localMaxOffset = Math.max(localMaxOffset, err.dependencyLimit);
+        return err;
       }
     }
 
@@ -2311,37 +2377,11 @@ export class SyntaxElement {
       if (res.value && (res.value.width > 0 || res.value.type === 'eof')) {
         results.push(res.value);
       }
-      
-      if (rule.type === 'beginScope') {
-        const myIndex = this.rules.indexOf(rule);
-        const subsequentEndRules = this.rules.slice(myIndex + 1).filter(r => r.type === 'endScope');
-        if (subsequentEndRules.length > 0) {
-          const nextEndRule = subsequentEndRules[0];
-          ctx.activeScopeEnds = ctx.activeScopeEnds || [];
-          ctx.activeScopeEnds.push({ ruleId: nextEndRule.id, value: nextEndRule.value });
-        }
-      } else if (rule.type === 'endScope') {
-        if (ctx.activeScopeEnds) {
-          const idx = ctx.activeScopeEnds.findIndex((e: any) => e.ruleId === rule.id);
-          if (idx !== -1) {
-            ctx.activeScopeEnds.splice(idx, 1);
-          }
-        }
-      }
-
       return { success: true, newOffset: res.newOffset, dependencyLimit: res.dependencyLimit };
     } else {
       let offsetToUse = currentOffset;
       if (res.newOffset && res.newOffset > currentOffset) {
         offsetToUse = res.newOffset;
-      }
-      if (rule.type === 'endScope') {
-        if (ctx.activeScopeEnds) {
-          const idx = ctx.activeScopeEnds.findIndex((e: any) => e.ruleId === rule.id);
-          if (idx !== -1) {
-            ctx.activeScopeEnds.splice(idx, 1);
-          }
-        }
       }
       return { success: false, newOffset: offsetToUse, dependencyLimit: res.dependencyLimit, error: res.error };
     }
@@ -2359,18 +2399,16 @@ export class SyntaxElement {
     const patterns = rule.value as (string | RegExp | SyntaxElement)[];
     let matched = false;
     let maxFailedOffset = currentOffset;
-    let choiceErrorMsg = "None of the choices matched";
+    let choiceErrorMsg = `Expected one of: ${patterns.map(p => SyntaxElement.getPatternDescription(p)).join(", ")}`;
     let localMaxOffset = currentOffset;
 
     const baseErrorsLength = ctx.recoveredErrors.length;
-    const baseActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
 
     let backupMatch: { 
       resVal: any; 
       pattern: any;
       newOffset: number; 
       errors: ParseError[]; 
-      activeScopeEndsLength: number;
     } | null = null;
 
     for (const pattern of patterns) {
@@ -2393,14 +2431,10 @@ export class SyntaxElement {
               resVal: res.value,
               pattern: pattern,
               newOffset: res.newOffset,
-              errors: ctx.recoveredErrors.slice(beforeBranchErrors),
-              activeScopeEndsLength: ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0
+              errors: ctx.recoveredErrors.slice(beforeBranchErrors)
             };
           }
           ctx.recoveredErrors.length = beforeBranchErrors;
-          if (ctx.activeScopeEnds) {
-            ctx.activeScopeEnds.length = baseActiveScopeEndsLength;
-          }
         }
       } else {
         if (res.newOffset && res.newOffset > maxFailedOffset) {
@@ -2408,9 +2442,6 @@ export class SyntaxElement {
           choiceErrorMsg = res.error || choiceErrorMsg;
         }
         ctx.recoveredErrors.length = baseErrorsLength;
-        if (ctx.activeScopeEnds) {
-          ctx.activeScopeEnds.length = baseActiveScopeEndsLength;
-        }
       }
     }
 
@@ -2420,9 +2451,6 @@ export class SyntaxElement {
       }
       currentOffset = backupMatch.newOffset;
       ctx.recoveredErrors.push(...backupMatch.errors);
-      if (ctx.activeScopeEnds) {
-        ctx.activeScopeEnds.length = backupMatch.activeScopeEndsLength;
-      }
       matched = true;
     }
 
@@ -2541,7 +2569,6 @@ export class SyntaxElement {
       let matchedRes: any = null;
       let branchNewOffset = currentOffset;
       const beforeLoopErrorsLength = ctx.recoveredErrors.length;
-      const baseActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
 
       if (isArray) {
         for (const pattern of rule.value) {
@@ -2554,9 +2581,6 @@ export class SyntaxElement {
             break;
           } else {
             ctx.recoveredErrors.length = beforeLoopErrorsLength;
-            if (ctx.activeScopeEnds) {
-              ctx.activeScopeEnds.length = baseActiveScopeEndsLength;
-            }
           }
         }
       } else {
@@ -2655,7 +2679,10 @@ export class SyntaxElement {
       }
       return { success: true, newOffset: currentOffset, dependencyLimit: localMaxOffset, hasCommittedUpdate: true };
     } else {
-      return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: "Expected at least one match" };
+      const expected = Array.isArray(rule.value) 
+        ? rule.value.map(p => SyntaxElement.getPatternDescription(p)).join(" or ") 
+        : SyntaxElement.getPatternDescription(rule.value);
+      return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: `Expected at least one occurrence of ${expected}` };
     }
   }
 
@@ -2773,7 +2800,6 @@ export class SyntaxElement {
     const parsePatternOrArray = (pat: any, offset: number) => {
       const isPatArray = Array.isArray(pat);
       const beforeErrLength = ctx.recoveredErrors.length;
-      const beforeActiveScopeEndsLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
 
       if (isPatArray) {
         for (const subPat of pat) {
@@ -2783,9 +2809,6 @@ export class SyntaxElement {
             return { success: true, res };
           }
           ctx.recoveredErrors.length = beforeErrLength;
-          if (ctx.activeScopeEnds) {
-            ctx.activeScopeEnds.length = beforeActiveScopeEndsLength;
-          }
         }
         return { success: false, res: null };
       } else {
@@ -2801,7 +2824,6 @@ export class SyntaxElement {
     if (allowLeading) {
       const beforeLeadSepOffset = currentOffset;
       const beforeLeadSepErrorsLength = ctx.recoveredErrors.length;
-      const beforeLeadSepScopesLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
 
       const resSep = parsePatternOrArray(separator, currentOffset);
       if (resSep.success && resSep.res) {
@@ -2820,9 +2842,6 @@ export class SyntaxElement {
         } else {
           // If the item failed after the leading separator, backtrack completely and try parsing item directly
           ctx.recoveredErrors.length = beforeLeadSepErrorsLength;
-          if (ctx.activeScopeEnds) {
-            ctx.activeScopeEnds.length = beforeLeadSepScopesLength;
-          }
         }
       }
     }
@@ -2831,7 +2850,10 @@ export class SyntaxElement {
       // Parse first item directly
       const resItem = parsePatternOrArray(item, currentOffset);
       if (!resItem.success || !resItem.res) {
-        return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: "Expected first item in separated list" };
+        const expectedItem = Array.isArray(item) 
+          ? item.map(p => SyntaxElement.getPatternDescription(p)).join(" or ") 
+          : SyntaxElement.getPatternDescription(item);
+        return { success: false, newOffset: currentOffset, dependencyLimit: localMaxOffset, error: `Expected first item (${expectedItem}) in separated list` };
       }
       if (resItem.res.value && (resItem.res.value.width > 0 || resItem.res.value.type === 'eof')) {
         matches.push(resItem.res.value);
@@ -2843,15 +2865,11 @@ export class SyntaxElement {
     while (currentOffset < text.length) {
       const beforeSepOffset = currentOffset;
       const beforeSepErrorsLength = ctx.recoveredErrors.length;
-      const beforeSepScopesLength = ctx.activeScopeEnds ? ctx.activeScopeEnds.length : 0;
 
       // Parse separator
       const resSep = parsePatternOrArray(separator, currentOffset);
       if (!resSep.success || !resSep.res) {
         ctx.recoveredErrors.length = beforeSepErrorsLength;
-        if (ctx.activeScopeEnds) {
-          ctx.activeScopeEnds.length = beforeSepScopesLength;
-        }
         break;
       }
 
@@ -2877,9 +2895,6 @@ export class SyntaxElement {
         } else {
           // Backtrack separator parsing and stop
           ctx.recoveredErrors.length = beforeSepErrorsLength;
-          if (ctx.activeScopeEnds) {
-            ctx.activeScopeEnds.length = beforeSepScopesLength;
-          }
         }
         break;
       }
@@ -2953,10 +2968,13 @@ export class SyntaxElement {
     ruleId: number, 
     context?: any
   ): ParseResult {
+    const rule = SyntaxElement.ruleRegistry.get(ruleId);
+    const finalMessage = (rule && rule.customErrorMessage) ? rule.customErrorMessage : message;
+
     const error = {
       ast: null,
       newOffset: offset,
-      error: message,
+      error: finalMessage,
       ruleId,
       dependencyLimit: offset + 1
     };
@@ -2965,69 +2983,15 @@ export class SyntaxElement {
       if (offset > context.maxOffset) {
         context.maxOffset = offset;
         context.maxError = error;
-        context.expectedPaths = [message];
+        context.expectedPaths = [finalMessage];
       } else if (offset === context.maxOffset) {
-        if (!context.expectedPaths.includes(message)) {
-          context.expectedPaths.push(message);
+        if (!context.expectedPaths.includes(finalMessage)) {
+          context.expectedPaths.push(finalMessage);
         }
       }
     }
 
     return error;
-  }
-
-  getAutoRecoveryPatterns(ctx: any): (string | RegExp | SyntaxElement)[] {
-    const patterns: (string | RegExp | SyntaxElement)[] = [];
-    
-    for (let i = this.rules.length - 1; i >= 0; i--) {
-      const r = this.rules[i];
-      if (r.type === 'literal' && typeof r.value === 'string') {
-        const val = r.value;
-        //if (val === ";" || val === "}" || val === "]" || val.startsWith("END")) {
-          if (!patterns.includes(val)) patterns.push(val);
-          console.log("literal terminal pattern : " + val);
-        //}
-        break;
-      } else if (r.type === 'endScope' && typeof r.value === 'string') {
-        const val = r.value;
-        if (!patterns.includes(val)) patterns.push(val);
-        break;
-      } else if (r.type === 'choice' && Array.isArray(r.value)) {
-        for (const choiceVal of r.value) {
-          if (typeof choiceVal === 'string' && (choiceVal === ";" || choiceVal === "}" || choiceVal === "]" || choiceVal.startsWith("END"))) {
-            if (!patterns.includes(choiceVal)) patterns.push(choiceVal);
-          }
-        }
-        break;
-      } else if (RuleHelper.hasOptionalOrTriviaOrLoop(r)) {
-        continue;
-      } else {
-        break;
-      }
-    }
-    
-    const hasNewlineRegExp = patterns.some(p => p instanceof RegExp && p.source.includes("\\n"));
-    if (!hasNewlineRegExp) {
-      patterns.push(/\r?\n/);
-    }
-
-    if (ctx.activeScopeEnds && ctx.activeScopeEnds.length > 0) {
-      for (const scopeEnd of ctx.activeScopeEnds) {
-        if (typeof scopeEnd.value === 'string') {
-          if (!patterns.includes(scopeEnd.value)) {
-            patterns.push(scopeEnd.value);
-          }
-        } else if (scopeEnd.value instanceof SyntaxElement) {
-          for (const lit of scopeEnd.value.getTerminalLiterals()) {
-            if (!patterns.includes(lit)) {
-              patterns.push(lit);
-            }
-          }
-        }
-      }
-    }
-
-    return patterns;
   }
 
   getTerminalLiterals(visited: Set<number> = new Set()): string[] {
@@ -3117,9 +3081,6 @@ export function unwrapToken(pattern: any): any {
   if (pattern && typeof pattern === 'object' && '__isTokenMarker' in pattern) {
     return unwrapToken(pattern.pattern);
   }
-  if (pattern && typeof pattern === 'object' && 'type' in pattern && (pattern.type === 'beginScope' || pattern.type === 'endScope')) {
-    return unwrapToken(pattern.value);
-  }
   return pattern;
 }
 
@@ -3140,6 +3101,25 @@ export function InlinedElement(): SyntaxElement {
   const el = new SyntaxElement("Inlined");
   el.Inline();
   return el;
+}
+
+export class NamedRegExp extends RegExp {
+  public overrideName: string;
+  constructor(pattern: RegExp | string, name: string) {
+    if (pattern instanceof RegExp) {
+      super(pattern.source, pattern.flags);
+    } else {
+      super(pattern);
+    }
+    this.overrideName = name;
+  }
+}
+
+export function Regex(pattern: RegExp | string, name?: string): RegExp {
+  if (name !== undefined) {
+    return new NamedRegExp(pattern, name);
+  }
+  return pattern instanceof RegExp ? pattern : new RegExp(pattern);
 }
 
 export { findDiff } from './utils';

@@ -103,9 +103,7 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
         rule.type === 'leadingTrivia' ||
         rule.type === 'trailingTrivia' ||
         rule.type === 'not' ||
-        rule.type === 'assert' ||
-        rule.type === 'beginScope' ||
-        rule.type === 'endScope'
+        rule.type === 'assert'
       ) {
         addCaller(rule.value, el);
       } else if (rule.type === 'separatedBy' && rule.value) {
@@ -336,134 +334,6 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
           message: `Enum-mapped element contains a non-literal rule "${regexPattern}".`,
           suggestion: "Enums should strictly represent constant string keywords. Consider separating the rule into its own Node (e.g. ExpectsOneOf(builtin_type, custom_identifier))."
         });
-      }
-    }
-
-    // Rule E: Balanced Scopes (Warning)
-    const hasBegin = el.rules.some(r => r.type === 'beginScope');
-    const hasEnd = el.rules.some(r => r.type === 'endScope');
-    if (hasBegin !== hasEnd) {
-      diagnostics.push({
-        type: "warning",
-        nodeName: elName,
-        message: `Mismatched Scope block helpers: ${hasBegin ? "BeginScope is used without an EndScope" : "EndScope is used without a BeginScope"}.`,
-        suggestion: "Ensure scope nodes declare both BeginScope and EndScope to reliably maintain the scope boundaries."
-      });
-    }
-
-    // Rule F: Scope End Boundary Conflict (Warning)
-    const beginScopeIdx = el.rules.findIndex(r => r.type === 'beginScope');
-    const endScopeIdx = el.rules.findIndex(r => r.type === 'endScope');
-    if (beginScopeIdx !== -1 && endScopeIdx !== -1 && beginScopeIdx < endScopeIdx) {
-      const endRule = el.rules[endScopeIdx];
-      const endPattern = endRule.value; // string, RegExp, or token marker
-      
-      // Extract delimiter string if possible
-      let delimStr: string | null = null;
-      if (typeof endPattern === 'string') {
-        delimStr = endPattern;
-      } else if (endPattern && typeof endPattern === 'object' && 'pattern' in endPattern) {
-        const unwrapped = (endPattern as any).pattern;
-        if (typeof unwrapped === 'string') {
-          delimStr = unwrapped;
-        }
-      } else if (endPattern instanceof SyntaxElement) {
-        const lits = endPattern.getTerminalLiterals();
-        if (lits.length > 0) {
-          delimStr = lits[0];
-        }
-      }
-
-      if (delimStr) {
-        // Collect patterns inside body elements between begin and end scope
-        const getReachablePatterns = (rule: any): { pattern: any; path: string }[] => {
-          const results: { pattern: any; path: string }[] = [];
-          const vis = new Set<SyntaxElement>();
-          
-          function collect(val: any, currentPath: string) {
-            if (!val) return;
-            if (val instanceof SyntaxElement) {
-              if (vis.has(val)) return;
-              vis.add(val);
-              // Avoid scanning inside elements that have bounded balanced scopes
-              if (val.rules) {
-                const hasBegin = val.rules.some((r: any) => r.type === 'beginScope');
-                const hasEnd = val.rules.some((r: any) => r.type === 'endScope');
-                if (hasBegin && hasEnd) {
-                  return;
-                }
-              }
-              for (const r of val.rules) {
-                if (r.type === 'beginScope' || r.type === 'endScope' || r.type === 'not') {
-                  continue;
-                }
-                collect(r.value, `${currentPath} -> Node(${val.name})`);
-              }
-            } else if (Array.isArray(val)) {
-              for (let idx = 0; idx < val.length; idx++) {
-                collect(val[idx], `${currentPath}[choice ${idx + 1}]`);
-              }
-            } else if (typeof val === 'string') {
-              results.push({ pattern: val, path: `${currentPath} (literal "${val}")` });
-            } else if (val instanceof RegExp) {
-              results.push({ pattern: val, path: `${currentPath} (regex /${val.source}/)` });
-            } else if (val && typeof val === 'object' && 'pattern' in val) {
-              const unwrapped = val.pattern;
-              if (typeof unwrapped === 'string') {
-                results.push({ pattern: unwrapped, path: `${currentPath} (token "${unwrapped}")` });
-              } else if (unwrapped instanceof RegExp) {
-                results.push({ pattern: unwrapped, path: `${currentPath} (token /${unwrapped.source}/)` });
-              } else {
-                results.push({ pattern: unwrapped, path: `${currentPath} (token)` });
-              }
-            }
-          }
-          
-          const initialPath = `Rule(${rule.type})`;
-          if (rule.type === 'choice') {
-            collect(rule.value, initialPath);
-          } else if (rule.type !== 'beginScope' && rule.type !== 'endScope' && rule.type !== 'not') {
-            collect(rule.value, initialPath);
-          }
-          return results;
-        };
-
-        for (let i = beginScopeIdx + 1; i < endScopeIdx; i++) {
-          const bodyRule = el.rules[i];
-          const bodyPatterns = getReachablePatterns(bodyRule);
-          for (const item of bodyPatterns) {
-            const pat = item.pattern;
-            const path = item.path;
-            let conflict = false;
-            let reason = "";
-            
-            if (typeof pat === 'string') {
-              if (pat === delimStr || delimStr.startsWith(pat)) {
-                conflict = true;
-                reason = `literal pattern "${pat}" directly matches or overlaps with EndScope delimiter "${delimStr}"`;
-              }
-            } else if (pat instanceof RegExp) {
-              try {
-                // If the regex can match and consume at least 1 character of the delimiter
-                const anchored = new RegExp('^(?:' + pat.source + ')');
-                const m = anchored.exec(delimStr);
-                if (m && m[0].length > 0) {
-                  conflict = true;
-                  reason = `regular expression ${pat.source} matches and consumes the EndScope delimiter "${delimStr}"`;
-                }
-              } catch (e) {}
-            }
-            
-            if (conflict) {
-              diagnostics.push({
-                type: "warning",
-                nodeName: elName,
-                message: `Potential infinite loop or boundary overlap: Sibling rule can consume the EndScope delimiter.\nCulprit Sibling Path: ${path}\nConflict detail: ${reason}`,
-                suggestion: `To prevent parser lockup or eating the close delimiter, refine your body pattern (e.g. use [^${delimStr}] instead of wildcard matching), balance it using BeginScope/EndScope helpers on nested elements, or prefix your body block with a negative lookahead "Not(Token('${delimStr}'))" guard.`
-              });
-            }
-          }
-        }
       }
     }
 
@@ -747,15 +617,125 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
     }
 
     // New Custom Checking: LiteralMatch usage and boundary/character set overlapping triggers
+    interface CollectedLiteralMatch {
+      literal: string;
+      pattern: RegExp;
+      isCaseInsensitive: boolean;
+      rule: any;
+      ruleIndex: number;
+      nested: boolean;
+    }
+
+    const collectedMatches: CollectedLiteralMatch[] = [];
+
+    function collectLiteralMatchesFromValue(val: any): { literal: string, pattern: RegExp, isCaseInsensitive: boolean }[] {
+      const list: { literal: string, pattern: RegExp, isCaseInsensitive: boolean }[] = [];
+      if (!val) return list;
+
+      if (typeof val === 'object' && val !== null) {
+        if ('__isLiteralExp' in val) {
+          const lit = val.literal;
+          const pat = val.pattern;
+          let litVal = "";
+          let isCaseInsensitive = false;
+          if (lit instanceof RegExp) {
+            litVal = lit.source;
+            isCaseInsensitive = true;
+          } else {
+            litVal = String(lit);
+          }
+          const regex = pat instanceof RegExp ? pat : new RegExp(pat);
+          list.push({ literal: litVal, pattern: regex, isCaseInsensitive });
+          return list;
+        }
+
+        if ('literal' in val && 'pattern' in val && typeof val.literal === 'string' && val.pattern instanceof RegExp) {
+          list.push({
+            literal: val.literal,
+            pattern: val.pattern,
+            isCaseInsensitive: false
+          });
+          return list;
+        }
+
+        if (Array.isArray(val)) {
+          for (const item of val) {
+            list.push(...collectLiteralMatchesFromValue(item));
+          }
+        } else {
+          for (const key of Object.keys(val)) {
+            if (key === 'item' || key === 'separator' || key === 'pattern' || key === 'value' || key === 'literal') {
+              if (val[key] && typeof val[key] === 'object') {
+                list.push(...collectLiteralMatchesFromValue(val[key]));
+              }
+            }
+          }
+        }
+      }
+      return list;
+    }
+
     for (let i = 0; i < el.rules.length; i++) {
       const rule = el.rules[i];
       if (rule.type === 'literalMatch' || rule.type === 'caseInsensitiveLiteralMatch') {
         const literal = rule.value?.literal;
         const pattern = rule.value?.pattern;
+        if (typeof literal === 'string' && pattern instanceof RegExp) {
+          collectedMatches.push({
+            literal,
+            pattern,
+            isCaseInsensitive: rule.type === 'caseInsensitiveLiteralMatch',
+            rule,
+            ruleIndex: i,
+            nested: false
+          });
+        }
+      } else {
+        const nestedList = collectLiteralMatchesFromValue(rule.value);
+        for (const nm of nestedList) {
+          collectedMatches.push({
+            literal: nm.literal,
+            pattern: nm.pattern,
+            isCaseInsensitive: nm.isCaseInsensitive,
+            rule,
+            ruleIndex: i,
+            nested: true
+          });
+        }
+      }
+    }
 
-        if (literal && pattern instanceof RegExp) {
-          const prevRule = el.rules[i - 1];
-          const nextRule = el.rules[i + 1];
+    for (const matchInfo of collectedMatches) {
+      const { literal, pattern, isCaseInsensitive, nested, ruleIndex } = matchInfo;
+
+      if (literal && pattern instanceof RegExp) {
+        if (typeof literal === 'string') {
+          const match = matchRegex(pattern, literal, 0);
+          let isCompatible = false;
+          if (match) {
+            if (!isCaseInsensitive) {
+              if (match[0] === literal) {
+                isCompatible = true;
+              }
+            } else {
+              if (match[0].toLowerCase() === literal.toLowerCase()) {
+                isCompatible = true;
+              }
+            }
+          }
+          if (!isCompatible) {
+            diagnostics.push({
+              type: "error",
+              nodeName: elName,
+              message: `Impossible Literal Match: The literal match rule for "${literal}" cannot satisfy the specified Regex pattern /${pattern.source}/${pattern.flags}. Any string matched by the Regex pattern will not equal "${literal}".`,
+              suggestion: `Update either the literal "${literal}" or the regex pattern so that the regex matches the literal exactly starting at offset 0.`
+            });
+          }
+        }
+
+        if (!nested) {
+          const prevRule = el.rules[ruleIndex - 1];
+          const nextRule = el.rules[ruleIndex + 1];
           const isTokenized = prevRule?.type === 'leadingTrivia' && nextRule?.type === 'trailingTrivia';
 
           if (!isTokenized) {
@@ -766,28 +746,27 @@ export function runGrammarDiagnostics(rootElement: SyntaxElement | null): Diagno
               suggestion: `Wrap key phrases/boundary matchers in a Token: use .Token(LiteralMatch(/${literal}/i, id_exp)) or .LiteralMatch(Token(/${literal}/i, id_exp)) to handle trivias.`
             });
           }
+        }
 
-          // Compute starting idx of subsequent rules in the sequence
-          const nextIdx = isTokenized ? i + 2 : i + 1;
+        const prevRuleForSubsequent = el.rules[ruleIndex - 1];
+        const nextRuleForSubsequent = el.rules[ruleIndex + 1];
+        const isSelfTokenized = prevRuleForSubsequent?.type === 'leadingTrivia' && nextRuleForSubsequent?.type === 'trailingTrivia';
+        const nextIdx = isSelfTokenized ? ruleIndex + 2 : ruleIndex + 1;
 
-          // Collect all subsequent rules in the current element sequence
-          // ignoring standard trivia rules for cleaner matching
-          const subsequentRules = el.rules.slice(nextIdx).filter(r => r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia');
+        const subsequentRules = el.rules.slice(nextIdx).filter(r => r.type !== 'leadingTrivia' && r.type !== 'trailingTrivia');
 
-          if (subsequentRules.length > 0) {
-            // Find the first structural rule
-            const firstSubsequent = subsequentRules[0];
-            const nextTriggers = getStartingPatterns(firstSubsequent);
-            const overlaps = nextRuleOverlapsBoundary(nextTriggers, pattern, literal);
+        if (subsequentRules.length > 0) {
+          const firstSubsequent = subsequentRules[0];
+          const nextTriggers = getStartingPatterns(firstSubsequent);
+          const overlaps = nextRuleOverlapsBoundary(nextTriggers, pattern, literal);
 
-            if (!overlaps) {
-              diagnostics.push({
-                type: "info",
-                nodeName: elName,
-                message: `Avoid unnecessary boundary checks: The next rule starts with triggers [${nextTriggers.strings.slice(0, 3).map(s => `"${s}"`).join(", ")}${nextTriggers.strings.length > 3 ? ", ..." : ""}] which do NOT match the identifier boundary /^[a-zA-Z_]/. Since they cannot blend, a full LiteralMatch is redundant here.`,
-                suggestion: `Simplify the parser and speed up matching by replacing this rule with a direct token call, like .Token(/${literal}/i) or .Token("${literal}").`
-              });
-            }
+          if (!overlaps) {
+            diagnostics.push({
+              type: "info",
+              nodeName: elName,
+              message: `Avoid unnecessary boundary checks: The next rule starts with triggers [${nextTriggers.strings.slice(0, 3).map(s => `"${s}"`).join(", ")}${nextTriggers.strings.length > 3 ? ", ..." : ""}] which do NOT match the identifier boundary /^[a-zA-Z_]/. Since they cannot blend, a full LiteralMatch is redundant here.`,
+              suggestion: `Simplify the parser and speed up matching by replacing this rule with a direct token call, like .Token(/${literal}/i) or .Token("${literal}").`
+            });
           }
         }
       }
@@ -832,7 +811,7 @@ function getStartingPatterns(ruleValue: any, visited = new Set<any>()): { string
     if ('type' in unwrapped) {
       const type = unwrapped.type;
       const value = unwrapped.value;
-      if (type === 'literal' || type === 'beginScope' || type === 'endScope') {
+      if (type === 'literal') {
         if (typeof value === 'string') {
           result.strings.push(value);
         } else if (value instanceof RegExp) {

@@ -24,7 +24,7 @@ if (typeof window !== 'undefined') {
 import('prismjs/components/prism-clike');
 import('prismjs/components/prism-javascript');
 import 'prismjs/themes/prism-tomorrow.css';
-import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, generateFullTypeScript, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, InlinedElement } from './lib/engine';
+import { SyntaxElement, Sort, ParseResult, IncrementalParser, CSTQuery, QueryMatch, ScopeBuilder, LexicalScope, SymbolDefinition, SymbolReference, generateFullCSharp, generateModularCSharp, generateFullTypeScript, wrapASTTransformerWithIncrementalCache, findDiff, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, InlinedElement, Regex } from './lib/engine';
 import { cn } from './lib/utils';
 import { runGrammarDiagnostics, Diagnostic } from './lib/diagnostics';
 import { ProjectLibraryModal } from './components/ProjectLibraryModal';
@@ -773,13 +773,13 @@ export default function App() {
       SyntaxElement.Reset();
       // Execute the grammar code
       // We provide SyntaxElement and the Sort helper to the execution context
-      const codeToRun = `(function(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, InlinedElement) {
+      const codeToRun = `(function(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, InlinedElement, Regex) {
         ${debouncedGrammarCode}
         return typeof root !== 'undefined' ? root : null;
       })\n//# sourceURL=grammar-code.js`;
       
       const executionFunc = eval(codeToRun);
-      const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, InlinedElement);
+      const root = executionFunc(SyntaxElement, Sort, Token, DefaultLeadingTrivia, DefaultTrailingTrivia, LiteralMatch, Element, InlinedElement, Regex);
       if (root instanceof SyntaxElement) {
         root.autoInjectLoopBoundaries();
         setRootElement(root);

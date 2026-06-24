@@ -31,6 +31,7 @@ Getting the boundary checks and trivia skipping right is the single most importa
 ### 2. `LiteralMatch` (Builder `.LiteralMatch(literal, pattern)` or Global `LiteralMatch(literal, pattern)`)
 * **Core Job:** Matches words or patterns while checking boundaries (e.g. making sure a keyword doesn't blend into a subsequent identifier character).
 * **When to use:** **Strictly ONLY** if the next rule has an overlapping character set that could blend with/encompass the current match. 
+* **Regex Compatibility:** The literal string specified must exactly satisfy/match the provided boundary check regex starting at offset 0. If it does not, a grammar diagnostic error ("Impossible Literal Match") will be raised to protect against matching deadlock.
 * **Example:** Matching `/Properties/i` immediately preceding an identifier block `/^[a-zA-Z_]/` (e.g. `PropertiesFoo` could be misconstrued). We use `.LiteralMatch(/Properties/i, id_exp)` to assert the identifier boundary.
 * **Anti-Pattern (Avoid):** If the next rule matches non-overlapping characters (like `{`, `(`, or layout whitespaces), a boundary checker is completely redundant. Replace it with a simple, highly optimized `.Token` call referencing the raw pattern:
   * ❌ *Incorrect (Redundant boundary check):* `.LiteralMatch(/ZWrite/i, id_exp).Expects(onOffValue)` (and trivia is ignored too)
@@ -40,6 +41,11 @@ Getting the boundary checks and trivia skipping right is the single most importa
 ### 3. `Literal` (Builder `.Literal(value)` or Global `LiteralMatch` with plain values)
 * **Core Job:** Strictly matches characters value-for-value.
 * **When to use:** Used when exact character pairing is required, and we do not care about boundary character sets on the right side of the parsed window.
+
+### 4. `Regex` (Global `Regex(pattern, name?)`)
+* **Core Job:** Compiles a regular expression, optionally naming it so that parser error messages read as a user-friendly term instead of the raw pattern syntax.
+* **When to use:** Use when matching patterns like identifiers, numeric values, string literals, etc. and want error messages to be extremely readable.
+* **Example:** `Regex(/[a-zA-Z_][a-zA-Z0-9_]*/, "Identifier")` will make error messages output `"Expected Identifier"` instead of `"Expected match for pattern: [a-zA-Z_][a-zA-Z0-9_]*"`.
 
 ---
 
@@ -60,6 +66,7 @@ Avoid legacy methods and hallucinations. Here is the exact public API contract o
 | **`SeparatedBy(item, separator, optionsOrTrailing?, allowLeading?)`** | Sequence matcher for items separated by a specific separator. Supports trailing/leading separators and array-choice items. | `.SeparatedBy(args, Token(","), { allowTrailing: true })` |
 | **`SeparatedByToken(...)`** | Symmetrical-trivia-aware separated-by list matcher. Automatically wraps item lists and separator in `Token()`. | `.SeparatedByToken([id, num], ",", { allowTrailing: true })` |
 | **`Not(pattern, ...additional?)`** | Negative lookahead assertion check (prohibits the pattern from existing at pointer). | `.Not(Token("/"))` |
+| **`Regex(pattern, name?)`** | Create a named or standardized regular expression pattern to enhance parser recovery error messages. | `Regex(/[a-zA-Z_][a-zA-Z0-9_]*/, "Identifier")` |
 
 ### 2. Scope and Recovery Setup
 
@@ -67,6 +74,7 @@ Avoid legacy methods and hallucinations. Here is the exact public API contract o
 | :--- | :--- | :--- |
 | **`BeginScope(pattern)`** | Declares a nesting bracket/structure entrance (registers matching scopes for folds/brace highlighting). | `.BeginScope(Token("{"))` |
 | **`EndScope(pattern)`** | Declares a nesting bracket/structure exit. | `.EndScope(Token("}"))` |
+| **`WithError(errorMessage)`** | Attaches a custom, user-defined manual error message to the last defined rule on the element. | `.Expects(CurlyOpen).WithError("Missing opening curly brace '{'")` |
 | **`RecoverWith(...anchors)`** | Establishes synchronization anchors to hop to when parsing failures occur. | `.RecoverWith(";")` |
 | **`SelfHeals(...bounds)`** | Standard structural boundary healer. Skips inner errors to recover at the boundary. | `.SelfHeals("}")` |
 | **`AsNode(nodeName)`** | Wraps the element into a concrete nodeset of the CST output under `nodeName`. | `new SyntaxElement("block").AsNode("BlockNode")` |
@@ -242,4 +250,29 @@ Just like `ZeroOrMore` and `OneOrMore`, the `item` parameter can be an **Array o
 const listWithChoices = new SyntaxElement("config")
   .SeparatedByToken([stringLiteral, numericLiteral, identifier], ",");
 ```
+
+---
+
+## 🛡️ Automatic error-recovery & Self-Healing
+
+The parser includes robust, industry-grade error recovery and panic-mode synchronization strategies to ensure that single errors do not cause catastrophic parse failures (i.e., avoiding the "Fatal Parsing Failure"):
+
+### 1. Root-Level Automatic Fallback Recovery
+If a syntax error occurs on the very first token/rule of the root (top-level) element, the parser automatically attempts self-healing recovery even if no explicit commit has occurred yet. This ensures that the editor retains a structured AST (with embedded error nodes) for the rest of the document instead of failing entirely.
+
+### 2. Prioritized Terminal & Future Target-Ordered Scanning
+When a rule fails inside an element, the recovery engine automatically performs forward-scanning analysis:
+* It reads ahead to collect succeeding **expected/required terminal patterns** of the current element.
+* It merges these expected future terminals with generic boundary anchors (e.g. `;`, `}`, `\n` or explicit `.RecoverWith()` anchors), keeping the strict future-required patterns **first**.
+* This prioritizes synchronization on precise matching tokens (such as a string quote `"` or opening curly brace `{`) instead of blindly hopping over code structures to distant line endings or whitespaces.
+
+### 3. ParseError Representation and Squiggly Ranges
+All soft recovered syntax errors are pushed into `ctx.recoveredErrors` as a `ParseError` object conforming to the following structure:
+```typescript
+export interface ParseError {
+  message: string;
+  offset: number; // The exact offset where the parsing error began (fail offset)
+  recoveredOffset?: number; // The exact offset where synchronization successfully completed (recovered offset)
+}
 ```
+This enables the UI and IDE tools to highlight/squiggle the exact unparsed range from `offset` directly to `recoveredOffset`, instead of falling back to single word bounds.

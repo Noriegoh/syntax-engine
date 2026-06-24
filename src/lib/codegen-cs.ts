@@ -1,4 +1,4 @@
-import { SyntaxElement } from './syntax-element';
+import { SyntaxElement, unwrapToken } from './syntax-element';
 import { ScopeBuilder } from './scope';
 import { 
   sanitize, 
@@ -1369,7 +1369,6 @@ namespace ${namespaceName}
     {
         public int MaxOffset { get; set; } = -1;
         public List<ParseError> RecoveredErrors { get; set; } = new List<ParseError>();
-        public List<string> ActiveScopeEnds { get; set; } = new List<string>();
         private int _cachedLineTextOffset = -1;
         private int _cachedLineTextLength = -1;
         private ReadOnlyMemory<char> _cachedLineText = ReadOnlyMemory<char>.Empty;
@@ -2774,6 +2773,23 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
   const rootName = sanitize(rootElement.name);
   const regexFields: string[] = [];
   const speculativeRegexes: string[] = [];
+
+  function getRecoveryErrorExpr(rule: any, defaultMsgExpr: string): string {
+    if (rule.customErrorMessage) {
+      return `"${escapeString(rule.customErrorMessage)}"`;
+    }
+    if (rule.type === 'regex' || rule.type === 'caseInsensitiveLiteral') {
+      const pat = rule.value;
+      if (pat && typeof pat === 'object') {
+        if ('overrideName' in pat && typeof pat.overrideName === 'string') {
+          return `"${escapeString(`Expected ${pat.overrideName}`)}"`;
+        }
+        return `"${escapeString(`Expected match for pattern: ${pat.source}`)}"`;
+      }
+    }
+    return defaultMsgExpr;
+  }
+  
   const patternToVarName = new Map<string, string>();
   const patternToDfaMethodName = new Map<string, string>();
   // Pre-scan all RegExps to group by pattern key and assign beautiful shared names
@@ -2816,8 +2832,6 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
         rule.type === 'zeroOrMore' ||
         rule.type === 'oneOrMore' ||
         rule.type === 'not' ||
-        rule.type === 'beginScope' ||
-        rule.type === 'endScope' ||
         rule.type === 'assert'
       ) {
         if (rule.value instanceof RegExp) {
@@ -2870,36 +2884,14 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
   const parserMethods = elements.map(el => {
     const elName = sanitize(el.name);
     const childElements = new Set<string>();
-    // Build recovery boundaries list
-    const boundaries: string[] = [];
-    if (el.recoveryPatterns) {
-      for (const p of el.recoveryPatterns) {
-        if (typeof p === 'string') boundaries.push(p);
-      }
-    }
-    if (el.isAutoHealing) {
-      const custom = el.autoHealingBoundaries || [";", "}", "\n"];
-      for (const p of custom) {
-        if (typeof p === 'string') boundaries.push(p);
-      }
-    }
-    const boundariesExpr = boundaries.length > 0
-      ? `new List<string> { ${boundaries.map(b => `"${escapeString(b)}"`).join(", ")} }`
-      : "null";
+
     // Flatten rules inside sequence into linear Allman C# code
-    const ruleBlocks = el.rules.map(rule => {
+    const ruleBlocks = el.rules.map((rule, ruleIndex) => {
       const ruleId = rule.id;
-      let ruleIsStructural = true;
-      if (
-        rule.type === 'leadingTrivia' ||
-        rule.type === 'trailingTrivia' ||
-        rule.type === 'optional' ||
-        rule.type === 'zeroOrMore' ||
-        rule.type === 'not' ||
-        rule.type === 'assert'
-      ) {
-        ruleIsStructural = false;
-      }
+      
+      const boundariesExpr = rule.recoveryPatterns.length > 0
+        ? `new List<string> { ${rule.recoveryPatterns.map(b => `"${escapeString(b)}"`).join(", ")} }`
+        : "null";
       const structUpdate = ``;
       const startOffsetForFailure = `currentOffset`;
       if (rule.type === 'literal') {
@@ -2922,7 +2914,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 }
                 else
                 {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected literal \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected literal \\"${esc}\\""`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes; // Handled recovery boundary hit
                 }
             }`;
@@ -2944,7 +2936,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 }
                 else
                 {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected literal \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected literal \\"${esc}\\""`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes; // Handled recovery boundary hit
                 }
             }`;
@@ -2969,7 +2961,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 }
                 else
                 {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected strict literal \\"${targetLiteral}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected strict literal \\"${targetLiteral}\\""`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
             }`;
@@ -2993,7 +2985,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 }
                 else
                 {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive strict literal \\"${targetLiteral}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected case-insensitive strict literal \\"${targetLiteral}\\""`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
             }`;
@@ -3019,7 +3011,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 }
                 else
                 {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive literal \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected case-insensitive literal \\"${esc}\\""`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes; // Handled recovery boundary hit
                 }
             }`;
@@ -3042,7 +3034,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 }
                 else
                 {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive literal \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected case-insensitive literal \\"${esc}\\""`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes; // Handled recovery boundary hit
                 }
             }`;
@@ -3066,7 +3058,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 }
                 else
                 {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected match for pattern", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected match for pattern"`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
             }`;
@@ -3093,7 +3085,7 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 }
                 else
                 {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, res.Error ?? "Expected sub-element ${rule.value.name}", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `res.Error ?? "Expected sub-element ${rule.value.name}"`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
             }`;
@@ -3101,6 +3093,8 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
       if (rule.type === 'choice') {
         const patterns = rule.value as any[];
         const baseErrorsVar = `baseErrors_${ruleId}`;
+        const expectedDesc = patterns.map(p => SyntaxElement.getPatternDescription(p)).join(", ");
+        const expectedMsg = `Expected one of: ${expectedDesc}`;
         const choiceChecks: string[] = [];
         patterns.forEach(p => {
           const sId = nextSpecId();
@@ -3152,7 +3146,6 @@ export function generateParserAndAstCSharpCode(rootElement: SyntaxElement, names
                 GreenNode backupAst_${ruleId} = null;
                 int backupOffset_${ruleId} = -1;
                 List<ParseError> backupErrors_${ruleId} = null;
-                ctx.ActiveScopeEnds = ctx.ActiveScopeEnds; // touch access
 ${choiceChecks.join("\n")}
                 if (!choiceMatched_${ruleId} && backupAst_${ruleId} != null)
                 {
@@ -3169,7 +3162,7 @@ ${choiceChecks.join("\n")}
                 if (!choiceMatched_${ruleId})
                 {
                     ctx.RecoveredErrors.RemoveRange(${baseErrorsVar}, ctx.RecoveredErrors.Count - ${baseErrorsVar});
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "None of the choices matched in rule ${ruleId}", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `expectedMsg`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
             }`;
@@ -3266,7 +3259,7 @@ ${choiceChecks.join("\n")}
                  {
                      results.RemoveRange(initialResultsCount_${ruleId}, results.Count - initialResultsCount_${ruleId});
                      currentOffset = startOffset_${ruleId};
-                     if (!TryRecover(text, startOffset_${ruleId}, ${ruleId}, "Missing required element in unordered list: " + missingLabel_${ruleId}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                     if (!TryRecover(text, startOffset_${ruleId}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Missing required element in unordered list: " + missingLabel_${ruleId}`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                      {
                          return failRes;
                      }
@@ -3296,7 +3289,6 @@ ${choiceChecks.join("\n")}
         if (isArray) {
           const patterns = rule.value as any[];
           const escErrorsVar = `loopErrors_${ruleId}`;
-          const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
           
           const branchChecks: string[] = [];
           patterns.forEach((p, idx) => {
@@ -3310,7 +3302,6 @@ ${choiceChecks.join("\n")}
                     {
                         int beforeBranchOffset = currentOffset;
                         int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
-                        int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
                         ${spec.code.trim()}
                         if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
                         {
@@ -3321,10 +3312,6 @@ ${choiceChecks.join("\n")}
                         else
                         {
                             ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
-                            if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
-                            {
-                                ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
-                            }
                         }
                     }
                     if (matchedBranch) goto matched_branch_${ruleId};
@@ -3407,7 +3394,6 @@ ${choiceChecks.join("\n")}
         if (isArray) {
           const patterns = rule.value as any[];
           const escErrorsVar = `loopErrors_${ruleId}`;
-          const activeScopeEndsVar = `loopScopeEnds_${ruleId}`;
           
           const branchChecks: string[] = [];
           patterns.forEach((p, idx) => {
@@ -3421,7 +3407,6 @@ ${choiceChecks.join("\n")}
                     {
                         int beforeBranchOffset = currentOffset;
                         int ${escErrorsVar}_branch = ctx.RecoveredErrors.Count;
-                        int ${activeScopeEndsVar}_branch = ctx.ActiveScopeEnds.Count;
                         ${spec.code.trim()}
                         if (${spec.matchedName} && ${spec.newOffsetName} > beforeBranchOffset)
                         {
@@ -3432,10 +3417,6 @@ ${choiceChecks.join("\n")}
                         else
                         {
                             ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_branch, ctx.RecoveredErrors.Count - ${escErrorsVar}_branch);
-                            if (ctx.ActiveScopeEnds.Count > ${activeScopeEndsVar}_branch)
-                            {
-                                ctx.ActiveScopeEnds.RemoveRange(${activeScopeEndsVar}_branch, ctx.ActiveScopeEnds.Count - ${activeScopeEndsVar}_branch);
-                            }
                         }
                     }
                     if (matchedBranch) goto matched_branch_${ruleId};
@@ -3476,7 +3457,7 @@ ${choiceChecks.join("\n")}
                   }
                   else
                   {
-                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected at least one occurrence in loop"`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                           return failRes;
                   }
               }`;
@@ -3519,7 +3500,7 @@ ${choiceChecks.join("\n")}
                   }
                   else
                   {
-                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                      if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected at least one occurrence in loop"`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                           return failRes;
                   }
               }`;
@@ -3744,7 +3725,7 @@ ${choiceChecks.join("\n")}
                 if (!${finalMatchCheck})
                 {
                     ctx.RecoveredErrors.RemoveRange(${escErrorsVar}, ctx.RecoveredErrors.Count - ${escErrorsVar});
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Assertion failed: expected positive lookahead pattern sequence", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Assertion failed: expected positive lookahead pattern sequence"`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
                 else
@@ -3838,13 +3819,13 @@ ${choiceChecks.join("\n")}
                 else
                 {
                     ctx.RecoveredErrors.RemoveRange(${escErrorsVar}_first, ctx.RecoveredErrors.Count - ${escErrorsVar}_first);
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected first item in separated list", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected first item in separated list"`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
             }`;
       }
       if (rule.type === 'eof') {
-        return `
+         return `
             // EOF Rule (id: ${ruleId})
             if (!panicked)
             {
@@ -3856,210 +3837,9 @@ ${choiceChecks.join("\n")}
                 }
                 else
                 {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected EOF end of string", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
+                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected EOF end of string"`)}, ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted || isRoot, ${boundariesExpr}, ctx, out var failRes))
                         return failRes;
                 }
-            }`;
-      }
-      if (rule.type === 'beginScope') {
-        let patternCode = "";
-        if (typeof rule.value === 'string') {
-          const esc = escapeString(rule.value);
-          if (rule.value.length === 1) {
-            const charLit = esc === "\\\\" ? "\\\\" : esc.replace(/'/g, "\\'");
-            patternCode = `
-                const char lit = '${charLit}';
-                localMaxOffset = Math.Max(localMaxOffset, currentOffset + 1);
-                if (ctx.MatchCharacter(text, currentOffset, lit))
-                {
-                    results.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${ruleId}, 1));
-                    currentOffset += 1;
-                    hasCommitted = true;
-                    ${structUpdate}
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope start '${charLit}'", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }`;
-          } else {
-            patternCode = `
-                const string lit = "${esc}";
-                const int litLen = ${rule.value.length};
-                localMaxOffset = Math.Max(localMaxOffset, currentOffset + litLen);
-                if (ctx.MatchLiteral(text, currentOffset, lit, litLen))
-                {
-                    results.Add(GreenNode.Create(NodeType.Literal, lit, ${ruleId}, litLen));
-                    currentOffset += litLen;
-                    hasCommitted = true;
-                    ${structUpdate}
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope start \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }`;
-          }
-        } else if (rule.value instanceof RegExp) {
-          const dfaMethodName = getOrCreateDfaMethod(rule.value, 'Rule', ruleId);
-          patternCode = `
-                string mval_${ruleId};
-                if (${dfaMethodName}(text, currentOffset, out mval_${ruleId}))
-                {
-                    results.Add(GreenNode.Create(NodeType.Token, mval_${ruleId}, ${ruleId}, mval_${ruleId}.Length));
-                    currentOffset += mval_${ruleId}.Length;
-                    hasCommitted = true;
-                    ${structUpdate}
-                    localMaxOffset = Math.Max(localMaxOffset, currentOffset);
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope start pattern", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }`;
-        } else if (rule.value instanceof SyntaxElement) {
-          const subName = sanitize(rule.value.name);
-          childElements.add(subName);
-          patternCode = `
-                var res = Parse${subName}(text, currentOffset, memo, ctx);
-                localMaxOffset = Math.Max(localMaxOffset, res.DependencyLimit);
-                if (res.Success)
-                {
-                    if (res.Ast != null && (res.Ast.Width > 0 || res.Ast.Type == NodeType.Eof))
-                    {
-                        results.Add(res.Ast);
-                    }
-                    currentOffset = res.NewOffset;
-                    hasCommitted = true;
-                    ${structUpdate}
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, res.Error ?? "Expected scope start element ${rule.value.name}", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }`;
-        }
-        const myIndex = el.rules.indexOf(rule);
-        const subsequentEndRules = el.rules.slice(myIndex + 1).filter(r => r.type === 'endScope');
-        let pushScopeCode = "";
-        if (subsequentEndRules.length > 0) {
-          const nextEndRule = subsequentEndRules[0];
-          if (typeof nextEndRule.value === 'string') {
-            const escEnd = escapeString(nextEndRule.value);
-            pushScopeCode = `
-                    ctx.ActiveScopeEnds.Add("${escEnd}");`;
-          } else {
-            pushScopeCode = `
-                    ctx.ActiveScopeEnds.Add("}");`;
-          }
-        }
-        return `
-            // BeginScope Rule (id: ${ruleId})
-            if (!panicked)
-            {
-                int startOffset_${ruleId} = currentOffset;
-                ${patternCode.trim()}
-                if (!panicked)
-                {
-                    ${pushScopeCode.trim()}
-                }
-            }`;
-      }
-      if (rule.type === 'endScope') {
-        let patternCode = "";
-        if (typeof rule.value === 'string') {
-          const esc = escapeString(rule.value);
-          if (rule.value.length === 1) {
-            const charLit = esc === "\\\\" ? "\\\\" : esc.replace(/'/g, "\\'");
-            patternCode = `
-                const char lit = '${charLit}';
-                localMaxOffset = Math.Max(localMaxOffset, currentOffset + 1);
-                if (ctx.MatchCharacter(text, currentOffset, lit))
-                {
-                    results.Add(GreenNode.Create(NodeType.Literal, "${esc}", ${ruleId}, 1));
-                    currentOffset += 1;
-                    hasCommitted = true;
-                    ${structUpdate}
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope end '${charLit}'", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }`;
-          } else {
-            patternCode = `
-                const string lit = "${esc}";
-                const int litLen = ${rule.value.length};
-                localMaxOffset = Math.Max(localMaxOffset, currentOffset + litLen);
-                if (ctx.MatchLiteral(text, currentOffset, lit, litLen))
-                {
-                    results.Add(GreenNode.Create(NodeType.Literal, lit, ${ruleId}, litLen));
-                    currentOffset += litLen;
-                    hasCommitted = true;
-                    ${structUpdate}
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope end \\"${esc}\\\"", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }`;
-          }
-        } else if (rule.value instanceof RegExp) {
-          const dfaMethodName = getOrCreateDfaMethod(rule.value, 'Rule', ruleId);
-          patternCode = `
-                string mval_${ruleId};
-                if (${dfaMethodName}(text, currentOffset, out mval_${ruleId}))
-                {
-                    results.Add(GreenNode.Create(NodeType.Token, mval_${ruleId}, ${ruleId}, mval_${ruleId}.Length));
-                    currentOffset += mval_${ruleId}.Length;
-                    hasCommitted = true;
-                    ${structUpdate}
-                    localMaxOffset = Math.Max(localMaxOffset, currentOffset);
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope end pattern", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }`;
-        } else if (rule.value instanceof SyntaxElement) {
-          const subName = sanitize(rule.value.name);
-          childElements.add(subName);
-          patternCode = `
-                var res = Parse${subName}(text, currentOffset, memo, ctx);
-                localMaxOffset = Math.Max(localMaxOffset, res.DependencyLimit);
-                if (res.Success)
-                {
-                    if (res.Ast != null && (res.Ast.Width > 0 || res.Ast.Type == NodeType.Eof))
-                    {
-                        results.Add(res.Ast);
-                    }
-                    currentOffset = res.NewOffset;
-                    hasCommitted = true;
-                    ${structUpdate}
-                }
-                else
-                {
-                    if (!TryRecover(text, ${startOffsetForFailure}, ${ruleId}, res.Error ?? "Expected scope end element ${rule.value.name}", ref localMaxOffset, results, lastStructuralResultsCount, ref currentOffset, ref panicked, hasCommitted, ${boundariesExpr}, ctx, out var failRes))
-                        return failRes;
-                }`;
-        }
-        let popScopeCode = "";
-        if (typeof rule.value === 'string') {
-          const escEnd = escapeString(rule.value);
-          popScopeCode = `
-                int popIdx = ctx.ActiveScopeEnds.LastIndexOf("${escEnd}");
-                if (popIdx != -1) ctx.ActiveScopeEnds.RemoveAt(popIdx);`;
-        } else {
-          popScopeCode = `
-                if (ctx.ActiveScopeEnds.Count > 0) ctx.ActiveScopeEnds.RemoveAt(ctx.ActiveScopeEnds.Count - 1);`;
-        }
-        return `
-            // EndScope Rule (id: ${ruleId})
-            if (!panicked)
-            {
-                int startOffset_${ruleId} = currentOffset;
-                ${patternCode.trim()}
-                ${popScopeCode.trim()}
             }`;
       }
       return "            // Unsupported rule type";
@@ -4085,6 +3865,7 @@ ${choiceChecks.join("\n")}
             bool panicked = false;
             bool hasCommitted = false;
             int initialErrorsLength = ctx.RecoveredErrors.Count;
+            bool isRoot = ${el === rootElement ? "true" : "false"};
             
             int lastStructuralOffset = offset;
             int lastStructuralResultsCount = 0;
@@ -4108,6 +3889,7 @@ ${ruleBlocks}
         }`;
   }).join("\n\n");
   const combinedRegexes = Array.from(new Set([...regexFields, ...speculativeRegexes]));
+
   const ruleCases = elements.map(el => {
     const elName = sanitize(el.name);
     return `                case ${el.id}: return Parse${elName}(text, offset, memo, ctx);`;
@@ -4688,17 +4470,6 @@ ${parserMethods}
                 {
                     char c = text[nextCharIndex];
                     bool isScopeEnd = c == '}' || c == ')';
-                    if (ctx.ActiveScopeEnds != null && ctx.ActiveScopeEnds.Count > 0)
-                    {
-                        foreach (var scopeEnd in ctx.ActiveScopeEnds)
-                        {
-                            if (scopeEnd.Length > 0 && c == scopeEnd[0])
-                            {
-                                isScopeEnd = true;
-                                break;
-                            }
-                        }
-                    }
                     if (!isScopeEnd)
                     {
                         shouldRecover = true;

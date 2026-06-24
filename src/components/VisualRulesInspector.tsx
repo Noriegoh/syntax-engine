@@ -968,6 +968,56 @@ export const VisualRulesInspector: React.FC<VisualRulesInspectorProps> = ({
                                  rule.type === 'not' ? "Negative constraint: verifies this token sequence is absent before matching starts." :
                                  rule.type === 'eof' ? "EOF boundary: verifies the parser head has completed parsing the entire code document." : ""}
                               </p>
+
+                              {/* Recovery Boundaries Feature */}
+                              {rule.recoveryPatterns && rule.recoveryPatterns.length > 0 && (
+                                <div className="mt-2.5 pt-2.5 border-t border-white/5 space-y-1.5">
+                                  <div className="flex items-center gap-1.5 text-[8.5px] font-black uppercase tracking-wider text-indigo-400">
+                                    <Zap className="w-3 h-3 text-indigo-400" />
+                                    <span>Precomputed Recovery Patterns ({rule.recoveryPatterns.length})</span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {rule.recoveryPatterns.map((pattern: any, pIdx: number) => {
+                                      const isElement = pattern && (pattern instanceof SyntaxElement || (typeof pattern === 'object' && 'name' in pattern && 'id' in pattern));
+                                      const isRegex = pattern instanceof RegExp;
+                                      
+                                      if (isElement) {
+                                        return (
+                                          <button
+                                            key={pIdx}
+                                            onClick={() => selectElementWithHistory(pattern.id)}
+                                            className="px-1.5 py-0.5 rounded bg-indigo-500/10 hover:bg-indigo-500/25 border border-indigo-500/25 text-indigo-300 hover:text-indigo-200 transition-all font-mono text-[9.5px] cursor-pointer flex items-center gap-1"
+                                            title={`Jump to grammar element: ${pattern.name}`}
+                                          >
+                                            <span className="text-[7.5px] opacity-75 font-sans">&lt;Element&gt;</span>
+                                            <span>{pattern.name}</span>
+                                          </button>
+                                        );
+                                      } else if (isRegex) {
+                                        return (
+                                          <span
+                                            key={pIdx}
+                                            className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono text-[9.5px]"
+                                            title="Regular Expression Boundary"
+                                          >
+                                            /{pattern.source}/
+                                          </span>
+                                        );
+                                      } else {
+                                        return (
+                                          <span
+                                            key={pIdx}
+                                            className="px-1.5 py-0.5 rounded bg-sky-500/10 border border-sky-500/20 text-sky-400 font-mono text-[9.5px]"
+                                            title="Literal string match"
+                                          >
+                                            "{String(pattern)}"
+                                          </span>
+                                        );
+                                      }
+                                    })}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </div>
                         );

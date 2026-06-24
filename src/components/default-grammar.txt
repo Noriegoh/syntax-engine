@@ -350,7 +350,7 @@ const tagEntry = Element("TagEntry")
 const tagsBlock = Element("TagsBlock")  
   .Token(/Tags/i)
   .BeginScope(Token("{"))
-  .ZeroOrMore(tagEntry).As("entries")
+  .ZeroOrMoreToken(tagEntry).As("entries")
   .EndScope(Token("}"));
 
 // --- Section 7: Shader Program Blocks (Opaque) ---
@@ -457,17 +457,17 @@ const property = Element("Property")
   .Token(",")
   .OneOffToken(
     rangeType,
-    LiteralMatch(/CubeArray/i, id_exp),
-    LiteralMatch(/2DArray/i, id_exp),
-    LiteralMatch(/Color/i, id_exp),
-    LiteralMatch(/3D/i, id_exp),
-    LiteralMatch(/2D/i, id_exp),
-    LiteralMatch(/Cube/i, id_exp),
-    LiteralMatch(/Integer/i, id_exp),
-    LiteralMatch(/Int/i, id_exp),
-    LiteralMatch(/Float/i, id_exp),
-    LiteralMatch(/Vector/i, id_exp),
-    LiteralMatch(/Any/i, id_exp)
+    Regex(/CubeArray/i),
+    Regex(/2DArray/i),
+    Regex(/Color/i),
+    Regex(/3D/i),
+    Regex(/2D/i),
+    Regex(/Cube/i),
+    Regex(/Integer/i),
+    Regex(/Int/i),
+    Regex(/Float/i),
+    Regex(/Vector/i),
+    Regex(/Any/i)
   ).As("type")
   .EndScope(Token(")"))
   .Token("=")
@@ -516,6 +516,6 @@ const root = Element("ShaderBody")
   .Token(string).As("shaderName")
   .BeginScope(Token("{"))
   .Optional(propertiesBlock)
-  .OneOrMore(subShader, categoryBlock)
+  .OneOrMoreToken(subShader, categoryBlock)
   .Optional(fallbackDecl, customEditorDecl)
   .EndScope(Token("}"));

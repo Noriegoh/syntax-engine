@@ -1,6 +1,6 @@
 // PAUSED - I have decided to perfect codegen-cs first.
 
-import { SyntaxElement } from './syntax-element';
+import { SyntaxElement, unwrapToken } from './syntax-element';
 import { ScopeBuilder } from './scope';
 import { 
   sanitize, 
@@ -452,6 +452,22 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
   const regexFields: string[] = [];
   const speculativeRegexes: string[] = [];
   const patternToDfaMethodName = new Map<string, string>();
+
+  function getRecoveryErrorExpr(rule: any, defaultMsgExpr: string): string {
+    if (rule.customErrorMessage) {
+      return `"${escapeString(rule.customErrorMessage)}"`;
+    }
+    if (rule.type === 'regex' || rule.type === 'caseInsensitiveLiteral') {
+      const pat = rule.value;
+      if (pat && typeof pat === 'object') {
+        if ('overrideName' in pat && typeof pat.overrideName === 'string') {
+          return `"${escapeString(`Expected ${pat.overrideName}`)}"`;
+        }
+        return `"${escapeString(`Expected match for pattern: ${pat.source}`)}"`;
+      }
+    }
+    return defaultMsgExpr;
+  }
   
   const patternToRuleIds = new Map<string, { regex: RegExp; types: Set<'Rule' | 'Spec'>; ruleIds: Set<number> }>();
   function registerPattern(p: RegExp, ruleId: number, type: 'Rule' | 'Spec') {
@@ -492,8 +508,6 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
         rule.type === 'zeroOrMore' ||
         rule.type === 'oneOrMore' ||
         rule.type === 'not' ||
-        rule.type === 'beginScope' ||
-        rule.type === 'endScope' ||
         rule.type === 'assert'
       ) {
         if (rule.value instanceof RegExp) {
@@ -547,24 +561,13 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
   const parserMethods = elements.map(el => {
     const elName = sanitize(el.name);
     const childElements = new Set<string>();
-    const boundaries: string[] = [];
-    if (el.recoveryPatterns) {
-      for (const p of el.recoveryPatterns) {
-        if (typeof p === 'string') boundaries.push(p);
-      }
-    }
-    if (el.isAutoHealing) {
-      const custom = el.autoHealingBoundaries || [";", "}", "\n"];
-      for (const p of custom) {
-        if (typeof p === 'string') boundaries.push(p);
-      }
-    }
-    const boundariesExpr = boundaries.length > 0
-      ? `[${boundaries.map(b => `"${escapeString(b)}"`).join(", ")}]`
-      : "null";
-      
-    const ruleBlocks = el.rules.map(rule => {
+
+    const ruleBlocks = el.rules.map((rule, ruleIndex) => {
       const ruleId = rule.id;
+      
+      const boundariesExpr = rule.recoveryPatterns.length > 0
+        ? `[${rule.recoveryPatterns.map(b => `"${escapeString(b)}"`).join(", ")}]`
+        : "null";
       let ruleIsStructural = true;
       if (
         rule.type === 'leadingTrivia' ||
@@ -596,7 +599,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     hasCommitted = true;
                     ${structUpdate}
                 } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected literal \\"${esc}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected literal \\"${esc}\\""`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -623,7 +626,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     hasCommitted = true;
                     ${structUpdate}
                 } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive literal \\"${esc}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected case-insensitive literal \\"${esc}\\""`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -650,7 +653,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     ${structUpdate}
                     localMaxOffset = Math.max(localMaxOffset, currentOffset);
                 } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected strict literal \\"${targetLiteral}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected strict literal \\"${targetLiteral}\\""`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -677,7 +680,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     ${structUpdate}
                     localMaxOffset = Math.max(localMaxOffset, currentOffset);
                 } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected case-insensitive strict literal \\"${targetLiteral}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected case-insensitive strict literal \\"${targetLiteral}\\""`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -703,7 +706,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     ${structUpdate}
                     localMaxOffset = Math.max(localMaxOffset, currentOffset);
                 } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected match for pattern", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected match for pattern"`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -731,7 +734,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     hasCommitted = true;
                     ${structUpdate}
                 } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, res.error || "Expected sub-element ${rule.value.name}", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `res.error || "Expected sub-element ${rule.value.name}"`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -745,6 +748,8 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
       if (rule.type === 'choice') {
         const patterns = rule.value as any[];
         const choiceChecks: string[] = [];
+        const expectedDesc = patterns.map(p => SyntaxElement.getPatternDescription(p)).join(", ");
+        const expectedMsg = `Expected one of: ${expectedDesc}`;
         patterns.forEach((p, idx) => {
           const sId = nextSpecId();
           let specificDfaName: string | undefined;
@@ -802,7 +807,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                 }
                 if (!choiceMatched_${ruleId}) {
                     ctx.recoveredErrors.splice(baseErrorsVarCount, ctx.recoveredErrors.length - baseErrorsVarCount);
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "None of the choices matched", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `expectedMsg`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -892,7 +897,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                   if (!allRequiredMatched_${ruleId}) {
                       results.length = initialResultsCount_${ruleId};
                       currentOffset = startOffset_${ruleId};
-                      const rec = this.tryRecover(text, startOffset_${ruleId}, ${ruleId}, "Missing required element in unordered list: " + missingLabel_${ruleId}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                      const rec = this.tryRecover(text, startOffset_${ruleId}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Missing required element in unordered list: " + missingLabel_${ruleId}`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                       if (rec.recovered) {
                           currentOffset = rec.recoveredOffset;
                           panicked = true;
@@ -1066,7 +1071,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     hasCommitted = true;
                     ${structUpdate}
                 } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected at least one occurrence in loop"`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -1092,7 +1097,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                 const loopResults: GreenNode[] = [];
                 while (currentOffset < text.length) {
                     const beforeIterOffset = currentOffset;
-                    const ${escErrorsVar} = ctx.recoveredErrors.length;
+                     const ${escErrorsVar} = ctx.recoveredErrors.length;
                     ${spec.code.trim()}
                     if (${spec.matchedName} && ${spec.newOffsetName} > beforeIterOffset) {
                         this.addNode(loopResults, ${spec.parsedAstName}, ${isIterInline});
@@ -1107,7 +1112,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                     hasCommitted = true;
                     ${structUpdate}
                 } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected at least one occurrence in loop", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected at least one occurrence in loop"`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -1165,7 +1170,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                 currentOffset = savedOffset_${ruleId};
                 ctx.recoveredErrors.splice(optErrorsCount_${ruleId}, ctx.recoveredErrors.length - optErrorsCount_${ruleId});
                 if (${spec.matchedName}) {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Rule negative constraint matched", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Rule negative constraint matched"`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -1223,7 +1228,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                 currentOffset = savedOffset_${ruleId};
                 ctx.recoveredErrors.splice(optErrorsCount_${ruleId}, ctx.recoveredErrors.length - optErrorsCount_${ruleId});
                 if (!${spec.matchedName}) {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Assertion check failed", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Assertion check failed"`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                     if (rec.recovered) {
                         currentOffset = rec.recoveredOffset;
                         panicked = true;
@@ -1351,7 +1356,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
                         currentOffset = ${specItemNewOffsetName};
                         isFirst = false;
                     } else {
-                        const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected first item in separator list", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
+                        const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, ${getRecoveryErrorExpr(rule, `"Expected first item in separator list"`)}, localMaxOffset, results, lastStructuralResultsCount, hasCommitted || isRoot, ${boundariesExpr}, ctx);
                         if (rec.recovered) {
                             currentOffset = rec.recoveredOffset;
                             panicked = true;
@@ -1429,130 +1434,6 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
             }`;
       }
       
-      if (rule.type === 'beginScope') {
-        let patternCode = "";
-        if (typeof rule.value === 'string') {
-          const esc = escapeString(rule.value);
-          patternCode = `
-                const lit = "${esc}";
-                const litLen = ${rule.value.length};
-                localMaxOffset = Math.max(localMaxOffset, currentOffset + litLen);
-                if (ctx.matchLiteral(text, currentOffset, lit, litLen)) {
-                    this.addNode(results, new GreenNode(NodeType.Literal, lit, ${ruleId}, litLen), false);
-                    currentOffset += litLen;
-                    hasCommitted = true;
-                    ${structUpdate}
-                } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope start literal", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
-                    if (rec.recovered) {
-                        currentOffset = rec.recoveredOffset;
-                        panicked = true;
-                    } else {
-                        return rec.failResult!;
-                    }
-                }`;
-        } else if (rule.value instanceof SyntaxElement) {
-          const subName = sanitize(rule.value.name);
-          childElements.add(subName);
-          patternCode = `
-                const res = this.parse${subName}(text, currentOffset, memo, ctx);
-                localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
-                if (res.success) {
-                    if (res.ast !== null && (res.ast.width > 0 || res.ast.type === NodeType.Eof)) {
-                        this.addNode(results, res.ast, ${isInline});
-                    }
-                    currentOffset = res.newOffset;
-                    hasCommitted = true;
-                    ${structUpdate}
-                } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, res.error || "Expected scope start element", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
-                    if (rec.recovered) {
-                        currentOffset = rec.recoveredOffset;
-                        panicked = true;
-                    } else {
-                        return rec.failResult!;
-                    }
-                }`;
-        }
-        
-        const subsequentEndRules = el.rules.slice(el.rules.indexOf(rule) + 1).filter(r => r.type === 'endScope');
-        let pushScopeCode = "";
-        if (subsequentEndRules.length > 0) {
-          const nextEndRule = subsequentEndRules[0];
-          const escEnd = typeof nextEndRule.value === 'string' ? escapeString(nextEndRule.value) : "}";
-          pushScopeCode = `
-                    ctx.activeScopeEnds.push("${escEnd}");`;
-        }
-        
-        return `
-            // BeginScope Rule (id: ${ruleId})
-            if (!panicked) {
-                const startOffset_${ruleId} = currentOffset;
-                ${patternCode.trim()}
-                if (!panicked) {
-                    ${pushScopeCode.trim()}
-                }
-            }`;
-      }
-      
-      if (rule.type === 'endScope') {
-        let patternCode = "";
-        if (typeof rule.value === 'string') {
-          const esc = escapeString(rule.value);
-          patternCode = `
-                const lit = "${esc}";
-                const litLen = ${rule.value.length};
-                localMaxOffset = Math.max(localMaxOffset, currentOffset + litLen);
-                if (ctx.matchLiteral(text, currentOffset, lit, litLen)) {
-                    this.addNode(results, new GreenNode(NodeType.Literal, lit, ${ruleId}, litLen), false);
-                    currentOffset += litLen;
-                    hasCommitted = true;
-                    ${structUpdate}
-                } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, "Expected scope end literal \\"${esc}\\\"", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
-                    if (rec.recovered) {
-                        currentOffset = rec.recoveredOffset;
-                        panicked = true;
-                    } else {
-                        return rec.failResult!;
-                    }
-                }`;
-        } else if (rule.value instanceof SyntaxElement) {
-          const subName = sanitize(rule.value.name);
-          childElements.add(subName);
-          patternCode = `
-                const res = this.parse${subName}(text, currentOffset, memo, ctx);
-                localMaxOffset = Math.max(localMaxOffset, res.dependencyLimit);
-                if (res.success) {
-                    if (res.ast !== null && (res.ast.width > 0 || res.ast.type === NodeType.Eof)) {
-                        this.addNode(results, res.ast, ${isInline});
-                    }
-                    currentOffset = res.newOffset;
-                    hasCommitted = true;
-                    ${structUpdate}
-                } else {
-                    const rec = this.tryRecover(text, ${startOffsetForFailure}, ${ruleId}, res.error || "Expected scope end element", localMaxOffset, results, lastStructuralResultsCount, hasCommitted, ${boundariesExpr}, ctx);
-                    if (rec.recovered) {
-                        currentOffset = rec.recoveredOffset;
-                        panicked = true;
-                    } else {
-                        return rec.failResult!;
-                    }
-                }`;
-        }
-        
-        const popScopeCode = `ctx.activeScopeEnds.pop();`;
-        return `
-            // EndScope Rule (id: ${ruleId})
-            if (!panicked) {
-                const startOffset_${ruleId} = currentOffset;
-                ${patternCode.trim()}
-                if (!panicked) {
-                    ${popScopeCode}
-                }
-            }`;
-      }
-      
       return "            // Unsupported rule type";
     }).join("\n");
     
@@ -1573,6 +1454,7 @@ export function generateParserAndAstTypeScriptCode(rootElement: SyntaxElement): 
         let panicked = false;
         let hasCommitted = false;
         const initialErrorsLength = ctx.recoveredErrors.length;
+        const isRoot = ${el === rootElement ? "true" : "false"};
         
         let lastStructuralOffset = offset;
         let lastStructuralResultsCount = 0;
@@ -1600,7 +1482,7 @@ ${ruleBlocks}
   const combinedRegexes = Array.from(new Set([...regexFields, ...speculativeRegexes]));
   const visibleElements = elements.filter(el => !el.isHiddenElement);
   const customNodeTypes = Array.from(new Set(visibleElements.map(el => sanitize(el.name))));
-  
+
   // Factory cases map NodeType to concrete subclass node
   const factoryCases = visibleElements.map(el => {
     const elName = sanitize(el.name);
@@ -1622,6 +1504,7 @@ export enum NodeType {
 export interface ParseError {
     message: string;
     offset: number;
+    recoveredOffset?: number;
 }
 
 export interface ITextDocument {
@@ -1660,7 +1543,6 @@ export interface ParseResult {
 
 export class ParserContext {
     public recoveredErrors: ParseError[] = [];
-    public activeScopeEnds: string[] = [];
     public matchLiteral(text: ITextDocument, offset: number, literal: string, length: number): boolean {
         if (offset + length > text.length) return false;
         return text.substring(offset, offset + length) === literal;
@@ -1938,14 +1820,6 @@ export class CompiledParser {
             if (nextCharIndex < text.length) {
                 const c = text.substring(nextCharIndex, nextCharIndex + 1);
                 let isScopeEnd = c === '}' || c === ')';
-                if (ctx.activeScopeEnds && ctx.activeScopeEnds.length > 0) {
-                    for (const scopeEnd of ctx.activeScopeEnds) {
-                        if (scopeEnd.length > 0 && c === scopeEnd[0]) {
-                            isScopeEnd = true;
-                            break;
-                        }
-                    }
-                }
                 if (!isScopeEnd) {
                     shouldRecover = true;
                 }
@@ -1970,7 +1844,7 @@ export class CompiledParser {
                 const skipped = text.substring(failStartOffset, failStartOffset + len);
                 const snippet = skipped.length > 25 ? skipped.substring(0, 22) + "..." : skipped;
                 const msg = \`Syntax Error in parser: \${errorMsg} at offset \${failStartOffset}. Skipped "\\\${snippet}\\\" to sync.\`;
-                ctx.recoveredErrors.push({ message: msg, offset: failStartOffset });
+                ctx.recoveredErrors.push({ message: msg, offset: failStartOffset, recoveredOffset: bestRecoveryOffset });
                 const errNode = new GreenNode(NodeType.ErrorNode, msg, 0, bestRecoveryOffset - failStartOffset);
                 results.push(errNode);
                 return { recovered: true, recoveredOffset: bestRecoveryOffset, failResult: null };

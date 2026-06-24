@@ -179,7 +179,8 @@ export class SpatialCSTIndex extends Map<string, ParseResult> {
           if (node.result.recoveredErrors) {
             shiftedResult.recoveredErrors = node.result.recoveredErrors.map(err => ({
               ...err,
-              offset: err.offset + delta
+              offset: err.offset + delta,
+              recoveredOffset: typeof err.recoveredOffset === 'number' ? err.recoveredOffset + delta : undefined
             }));
           }
 
@@ -312,7 +313,7 @@ export class IncrementalParser {
     },
     edits?: { editOffset: number; removedLength: number; insertedText: string }[]
   ): ParseResult {
-    const ctx = context || {
+    const ctx: any = context || {
       maxOffset: -1,
       maxError: null,
       expectedPaths: [],
@@ -320,6 +321,9 @@ export class IncrementalParser {
       cacheHits: 0,
       cacheMisses: 0
     };
+    if (!ctx.rootElement) {
+      ctx.rootElement = root;
+    }
 
     if (this.lastText === "") {
       // First parse: build full memo

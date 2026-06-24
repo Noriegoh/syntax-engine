@@ -383,10 +383,23 @@ export const TestCodeMirror: React.FC<TestCodeMirrorProps> = React.memo(({
     // 2. Soft recoveredErrors (syntactic warnings/recovered parsing mistakes)
     const recErrors = parserState.recoveredErrors || [];
     recErrors.forEach((err: any) => {
-      const bounds = getWordBounds(value, err.offset || 0);
+      let start = err.offset || 0;
+      let end = start;
+      if (typeof err.recoveredOffset === 'number' && err.recoveredOffset > start) {
+        end = err.recoveredOffset;
+      } else {
+        const bounds = getWordBounds(value, start);
+        start = bounds.start;
+        end = bounds.end;
+      }
+
+      // Safeguard limits
+      start = Math.max(0, Math.min(start, value.length));
+      end = Math.max(start + 1, Math.min(end, value.length));
+
       diags.push({
-        start: bounds.start,
-        end: bounds.end,
+        start,
+        end,
         message: err.message || "Syntactic Parsing Error (Recovered)",
         severity: "error" as const
       });

@@ -68,8 +68,6 @@ export function collectElements(root: SyntaxElement): SyntaxElement[] {
         rule.type === 'leadingTrivia' ||
         rule.type === 'trailingTrivia' ||
         rule.type === 'not' ||
-        rule.type === 'beginScope' ||
-        rule.type === 'endScope' ||
         rule.type === 'assert'
       ) {
         if (rule.value instanceof SyntaxElement) {
